@@ -1,0 +1,44 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "pshell",
+  "version": "0.1.0",
+  "identifier": "com.pshell.desktop",
+  "build": {
+    "frontendDist": "../src"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "main",
+        "title": "pshell",
+        "width": 1200,
+        "height": 780,
+        "minWidth": 880,
+        "minHeight": 560,
+        "resizable": true,
+        "center": true,
+        "titleBarStyle": "Visible"
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: asset: http://asset.localhost; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost"
+    },
+    "trayIcon": null
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["app", "dmg", "msi", "nsis"],
+    "icon": ["icons/icon.png", "icons/icon.icns", "icons/icon.ico"],
+    "category": "DeveloperTool",
+    "shortDescription": "跨平台 SSH 终端客户端",
+    "longDescription": "pshell 是一个跨平台 SSH 终端客户端。核心只做 SSH，Git 同步、AI 助手、SFTP、端口转发等全部为可插拔模块，可在设置中单独开关。",
+    "copyright": "pshell",
+    "macOS": {
+      "minimumSystemVersion": "10.15"
+    },
+    "windows": {
+      "webviewInstallMode": { "type": "downloadBootstrapper" }
+    }
+  }
+}

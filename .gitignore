@@ -1,0 +1,22 @@
+# Rust / Tauri
+/src-tauri/target/
+/src-tauri/gen/schemas/
+
+# 构建产物
+/dist/
+*.dmg
+*.msi
+*.nsis.exe
+
+# 本地运行时数据（不应入库）
+config.yaml
+*.db
+*.db-journal
+logs/
+crash.log
+
+# 编辑器 / 系统
+.DS_Store
+.idea/
+.vscode/
+*.swp

@@ -1,0 +1,14 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "pshell 主窗口默认权限。仅开放核心 API、事件、窗口与文件对话框；SSH/Git/AI 等系统操作一律通过自定义 Tauri command 由 Rust 侧执行。",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "core:window:default",
+    "core:webview:default",
+    "core:app:default",
+    "dialog:default"
+  ]
+}

@@ -1,0 +1,349 @@
+/* 终端与标签页样式 */
+
+.tabbar {
+  display: flex;
+  align-items: stretch;
+  height: 34px;
+  flex: none;
+  background: var(--bg-alt);
+  border-bottom: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.tabbar[hidden] {
+  display: none;
+}
+
+/* 标签滚动区：标签多了只在这里横向滚动，右侧按钮始终可见 */
+.tab-list {
+  display: flex;
+  align-items: stretch;
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.split-controls {
+  display: flex;
+  align-items: stretch;
+  flex: none;
+  border-left: 1px solid var(--border);
+}
+
+/* 标签栏右侧的功能入口（目前只有 AI）。按钮样式沿用 .icon-btn。 */
+.tab-actions {
+  display: flex;
+  align-items: stretch;
+  flex: none;
+  border-left: 1px solid var(--border);
+}
+
+.tab-actions .icon-btn {
+  width: 38px;
+  height: 100%;
+  border-radius: 0;
+  font-size: 12px;
+  font-weight: 600;
+  flex: none;
+}
+
+.tab-actions .icon-btn[hidden] {
+  display: none;
+}
+
+/* AI 入口：面板打开时高亮，表明按钮是开合开关而非单向打开 */
+.tab-actions .icon-btn.active {
+  background: var(--bg-hover);
+  color: var(--accent);
+}
+
+.split-controls[hidden] {
+  display: none;
+}
+
+.split-controls .icon-btn {
+  width: 32px;
+  height: 100%;
+  border-radius: 0;
+  font-size: 14px;
+  flex: none;
+}
+
+.split-act[hidden] {
+  display: none;
+}
+
+/* 当前分屏方向 */
+.split-controls .icon-btn.active {
+  background: var(--bg-hover);
+  color: var(--accent);
+}
+
+.tab {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 8px 0 12px;
+  min-width: 110px;
+  max-width: 220px;
+  flex: none;
+  border-right: 1px solid var(--border);
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.tab:hover {
+  background: var(--bg-hover);
+}
+
+.tab.active {
+  background: var(--bg);
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+.tab .dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--text-dim);
+}
+
+.tab .name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tab .close {
+  width: 18px;
+  height: 18px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 11px;
+  line-height: 1;
+  flex: none;
+}
+
+.tab .close:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+/* 分屏会话数徽标：仅组内多于一个会话时出现 */
+.tab .count {
+  flex: none;
+  min-width: 15px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: var(--bg-hover);
+  color: var(--text-dim);
+  font-size: 10px;
+  line-height: 15px;
+  text-align: center;
+}
+
+/* 双击标签重命名时的内联输入框 */
+.tab .rename {
+  flex: 1;
+  min-width: 0;
+  height: 20px;
+  padding: 0 4px;
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: inherit;
+}
+
+/* 状态色：与 SessionState 一一对应 */
+[data-state="connecting"] .dot,
+[data-state="authenticated"] .dot {
+  background: var(--warn);
+}
+
+[data-state="ready"] .dot {
+  background: var(--ok);
+}
+
+[data-state="reconnecting"] .dot {
+  background: var(--warn);
+  animation: pulse 1s ease-in-out infinite;
+}
+
+[data-state="disconnected"] .dot,
+[data-state="error"] .dot {
+  background: var(--danger);
+}
+
+[data-state="closed"] .dot {
+  background: var(--text-dim);
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.25; }
+}
+
+.tab-add {
+  width: 34px;
+  flex: none;
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 15px;
+}
+
+.tab-add:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.panes {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  background: var(--term-bg);
+}
+
+/* 一个标签对应一个 pane 组；未分屏时组内只有一个 pane */
+.pane-group {
+  position: absolute;
+  inset: 0;
+  display: none;
+}
+
+.pane-group.active {
+  display: flex;
+}
+
+.pane-group[data-dir="v"] {
+  flex-direction: column;
+}
+
+.pane {
+  position: relative;
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  padding: 6px 4px 4px 8px;
+}
+
+/* 分屏分隔线：只在真正分屏时出现，避免单 pane 也多一条边 */
+.pane-group[data-split="1"][data-dir="h"] > .pane + .pane {
+  border-left: 1px solid var(--border);
+}
+
+.pane-group[data-split="1"][data-dir="v"] > .pane + .pane {
+  border-top: 1px solid var(--border);
+}
+
+/* 分屏目标列表（弹窗内） */
+.split-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 8px;
+  max-height: 46vh;
+  overflow-y: auto;
+}
+
+.split-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  user-select: none;
+}
+
+.split-item:hover {
+  background: var(--bg-hover);
+}
+
+.split-item .label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.split-item .sub {
+  flex: none;
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.pane .xterm {
+  height: 100%;
+}
+
+.pane .xterm-viewport {
+  background: transparent !important;
+}
+
+/* 断线 / 错误遮罩，覆盖在终端之上但不吞掉键盘焦点 */
+.pane-banner {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 12px;
+  display: none;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-elev);
+  border: 1px solid var(--warn);
+  box-shadow: var(--shadow);
+  font-size: 12px;
+}
+
+.pane-banner.show {
+  display: flex;
+}
+
+.pane-banner.error {
+  border-color: var(--danger);
+}
+
+.pane-banner .spacer {
+  flex: 1;
+}
+
+/* 输入法模式角标：提示当前模式，点击即可切换（等效 Cmd/Ctrl+Shift+I）。
+   平时半透明，避免干扰终端内容；hover 才完全显形。 */
+.pane-ime {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 4;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elev);
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.6;
+  cursor: pointer;
+  opacity: 0.5;
+  user-select: none;
+}
+
+.pane-ime:hover {
+  opacity: 1;
+}
+
+/* 命令模式保证不漏字，用状态色点出来；输入法模式保持中性 */
+.pane-ime[data-ime="strict"] {
+  color: var(--ok);
+  border-color: var(--ok);
+}
