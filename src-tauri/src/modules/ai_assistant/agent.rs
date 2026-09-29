@@ -33,6 +33,7 @@ pub fn system_prompt() -> String {
     [
         "你是集成在 SSH 终端里的自动化助手，可以读取终端输出来决定下一步。",
         "你只能输出一个 JSON 对象，不要输出任何解释、Markdown 代码块或多余文字。",
+        "不要先草拟一个动作再改写：整条回复只能出现这一个 JSON 对象。",
         "两种合法形式：",
         r#"{"action":"run","command":"<一条可直接在 shell 中执行的命令>"}"#,
         r#"{"action":"done","summary":"<任务完成情况与结论>"}"#,
@@ -83,29 +84,51 @@ fn tail(text: &str, max_chars: usize) -> String {
 
 /// 从模型回复里解析动作。
 ///
-/// 容忍两种常见偏差：整体被 ```json 包裹、JSON 前后夹带解释文字。
+/// 容忍三种常见偏差：整体被 ```json 包裹、JSON 前后夹带解释文字、
+/// 以及「边想边说」产生多个 JSON 对象（从后往前试，取最后一个合法动作）。
 /// 解析不出合法动作时返回错误，并把原文带上——盲目猜一个命令去执行风险太高。
 pub fn parse_action(raw: &str) -> AppResult<AgentAction> {
     let text = strip_code_fence(raw);
-    let json = extract_json_object(text).ok_or_else(|| {
-        AppError::Ai(format!(
+    let candidates = json_candidates(text);
+    if candidates.is_empty() {
+        return Err(AppError::Ai(format!(
             "Agent 未返回合法动作，请重试或改用 Ask 模式。模型原文：{}",
             tail(raw, 500)
-        ))
-    })?;
+        )));
+    }
 
-    let value: serde_json::Value = serde_json::from_str(json).map_err(|e| {
-        AppError::Ai(format!("Agent 返回的动作不是合法 JSON（{e}）。原文：{}", tail(raw, 500)))
-    })?;
+    let mut json_error: Option<String> = None;
+    // 从后往前试：模型「边想边说」时，正式动作通常排在最后。
+    for candidate in candidates.into_iter().rev() {
+        match serde_json::from_str::<serde_json::Value>(candidate) {
+            Ok(value) => match action_from_value(&value)? {
+                Some(action) => return Ok(action),
+                // 是合法 JSON 但不是动作对象（多半是夹带的解释片段），继续试更早的候选。
+                None => continue,
+            },
+            Err(e) => json_error = Some(e.to_string()),
+        }
+    }
 
-    let action = value
-        .get("action")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .trim()
-        .to_lowercase();
+    Err(match json_error {
+        Some(msg) => AppError::Ai(format!(
+            "Agent 返回的动作不是合法 JSON（{msg}）。原文：{}",
+            tail(raw, 500)
+        )),
+        None => AppError::Ai(format!(
+            "Agent 未返回合法动作，请重试或改用 Ask 模式。模型原文：{}",
+            tail(raw, 500)
+        )),
+    })
+}
 
-    match action.as_str() {
+/// 把已解析的 JSON 值转成动作；不是动作对象（缺 `action` 字段）时返回 `None`。
+fn action_from_value(value: &serde_json::Value) -> AppResult<Option<AgentAction>> {
+    let Some(action) = value.get("action").and_then(|v| v.as_str()) else {
+        return Ok(None);
+    };
+
+    match action.trim().to_lowercase().as_str() {
         ACTION_RUN => {
             let command = value
                 .get("command")
@@ -116,13 +139,13 @@ pub fn parse_action(raw: &str) -> AppResult<AgentAction> {
             if command.is_empty() {
                 return Err(AppError::Ai("Agent 要求执行命令但 command 为空".into()));
             }
-            Ok(AgentAction {
+            Ok(Some(AgentAction {
                 action: ACTION_RUN.into(),
                 command: Some(command),
                 summary: None,
-            })
+            }))
         }
-        ACTION_DONE => Ok(AgentAction {
+        ACTION_DONE => Ok(Some(AgentAction {
             action: ACTION_DONE.into(),
             command: None,
             summary: Some(
@@ -133,7 +156,7 @@ pub fn parse_action(raw: &str) -> AppResult<AgentAction> {
                     .trim()
                     .to_string(),
             ),
-        }),
+        })),
         other => Err(AppError::Ai(format!(
             "Agent 返回了未知动作「{other}」，只支持 run / done"
         ))),
@@ -154,14 +177,49 @@ fn strip_code_fence(raw: &str) -> &str {
     rest.trim_end().strip_suffix("```").unwrap_or(rest).trim()
 }
 
-/// 取第一个 `{` 到最后一个 `}` 之间的内容，容忍前后夹带的解释文字。
-fn extract_json_object(text: &str) -> Option<&str> {
-    let start = text.find('{')?;
-    let end = text.rfind('}')?;
-    if end <= start {
-        return None;
+/// 按配对花括号切出候选 JSON 对象。
+///
+/// 模型偶尔会「边想边说」：先给一个草稿动作，再补一句解释，最后给正式动作。
+/// 若只取「首 `{` 到末 `}`」，会把这些对象与夹带的解释文字混在一起导致解析失败，
+/// 所以这里逐个切出配对的 `{...}`（跳过字符串内的花括号与转义），交给调用方逐个尝试。
+fn json_candidates(text: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut start: Option<usize> = None;
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+
+    for (index, byte) in text.bytes().enumerate() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match byte {
+            b'"' => in_string = true,
+            b'{' => {
+                if depth == 0 {
+                    start = Some(index);
+                }
+                depth += 1;
+            }
+            b'}' if depth > 0 => {
+                depth -= 1;
+                if depth == 0 {
+                    if let Some(s) = start {
+                        out.push(&text[s..=index]);
+                    }
+                }
+            }
+            _ => {}
+        }
     }
-    Some(&text[start..=end])
+    out
 }
 
 #[cfg(test)]
@@ -187,6 +245,28 @@ mod tests {
         let action = parse_action(r#"{"action":"done","summary":"磁盘还剩 20%"}"#).expect("应能解析");
         assert_eq!(action.action, ACTION_DONE);
         assert_eq!(action.summary.as_deref(), Some("磁盘还剩 20%"));
+    }
+
+    /// 模型「边想边说」时会先给草稿再给正式动作，应取最后那个。
+    #[test]
+    fn parses_last_action_among_multiple_objects() {
+        let raw = concat!(
+            r#"{"action":"run","command":"df -h"} Actually let me just do one command combining. "#,
+            r#"That's fine.{"action":"run","command":"df -h; free -m"}"#
+        );
+        let action = parse_action(raw).expect("多个 JSON 对象时应取最后一个");
+        assert_eq!(action.command.as_deref(), Some("df -h; free -m"));
+    }
+
+    /// 夹带的花括号不得干扰切片：字符串内的 `{`/`}` 要按字面处理。
+    #[test]
+    fn braces_inside_command_string_do_not_confuse() {
+        let raw = r#"{"action":"run","command":"echo \"{not json}\" | awk '{print $1}'"}"#;
+        let action = parse_action(raw).expect("字符串内的花括号不应影响配对");
+        assert_eq!(
+            action.command.as_deref(),
+            Some(r#"echo "{not json}" | awk '{print $1}'"#)
+        );
     }
 
     #[test]

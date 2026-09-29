@@ -11,7 +11,8 @@ use crate::error::{AppError, AppResult};
 // 数据模型
 // ---------------------------------------------------------------------------
 
-/// 持久化的连接配置。**敏感字段不在这里**——密码 / passphrase 存系统钥匙串。
+/// 持久化的连接配置。密码 / passphrase 等敏感值不在此结构内，
+/// 而是存于主密码加密的保险库（`secrets.json`）；这里只留「是否已保存」标记。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredConnection {
     pub id: String,
@@ -19,21 +20,37 @@ pub struct StoredConnection {
     pub host: String,
     pub port: u16,
     pub username: String,
+    /// 连接协议：ssh | rdp。旧记录缺该字段时回退为 ssh。
+    #[serde(default = "default_protocol")]
+    pub protocol: String,
+    /// RDP 域（Windows 域账号）。SSH 连接为 None。
+    #[serde(default)]
+    pub domain: Option<String>,
     /// password | private_key | agent | auto
     pub auth_kind: String,
     /// 私钥路径（private_key 时有效）
     pub key_path: Option<String>,
     /// 分组名（connection_group 开关打开时可见）
     pub group_name: Option<String>,
-    /// 是否在系统钥匙串中存有密码
+    /// 是否已保存密码（存于加密保险库）
     pub has_password: bool,
-    /// 是否在系统钥匙串中存有私钥 passphrase
+    /// 是否已保存私钥 passphrase（存于加密保险库）
     pub has_passphrase: bool,
     /// 跳板机（ProxyJump）配置
     pub jump: Option<JumpRecord>,
     pub color: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+}
+
+/// SSH 协议标识。
+pub const PROTOCOL_SSH: &str = "ssh";
+/// Windows 远程桌面协议标识。
+pub const PROTOCOL_RDP: &str = "rdp";
+
+/// 连接协议缺省值：`StoredConnection` 反序列化时缺失 `protocol` 一律视为 SSH。
+pub fn default_protocol() -> String {
+    PROTOCOL_SSH.to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -88,68 +105,41 @@ pub struct SyncStateRecord {
 }
 
 // ---------------------------------------------------------------------------
-// 系统钥匙串
+// 敏感字段（委托给主密码加密的保险库）
 // ---------------------------------------------------------------------------
 
+/// 敏感字段的键名与读写入口。实现见 [`crate::config::vault`]：
+/// 全部以主密码加密后落在配置目录的 `secrets.json`；自动解锁令牌存在同目录的 `vault.token`。
 pub mod secrets {
-    use super::*;
+    pub use crate::config::vault::{delete, get, set};
 
-    const SERVICE: &str = "com.pshell.desktop";
-
-    fn entry(key: &str) -> AppResult<keyring::Entry> {
-        keyring::Entry::new(SERVICE, key).map_err(|e| AppError::Keyring(e.to_string()))
-    }
-
-    /// 写入敏感字段。成功写入系统钥匙串。
-    pub fn set(key: &str, value: &str) -> AppResult<()> {
-        entry(key)?
-            .set_password(value)
-            .map_err(|e| AppError::Keyring(format!("写入钥匙串失败：{e}")))
-    }
-
-    /// 读取敏感字段。不存在时返回 `None`，不视为错误。
-    pub fn get(key: &str) -> AppResult<Option<String>> {
-        match entry(key)?.get_password() {
-            Ok(v) => Ok(Some(v)),
-            Err(keyring::Error::NoEntry) => Ok(None),
-            Err(e) => Err(AppError::Keyring(format!("读取钥匙串失败：{e}"))),
-        }
-    }
-
-    pub fn delete(key: &str) -> AppResult<()> {
-        match entry(key)?.delete_credential() {
-            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-            Err(e) => Err(AppError::Keyring(format!("删除钥匙串条目失败：{e}"))),
-        }
-    }
-
-    /// 连接密码的钥匙串键名
+    /// 连接密码的键名
     pub fn conn_password_key(conn_id: &str) -> String {
         format!("conn:{conn_id}:password")
     }
 
-    /// 私钥 passphrase 的钥匙串键名
+    /// 私钥 passphrase 的键名
     pub fn conn_passphrase_key(conn_id: &str) -> String {
         format!("conn:{conn_id}:passphrase")
     }
 
-    /// 跳板机密码的钥匙串键名
+    /// 跳板机密码的键名
     pub fn jump_password_key(conn_id: &str) -> String {
         format!("conn:{conn_id}:jump-password")
     }
 
-    /// AI 模型 API Key 的钥匙串键名。**不内置任何 Key**，完全由用户配置。
+    /// RDP（远程桌面）密码的键名。与 SSH 密码分开存，避免同一连接两种协议互相覆盖。
+    pub fn rdp_password_key(conn_id: &str) -> String {
+        format!("conn:{conn_id}:rdp-password")
+    }
+
+    /// AI 模型 API Key 的键名。**不内置任何 Key**，完全由用户配置。
     /// 按模型条目的稳定 id 存储，因此一个模型一把 Key，可混合不同供应商。
     pub fn ai_model_key_key(model_id: &str) -> String {
         format!("ai:model:{model_id}:api_key")
     }
 
-    /// 旧版「全局 AI Key」的键名。仅用于升级时把它迁移到第一个模型条目。
-    pub fn legacy_ai_api_key_key() -> String {
-        "ai:api_key".to_string()
-    }
-
-    /// Git 远端密码 / 访问令牌的钥匙串键名。**不内置任何凭据**，完全由用户配置。
+    /// Git 远端密码 / 访问令牌的键名。**不内置任何凭据**，完全由用户配置。
     pub fn git_password_key(remote_name: &str) -> String {
         format!("git:{remote_name}:password")
     }
@@ -205,6 +195,8 @@ impl Store {
                 host          TEXT NOT NULL,
                 port          INTEGER NOT NULL,
                 username      TEXT NOT NULL,
+                protocol      TEXT NOT NULL DEFAULT 'ssh',
+                domain        TEXT,
                 auth_kind     TEXT NOT NULL,
                 key_path      TEXT,
                 group_name    TEXT,
@@ -244,6 +236,9 @@ impl Store {
             );",
         )
         .map_err(|e| AppError::Db(e.to_string()))?;
+        // 老库的 connections 表没有 protocol / domain 列，需单独补齐
+        // （CREATE TABLE IF NOT EXISTS 对已存在的表不生效）。
+        add_connection_columns(&conn)?;
         Ok(())
     }
 
@@ -254,7 +249,8 @@ impl Store {
         let mut stmt = conn
             .prepare(
                 "SELECT id, name, host, port, username, auth_kind, key_path, group_name,
-                        has_password, has_passphrase, jump_json, color, created_at, updated_at
+                        has_password, has_passphrase, jump_json, color, created_at, updated_at,
+                        protocol, domain
                  FROM connections ORDER BY group_name, name",
             )
             .map_err(|e| AppError::Db(e.to_string()))?;
@@ -267,6 +263,8 @@ impl Store {
                     host: r.get(2)?,
                     port: r.get::<_, i64>(3)? as u16,
                     username: r.get(4)?,
+                    protocol: r.get(14)?,
+                    domain: r.get(15)?,
                     auth_kind: r.get(5)?,
                     key_path: r.get(6)?,
                     group_name: r.get(7)?,
@@ -295,14 +293,16 @@ impl Store {
         let conn = self.conn.lock();
         conn.execute(
             "INSERT INTO connections
-                (id, name, host, port, username, auth_kind, key_path, group_name,
+                (id, name, host, port, username, protocol, domain, auth_kind, key_path, group_name,
                  has_password, has_passphrase, jump_json, color, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
              ON CONFLICT(id) DO UPDATE SET
                 name = excluded.name,
                 host = excluded.host,
                 port = excluded.port,
                 username = excluded.username,
+                protocol = excluded.protocol,
+                domain = excluded.domain,
                 auth_kind = excluded.auth_kind,
                 key_path = excluded.key_path,
                 group_name = excluded.group_name,
@@ -317,6 +317,8 @@ impl Store {
                 c.host,
                 c.port as i64,
                 c.username,
+                c.protocol,
+                c.domain,
                 c.auth_kind,
                 c.key_path,
                 c.group_name,
@@ -332,21 +334,22 @@ impl Store {
         Ok(())
     }
 
-    /// 删除连接，并一并清理钥匙串中的敏感字段。
+    /// 删除连接，并一并清理保险库中的敏感字段。
     pub fn delete_connection(&self, id: &str) -> AppResult<()> {
         {
             let conn = self.conn.lock();
             conn.execute("DELETE FROM connections WHERE id = ?1", params![id])
                 .map_err(|e| AppError::Db(e.to_string()))?;
         }
-        // 钥匙串清理失败不应阻断删除流程，仅记录
+        // 保险库清理失败不应阻断删除流程，仅记录（例如保险库未解锁）
         for key in [
             secrets::conn_password_key(id),
             secrets::conn_passphrase_key(id),
             secrets::jump_password_key(id),
+            secrets::rdp_password_key(id),
         ] {
             if let Err(e) = secrets::delete(&key) {
-                log::warn!("清理钥匙串条目 {key} 失败：{e}");
+                log::warn!("清理保险库条目 {key} 失败：{e}");
             }
         }
         Ok(())
@@ -547,6 +550,38 @@ impl Store {
     }
 }
 
+/// 给已存在的 `connections` 表补齐新增列。
+///
+/// SQLite 没有 `ADD COLUMN IF NOT EXISTS`，重复 ALTER 会直接报错，因此先查
+/// `PRAGMA table_info` 拿到现有列名，只对缺失的列执行 ALTER。
+fn add_connection_columns(conn: &Connection) -> AppResult<()> {
+    let mut existing = std::collections::HashSet::new();
+    {
+        let mut stmt = conn
+            .prepare("PRAGMA table_info(connections)")
+            .map_err(|e| AppError::Db(e.to_string()))?;
+        let rows = stmt
+            .query_map([], |r| r.get::<_, String>(1))
+            .map_err(|e| AppError::Db(e.to_string()))?;
+        for row in rows {
+            existing.insert(row.map_err(|e| AppError::Db(e.to_string()))?);
+        }
+    }
+
+    for (column, ddl) in [
+        ("protocol", "protocol TEXT NOT NULL DEFAULT 'ssh'"),
+        ("domain", "domain TEXT"),
+    ] {
+        if existing.contains(column) {
+            continue;
+        }
+        conn.execute(&format!("ALTER TABLE connections ADD COLUMN {ddl}"), [])
+            .map_err(|e| AppError::Db(e.to_string()))?;
+        log::info!("connections 表已补充列 {column}");
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -641,5 +676,69 @@ mod tests {
             .list_history(50, None, false, HistoryOrder::Recent)
             .unwrap();
         assert!(rows.is_empty());
+    }
+
+    fn sample_connection(id: &str) -> StoredConnection {
+        StoredConnection {
+            id: id.into(),
+            name: "示例".into(),
+            host: "10.0.0.1".into(),
+            port: 22,
+            username: "root".into(),
+            protocol: PROTOCOL_SSH.into(),
+            domain: None,
+            auth_kind: "auto".into(),
+            key_path: None,
+            group_name: None,
+            has_password: false,
+            has_passphrase: false,
+            jump: None,
+            color: None,
+            created_at: "t0".into(),
+            updated_at: "t0".into(),
+        }
+    }
+
+    /// RDP 条目的协议与域必须能落盘并原样读回，否则前端无法区分连接类型。
+    #[test]
+    fn connection_round_trips_protocol_and_domain() {
+        let store = Store::open_in_memory().unwrap();
+        let mut conn = sample_connection("rdp-1");
+        conn.protocol = PROTOCOL_RDP.into();
+        conn.domain = Some("CORP".into());
+        store.upsert_connection(&conn).unwrap();
+
+        let listed = store.list_connections().unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].protocol, PROTOCOL_RDP);
+        assert_eq!(listed[0].domain.as_deref(), Some("CORP"));
+    }
+
+    /// 老库没有 protocol / domain 列：打开时应自动补列，旧记录读出即 SSH。
+    #[test]
+    fn legacy_table_is_migrated_and_defaults_to_ssh() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE connections (
+                id TEXT PRIMARY KEY, name TEXT NOT NULL, host TEXT NOT NULL,
+                port INTEGER NOT NULL, username TEXT NOT NULL, auth_kind TEXT NOT NULL,
+                key_path TEXT, group_name TEXT,
+                has_password INTEGER NOT NULL DEFAULT 0,
+                has_passphrase INTEGER NOT NULL DEFAULT 0,
+                jump_json TEXT, color TEXT,
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+             INSERT INTO connections VALUES
+                ('old','legacy','1.2.3.4',22,'root','auto',NULL,NULL,0,0,NULL,NULL,'t','t');",
+        )
+        .unwrap();
+
+        add_connection_columns(&conn).unwrap();
+        let store = Store {
+            conn: Mutex::new(conn),
+        };
+        let listed = store.list_connections().unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].protocol, PROTOCOL_SSH, "旧记录应回退为 SSH");
+        assert_eq!(listed[0].domain, None);
     }
 }

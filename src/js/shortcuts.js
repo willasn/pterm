@@ -2,6 +2,8 @@
  *
  * 绑定表是可编辑的纯数据（config.shortcuts），本模块只做两件事：
  * 1. 按键派发——matches() 判断事件是否命中组合键，命中即调用对应动作；
+ *    绑定带 `enabled` 字段，关闭的绑定直接跳过；动作返回 false 表示「本次不接管」，
+ *    此时不阻止默认行为，按键照常交给终端（无选中文本的复制即走这条路）。
  * 2. 冲突检测——conflicts() 找出重复组合键、未实现的动作 id 与空缺字段，
  *    供设置界面提示（派发取「首个命中」，重复绑定会让后者变成死键）。
  * Escape 关闭弹窗属于全局交互，仍由 app.js 处理。 */
@@ -77,6 +79,16 @@
       hint: "打开 AI 助手面板",
       run: () => PShell.ai.open(),
     },
+    "terminal.copy": {
+      label: "复制选中内容",
+      hint: "把当前终端的选中文本写入剪贴板；无选中时不接管按键",
+      run: () => PShell.terminal.copySelection(),
+    },
+    "terminal.paste": {
+      label: "粘贴",
+      hint: "把剪贴板内容写入当前终端（同样经过危险命令检测）",
+      run: () => PShell.terminal.pasteClipboard(),
+    },
   };
 
   const isMac = /mac/i.test(navigator.platform || "") || /mac os x/i.test(navigator.userAgent || "");
@@ -149,10 +161,10 @@
     return !!(config && config.features && config.features.auxiliary && config.features.auxiliary.shortcuts);
   }
 
-  /** 查询某个动作当前绑定的组合键（无绑定返回空串）。 */
+  /** 查询某个动作当前绑定的组合键（未绑定或已禁用返回空串）。 */
   function curKeys(actionId) {
     const bindings = (config && config.shortcuts) || [];
-    const hit = bindings.filter((item) => item && item.action === actionId)[0];
+    const hit = bindings.filter((item) => item && item.action === actionId && item.enabled !== false)[0];
     return (hit && hit.keys) || "";
   }
 
@@ -160,59 +172,62 @@
   function handleKeydown(event) {
     if (!enabled()) return false;
     const bindings = (config && config.shortcuts) || [];
-    // 取首个命中：同一组合键绑定多个动作时，只有靠前的那条生效
-    const hit = bindings.filter((item) => matches(event, item.keys))[0];
+    // 取首个命中：同一组合键绑定多个动作时，只有靠前的那条生效。已禁用的绑定直接跳过，
+    // 按键照常落到终端（例如关掉「复制」后 Ctrl+Shift+C 不再被吞掉）。
+    const hit = bindings.filter((item) => item && item.enabled !== false && matches(event, item.keys))[0];
     if (!hit) return false;
     const action = ACTIONS[hit.action];
     if (!action || typeof action.run !== "function") return false;
+    // 动作返回 false = 本次不接管（终端没有选中文本时的复制），不阻止默认行为
+    if (action.run() === false) return false;
     event.preventDefault();
-    action.run();
     return true;
   }
 
   /**
-   * 冲突检测。返回 `[{ level: "error" | "warn", text }]`：
+   * 冲突检测。返回 `[{ level: "error" | "warn", action, duplicateOf, text }]`：
    * - 重复组合键 → error：派发只取首个命中，后者是死键；
    * - 未实现的动作 id → warn：绑定会保存，但当前不会触发；
-   * - 缺少动作 id 或组合键 → warn：保存时会被丢弃。
+   * - 组合键没有可识别的按键 → warn：该绑定不会触发。
+   *
+   * 已禁用（`enabled === false`）与未绑定（组合键为空）的条目都不参与检测——
+   * 前者按键本来就不派发，后者是设置界面里「留空即未绑定」的正常状态。
+   * `action` / `duplicateOf` 是动作 id，供调用方换成可读描述展示。
    */
   function conflicts(bindings) {
     const list = Array.isArray(bindings) ? bindings : [];
     const issues = [];
     const seen = new Map();
 
-    list.forEach((item, index) => {
-      const no = index + 1;
-      const action = ((item && item.action) || "").trim();
-      const keys = ((item && item.keys) || "").trim();
+    list.forEach((item) => {
+      if (!item || item.enabled === false) return;
+      const action = ((item.action || "")).trim();
+      const keys = ((item.keys || "")).trim();
+      if (!keys) return;
 
-      if (!action && !keys) {
-        issues.push({ level: "warn", text: `第 ${no} 条：动作与组合键都为空，保存时会被丢弃。` });
-        return;
-      }
       if (!action) {
-        issues.push({ level: "warn", text: `第 ${no} 条：缺少动作 id，保存时会被丢弃。` });
-      } else if (!ACTIONS[action]) {
-        issues.push({ level: "warn", text: `第 ${no} 条：动作 id「${action}」尚未实现，该绑定不会触发。` });
-      }
-      if (!keys) {
-        issues.push({ level: "warn", text: `第 ${no} 条：缺少组合键，保存时会被丢弃。` });
+        issues.push({ level: "warn", action: "", text: "缺少动作，保存时会被丢弃。" });
         return;
+      }
+      if (!ACTIONS[action]) {
+        issues.push({ level: "warn", action, text: `动作「${action}」尚未实现，该绑定不会触发。` });
       }
 
       const normalized = normalizedKeys(keys);
       if (!normalized) {
-        issues.push({ level: "warn", text: `第 ${no} 条：组合键「${keys}」没有可识别的按键。` });
+        issues.push({ level: "warn", action, text: `组合键「${keys}」没有可识别的按键。` });
         return;
       }
       if (seen.has(normalized)) {
         issues.push({
           level: "error",
-          text: `第 ${no} 条：组合键「${keys}」与第 ${seen.get(normalized)} 条重复，只有靠前的那条生效。`,
+          action,
+          duplicateOf: seen.get(normalized),
+          text: `组合键「${keys}」重复，只有靠前的那条生效。`,
         });
         return;
       }
-      seen.set(normalized, no);
+      seen.set(normalized, action);
     });
 
     return issues;

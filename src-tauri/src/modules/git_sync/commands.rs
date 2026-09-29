@@ -12,7 +12,7 @@ use crate::error::{AppError, AppResult};
 use crate::state::AppState;
 
 use super::repo::ConflictStrategy;
-use super::{normalize_remote_name, GitStatusView, Op, SyncOutcomeView};
+use super::{normalize_remote_name, GitStatusView, GitTestInput, GitTestView, Op, SyncOutcomeView};
 
 /// 把阻塞的同步任务放到后台线程执行。
 async fn blocking<T, F>(job: F) -> AppResult<T>
@@ -145,7 +145,7 @@ pub fn git_sync_credentials(state: State<'_, AppState>) -> AppResult<Vec<String>
 
 /// 写入或删除某远端的密码 / 访问令牌。传空串表示删除。
 ///
-/// 凭据只进系统钥匙串，绝不写入配置文件；用户名是非敏感字段，随配置保存。
+/// 凭据只进加密保险库，绝不写入配置文件；用户名是非敏感字段，随配置保存。
 #[tauri::command]
 pub fn git_sync_set_credential(
     state: State<'_, AppState>,
@@ -160,4 +160,18 @@ pub fn git_sync_set_credential(
     } else {
         secrets::set(&key, password)
     }
+}
+
+/// 测试远端连通性并校验凭据（等价 `git ls-remote`）。
+///
+/// 只读操作、不改动用户仓库，因此与 [`git_sync_credentials`] 一样不做模块门控：
+/// 用户需要能在「启用 Git 同步之前」先确认地址与密码是否正确。
+#[tauri::command]
+pub async fn git_sync_test(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    input: GitTestInput,
+) -> AppResult<GitTestView> {
+    let sync = state.sync_context(app);
+    blocking(move || sync.test_connection(&input)).await
 }

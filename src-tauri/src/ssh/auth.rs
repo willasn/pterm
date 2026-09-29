@@ -35,7 +35,7 @@ pub fn authenticate(sess: &Session, params: &ConnectParams) -> AppResult<String>
                 .or_else(|| stored_secret(params.connection_id.as_deref(), SecretKind::Password));
             let Some(pwd) = pwd else {
                 return Err(AppError::Auth(format!(
-                    "{}：未提供密码，且钥匙串中没有记录",
+                    "{}：未提供密码，且保险库中没有记录",
                     params.endpoint()
                 )));
             };
@@ -64,7 +64,7 @@ pub fn authenticate(sess: &Session, params: &ConnectParams) -> AppResult<String>
     }
 }
 
-/// 自动模式：agent → 默认私钥 → 钥匙串密码。返回首个成功的方式。
+/// 自动模式：agent → 默认私钥 → 保险库密码。返回首个成功的方式。
 fn auto_authenticate(
     sess: &Session,
     user: &str,
@@ -99,7 +99,7 @@ fn auto_authenticate(
                 Err(e) => failures.push(e.to_string()),
             }
         } else {
-            failures.push("钥匙串中没有保存密码".into());
+            failures.push("保险库中没有保存密码".into());
         }
     }
 
@@ -154,7 +154,7 @@ fn stored_secret(connection_id: Option<&str>, kind: SecretKind) -> Option<String
     match secrets::get(&key) {
         Ok(v) => v.filter(|s| !s.is_empty()),
         Err(e) => {
-            log::warn!("读取钥匙串 {key} 失败：{e}");
+            log::warn!("读取保险库 {key} 失败：{e}");
             None
         }
     }

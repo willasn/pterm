@@ -3,7 +3,9 @@
 //! 全部文件操作都会阻塞在网络 I/O 上，因此统一放进 `spawn_blocking`，
 //! 避免占住 Tauri 的异步运行时线程。
 
-use tauri::State;
+use std::sync::atomic::AtomicBool;
+
+use tauri::{AppHandle, Emitter, State};
 
 use crate::config::feature_flags::module_id;
 use crate::error::{AppError, AppResult};
@@ -11,6 +13,9 @@ use crate::ssh::types::ConnectParams;
 use crate::state::AppState;
 
 use super::{SftpInfo, SftpListing};
+
+/// 传输进度事件。前端按 `id` 把进度落到对应的进度条上。
+pub const EVENT_SFTP_PROGRESS: &str = "sftp:progress";
 
 /// 建立独立的 SFTP 连接（不影响终端会话）。
 #[tauri::command]
@@ -54,34 +59,64 @@ pub async fn sftp_list(
     spawn(move || manager.list(&id, &path), "浏览远端目录").await
 }
 
-/// 下载远端文件到本地路径，返回字节数。
+/// 下载远端文件或目录到本地路径，返回字节数。目录会递归下载。
+/// `transfer_id` 由前端生成：用于接收 [`EVENT_SFTP_PROGRESS`] 进度、请求中断。
 #[tauri::command]
 pub async fn sftp_download(
+    app: AppHandle,
     state: State<'_, AppState>,
     id: String,
     remote: String,
     local: String,
+    transfer_id: String,
 ) -> AppResult<u64> {
     state.require_module(module_id::SFTP)?;
     let manager = state.sftp.clone();
+    let cancel = manager.begin_transfer(&transfer_id);
     spawn(
-        move || manager.download(&id, &remote, &local),
+        move || {
+            let result = run_transfer(&app, &transfer_id, cancel.as_ref(), |progress, cancel| {
+                manager.download(&id, &remote, &local, cancel, progress)
+            });
+            manager.end_transfer(&transfer_id);
+            result
+        },
         "下载远端文件",
     )
     .await
 }
 
-/// 上传本地文件到远端路径，返回字节数。
+/// 上传本地文件或目录到远端路径，返回字节数。目录会递归上传。
 #[tauri::command]
 pub async fn sftp_upload(
+    app: AppHandle,
     state: State<'_, AppState>,
     id: String,
     local: String,
     remote: String,
+    transfer_id: String,
 ) -> AppResult<u64> {
     state.require_module(module_id::SFTP)?;
     let manager = state.sftp.clone();
-    spawn(move || manager.upload(&id, &local, &remote), "上传本地文件").await
+    let cancel = manager.begin_transfer(&transfer_id);
+    spawn(
+        move || {
+            let result = run_transfer(&app, &transfer_id, cancel.as_ref(), |progress, cancel| {
+                manager.upload(&id, &local, &remote, cancel, progress)
+            });
+            manager.end_transfer(&transfer_id);
+            result
+        },
+        "上传本地文件",
+    )
+    .await
+}
+
+/// 中断一次在途传输。返回是否命中（已结束的传输为 false）。
+#[tauri::command]
+pub fn sftp_cancel_transfer(state: State<'_, AppState>, transfer_id: String) -> AppResult<bool> {
+    state.require_module(module_id::SFTP)?;
+    Ok(state.sftp.cancel_transfer(&transfer_id))
 }
 
 /// 删除远端文件或空目录。
@@ -121,6 +156,23 @@ pub async fn sftp_chmod(
 // ---------------------------------------------------------------------------
 // 辅助
 // ---------------------------------------------------------------------------
+
+/// 执行一次传输：把模块的进度回调转成 Tauri 事件。
+/// `transfer` 拿到进度回调与取消标志，返回本次传输的字节数。
+fn run_transfer(
+    app: &AppHandle,
+    transfer_id: &str,
+    cancel: &AtomicBool,
+    transfer: impl FnOnce(&mut dyn FnMut(u64, u64), &AtomicBool) -> AppResult<u64>,
+) -> AppResult<u64> {
+    let mut on_progress = |transferred: u64, total: u64| {
+        let _ = app.emit(
+            EVENT_SFTP_PROGRESS,
+            serde_json::json!({ "id": transfer_id, "transferred": transferred, "total": total }),
+        );
+    };
+    transfer(&mut on_progress, cancel)
+}
 
 /// 把阻塞任务搬到专用线程池，并把 panic / 取消统一转成 SFTP 错误。
 async fn spawn<T: Send + 'static>(

@@ -35,7 +35,13 @@
     "longDescription": "pshell 是一个跨平台 SSH 终端客户端。核心只做 SSH，Git 同步、AI 助手、SFTP、端口转发等全部为可插拔模块，可在设置中单独开关。",
     "copyright": "pshell",
     "macOS": {
-      "minimumSystemVersion": "10.15"
+      "minimumSystemVersion": "10.15",
+      "dmg": {
+        "background": "dmg-background.png",
+        "windowSize": { "width": 660, "height": 400 },
+        "appPosition": { "x": 180, "y": 170 },
+        "applicationFolderPosition": { "x": 480, "y": 170 }
+      }
     },
     "windows": {
       "webviewInstallMode": { "type": "downloadBootstrapper" }

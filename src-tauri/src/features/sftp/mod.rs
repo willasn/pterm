@@ -7,9 +7,11 @@
 //! 复用 SSH 核心，包括跳板机隧道。
 
 use std::collections::HashMap;
-use std::io::{Read, Write};
-use std::path::Path;
+use std::io::{ErrorKind, Read, Write};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 use serde::Serialize;
@@ -27,6 +29,12 @@ pub mod commands;
 
 /// 上传/下载的读写块大小。
 const COPY_BUF: usize = 32 * 1024;
+
+/// 进度上报的最小间隔：每个读写块都发事件会把 IPC 打满，按时间节流即可。
+const PROGRESS_INTERVAL: Duration = Duration::from_millis(120);
+
+/// 传输被用户中断时的统一错误文案，前端据此区分「中断」与「失败」。
+const CANCELLED: &str = "传输已取消";
 
 // ---------------------------------------------------------------------------
 // 对外类型
@@ -104,6 +112,9 @@ impl SftpHandle {
 #[derive(Clone, Default)]
 pub struct SftpManager {
     sessions: Arc<Mutex<HashMap<String, Arc<SftpHandle>>>>,
+    /// 在途传输的取消标志，键为前端生成的 transferId。传输任务每读一块都会
+    /// 检查它，因此不依赖会话锁，取消命令可以随时生效。
+    transfers: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
 }
 
 impl SftpManager {
@@ -188,13 +199,40 @@ impl SftpManager {
         out
     }
 
-    /// 退出前关闭全部连接。
+    /// 退出前关闭全部连接，并中断所有在途传输。
     pub fn close_all(&self) {
+        for flag in self.transfers.lock().values() {
+            flag.store(true, Ordering::SeqCst);
+        }
+        self.transfers.lock().clear();
         let count = self.sessions.lock().len();
         self.sessions.lock().clear();
         if count > 0 {
             log::info!("已关闭 {count} 个 SFTP 会话");
         }
+    }
+
+    /// 登记一次在途传输，返回其取消标志。前端在调用上传/下载前生成 transferId。
+    pub fn begin_transfer(&self, id: &str) -> Arc<AtomicBool> {
+        let flag = Arc::new(AtomicBool::new(false));
+        self.transfers.lock().insert(id.to_string(), flag.clone());
+        flag
+    }
+
+    /// 请求中断一次传输。返回是否命中在途传输（已结束的传输返回 false）。
+    pub fn cancel_transfer(&self, id: &str) -> bool {
+        match self.transfers.lock().get(id) {
+            Some(flag) => {
+                flag.store(true, Ordering::SeqCst);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// 传输结束后注销（成功、失败、中断都要调用）。
+    pub fn end_transfer(&self, id: &str) {
+        self.transfers.lock().remove(id);
     }
 
     /// 浏览目录。`path` 为空或 `.` 时解析为家目录。
@@ -237,8 +275,17 @@ impl SftpManager {
         })
     }
 
-    /// 下载远端文件到本地路径，返回写入字节数。
-    pub fn download(&self, id: &str, remote: &str, local: &str) -> AppResult<u64> {
+    /// 下载远端文件或目录到本地路径，返回写入字节数。
+    /// 目录按远端原结构递归创建；`cancel` 置位时尽快中断并清掉半成品。
+    /// 进度以「整个传输的已写字节 / 总字节」回调，目录的总量为全部文件之和。
+    pub fn download(
+        &self,
+        id: &str,
+        remote: &str,
+        local: &str,
+        cancel: &AtomicBool,
+        on_progress: &mut dyn FnMut(u64, u64),
+    ) -> AppResult<u64> {
         let handle = self.handle(id)?;
         let remote = require_path(remote, "远端路径")?;
         let local = require_path(local, "本地路径")?;
@@ -247,33 +294,58 @@ impl SftpManager {
                 .lstat(Path::new(&remote))
                 .map_err(|e| AppError::Sftp(format!("无法读取 {remote}：{e}")))?;
             if stat.is_dir() {
-                return Err(AppError::Sftp("暂不支持下载目录".into()));
+                download_tree(
+                    sftp,
+                    Path::new(&remote),
+                    Path::new(&local),
+                    cancel,
+                    &mut *on_progress,
+                )
+            } else {
+                copy_remote_file(
+                    sftp,
+                    Path::new(&remote),
+                    Path::new(&local),
+                    stat.size.unwrap_or(0),
+                    cancel,
+                    &mut *on_progress,
+                )
             }
-            let mut src = sftp
-                .open(Path::new(&remote))
-                .map_err(|e| AppError::Sftp(format!("打开远端文件失败：{e}")))?;
-            let mut dst = std::fs::File::create(&local)?;
-            let total = copy_stream(&mut src, &mut dst)
-                .map_err(|e| AppError::Sftp(format!("下载 {remote} 失败：{e}")))?;
-            dst.flush()?;
-            Ok(total)
         })
     }
 
-    /// 上传本地文件到远端路径，返回写入字节数。
-    pub fn upload(&self, id: &str, local: &str, remote: &str) -> AppResult<u64> {
+    /// 上传本地文件或目录到远端路径，返回写入字节数。目录同样递归创建。
+    pub fn upload(
+        &self,
+        id: &str,
+        local: &str,
+        remote: &str,
+        cancel: &AtomicBool,
+        on_progress: &mut dyn FnMut(u64, u64),
+    ) -> AppResult<u64> {
         let handle = self.handle(id)?;
         let local = require_path(local, "本地路径")?;
         let remote = require_path(remote, "远端路径")?;
         handle.with_sftp(|sftp| {
-            let mut src = std::fs::File::open(&local)?;
-            let mut dst = sftp
-                .create(Path::new(&remote))
-                .map_err(|e| AppError::Sftp(format!("创建远端文件失败：{e}")))?;
-            let total = copy_stream(&mut src, &mut dst)
-                .map_err(|e| AppError::Sftp(format!("上传到 {remote} 失败：{e}")))?;
-            dst.flush()?;
-            Ok(total)
+            let meta = std::fs::metadata(&local)?;
+            if meta.is_dir() {
+                upload_tree(
+                    sftp,
+                    Path::new(&local),
+                    Path::new(&remote),
+                    cancel,
+                    &mut *on_progress,
+                )
+            } else {
+                copy_local_file(
+                    sftp,
+                    Path::new(&local),
+                    Path::new(&remote),
+                    meta.len(),
+                    cancel,
+                    &mut *on_progress,
+                )
+            }
         })
     }
 
@@ -396,18 +468,257 @@ fn require_path(raw: &str, label: &str) -> AppResult<String> {
     Ok(trimmed.to_string())
 }
 
-/// 双向复制，返回总字节数。读返回 0 视为结束。
-fn copy_stream(src: &mut impl Read, dst: &mut impl Write) -> std::io::Result<u64> {
+/// 远端路径拼接。远端始终是 Unix 风格，不能用 `Path::join`：
+/// Windows 宿主上 `join` 会写入 `\` 分隔符，服务端无法解析。
+fn remote_join(dir: &Path, name: &str) -> PathBuf {
+    let base = dir.to_string_lossy();
+    PathBuf::from(format!("{}/{name}", base.trim_end_matches('/')))
+}
+
+fn cancelled() -> AppError {
+    AppError::Sftp(CANCELLED.into())
+}
+
+/// 区分「用户中断」与普通 IO 错误：前者对用户不是错误，只是取消。
+fn transfer_error(e: std::io::Error, label: &str) -> AppError {
+    if e.kind() == ErrorKind::Interrupted {
+        cancelled()
+    } else {
+        AppError::Sftp(format!("{label}：{e}"))
+    }
+}
+
+/// 创建远端目录。已存在时跳过：SFTP 的 mkdir 不会覆盖已有目录。
+fn mkdir_remote(sftp: &ssh2::Sftp, dir: &Path) -> AppResult<()> {
+    let raw = dir.to_string_lossy();
+    if raw.is_empty() || raw == "/" || sftp.lstat(dir).is_ok() {
+        return Ok(());
+    }
+    sftp.mkdir(dir, 0o755)
+        .map_err(|e| AppError::Sftp(format!("创建远端目录 {} 失败：{e}", dir.display())))
+}
+
+/// 单个远端文件 → 本地文件。中断或失败时清掉半成品，避免留下损坏文件。
+fn copy_remote_file(
+    sftp: &ssh2::Sftp,
+    remote: &Path,
+    local: &Path,
+    total: u64,
+    cancel: &AtomicBool,
+    on_progress: &mut dyn FnMut(u64, u64),
+) -> AppResult<u64> {
+    let mut src = sftp
+        .open(remote)
+        .map_err(|e| AppError::Sftp(format!("打开远端文件 {} 失败：{e}", remote.display())))?;
+    let mut dst = std::fs::File::create(local)?;
+    match copy_stream(&mut src, &mut dst, total, cancel, on_progress) {
+        Ok(written) => {
+            dst.flush()?;
+            Ok(written)
+        }
+        Err(e) => {
+            drop(dst);
+            let _ = std::fs::remove_file(local);
+            Err(transfer_error(e, &format!("下载 {} 失败", remote.display())))
+        }
+    }
+}
+
+/// 单个本地文件 → 远端文件。
+fn copy_local_file(
+    sftp: &ssh2::Sftp,
+    local: &Path,
+    remote: &Path,
+    total: u64,
+    cancel: &AtomicBool,
+    on_progress: &mut dyn FnMut(u64, u64),
+) -> AppResult<u64> {
+    let mut src = std::fs::File::open(local)?;
+    let mut dst = sftp
+        .create(remote)
+        .map_err(|e| AppError::Sftp(format!("创建远端文件 {} 失败：{e}", remote.display())))?;
+    match copy_stream(&mut src, &mut dst, total, cancel, on_progress) {
+        Ok(written) => {
+            dst.flush()?;
+            Ok(written)
+        }
+        Err(e) => {
+            drop(dst);
+            let _ = sftp.unlink(remote);
+            Err(transfer_error(e, &format!("上传到 {} 失败", remote.display())))
+        }
+    }
+}
+
+/// 递归扫描远端目录，收集 `(远端文件, 本地文件, 字节数)`。
+/// 目录当场建好；用 readdir 返回的 stat 判类型，符号链接不跟进，避免目录环。
+fn collect_remote(
+    sftp: &ssh2::Sftp,
+    remote: &Path,
+    local: &Path,
+    out: &mut Vec<(PathBuf, PathBuf, u64)>,
+    cancel: &AtomicBool,
+) -> AppResult<()> {
+    if cancel.load(Ordering::SeqCst) {
+        return Err(cancelled());
+    }
+    let raw = sftp
+        .readdir(remote)
+        .map_err(|e| AppError::Sftp(format!("读取目录 {} 失败：{e}", remote.display())))?;
+    for (path, stat) in raw {
+        let name = match path.file_name().and_then(|n| n.to_str()) {
+            Some(name) => name,
+            None => continue,
+        };
+        let child = local.join(name);
+        if stat.is_dir() {
+            std::fs::create_dir_all(&child)?;
+            collect_remote(sftp, &path, &child, out, cancel)?;
+        } else {
+            out.push((path, child, stat.size.unwrap_or(0)));
+        }
+    }
+    Ok(())
+}
+
+/// 递归下载目录：先算总量，进度才是「已传 / 全部」而不是单个文件的比例。
+fn download_tree(
+    sftp: &ssh2::Sftp,
+    remote: &Path,
+    local: &Path,
+    cancel: &AtomicBool,
+    on_progress: &mut dyn FnMut(u64, u64),
+) -> AppResult<u64> {
+    let mut files: Vec<(PathBuf, PathBuf, u64)> = Vec::new();
+    collect_remote(sftp, remote, local, &mut files, cancel)?;
+    let total: u64 = files.iter().map(|f| f.2).sum();
+    std::fs::create_dir_all(local)?;
+    let mut done = 0u64;
+    on_progress(0, total);
+    for (src_path, dst_path, _) in &files {
+        if let Some(parent) = dst_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut src = sftp.open(src_path).map_err(|e| {
+            AppError::Sftp(format!("打开远端文件 {} 失败：{e}", src_path.display()))
+        })?;
+        let mut dst = std::fs::File::create(dst_path)?;
+        let base = done;
+        let result = copy_stream(&mut src, &mut dst, total, cancel, &mut |chunk, _| {
+            on_progress(base + chunk, total)
+        });
+        match result {
+            Ok(written) => {
+                dst.flush()?;
+                done += written;
+            }
+            Err(e) => {
+                drop(dst);
+                let _ = std::fs::remove_file(dst_path);
+                return Err(transfer_error(e, &format!("下载 {} 失败", src_path.display())));
+            }
+        }
+    }
+    on_progress(done, total);
+    Ok(done)
+}
+
+/// 递归扫描本地目录，收集 `(本地文件, 远端文件, 字节数)`。
+fn collect_local(
+    local: &Path,
+    remote: &Path,
+    out: &mut Vec<(PathBuf, PathBuf, u64)>,
+    cancel: &AtomicBool,
+) -> AppResult<()> {
+    if cancel.load(Ordering::SeqCst) {
+        return Err(cancelled());
+    }
+    for entry in std::fs::read_dir(local)? {
+        let entry = entry?;
+        let meta = entry.metadata()?;
+        let name = entry.file_name().to_string_lossy().to_string();
+        let child = remote_join(remote, &name);
+        if meta.is_dir() {
+            collect_local(&entry.path(), &child, out, cancel)?;
+        } else {
+            out.push((entry.path(), child, meta.len()));
+        }
+    }
+    Ok(())
+}
+
+/// 递归上传目录：与下载对称，先算总量再逐个文件传输。
+fn upload_tree(
+    sftp: &ssh2::Sftp,
+    local: &Path,
+    remote: &Path,
+    cancel: &AtomicBool,
+    on_progress: &mut dyn FnMut(u64, u64),
+) -> AppResult<u64> {
+    let mut files: Vec<(PathBuf, PathBuf, u64)> = Vec::new();
+    collect_local(local, remote, &mut files, cancel)?;
+    let total: u64 = files.iter().map(|f| f.2).sum();
+    mkdir_remote(sftp, remote)?;
+    let mut done = 0u64;
+    on_progress(0, total);
+    for (src_path, dst_path, _) in &files {
+        if let Some(parent) = dst_path.parent() {
+            mkdir_remote(sftp, parent)?;
+        }
+        let mut src = std::fs::File::open(src_path)?;
+        let mut dst = sftp.create(dst_path).map_err(|e| {
+            AppError::Sftp(format!("创建远端文件 {} 失败：{e}", dst_path.display()))
+        })?;
+        let base = done;
+        let result = copy_stream(&mut src, &mut dst, total, cancel, &mut |chunk, _| {
+            on_progress(base + chunk, total)
+        });
+        match result {
+            Ok(written) => {
+                dst.flush()?;
+                done += written;
+            }
+            Err(e) => {
+                drop(dst);
+                let _ = sftp.unlink(dst_path);
+                return Err(transfer_error(e, &format!("上传到 {} 失败", dst_path.display())));
+            }
+        }
+    }
+    on_progress(done, total);
+    Ok(done)
+}
+
+/// 双向复制，返回总字节数。每块检查取消标志，并按时间节流上报进度。
+/// 读返回 0 视为结束；取消时返回 `Interrupted` 供上层识别。
+fn copy_stream(
+    src: &mut impl Read,
+    dst: &mut impl Write,
+    total: u64,
+    cancel: &AtomicBool,
+    mut on_progress: impl FnMut(u64, u64),
+) -> std::io::Result<u64> {
     let mut buf = vec![0u8; COPY_BUF];
-    let mut total = 0u64;
+    let mut written = 0u64;
+    let mut last = Instant::now();
+    on_progress(0, total);
     loop {
+        if cancel.load(Ordering::SeqCst) {
+            return Err(std::io::Error::new(ErrorKind::Interrupted, CANCELLED));
+        }
         let n = src.read(&mut buf)?;
         if n == 0 {
-            return Ok(total);
+            break;
         }
         dst.write_all(&buf[..n])?;
-        total += n as u64;
+        written += n as u64;
+        if last.elapsed() >= PROGRESS_INTERVAL {
+            on_progress(written, total);
+            last = Instant::now();
+        }
     }
+    on_progress(written, total);
+    Ok(written)
 }
 
 #[cfg(test)]

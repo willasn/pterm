@@ -2,6 +2,7 @@ pub mod app_config;
 pub mod commands;
 pub mod feature_flags;
 pub mod store;
+pub mod vault;
 
 use std::path::PathBuf;
 

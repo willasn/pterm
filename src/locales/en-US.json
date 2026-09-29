@@ -3,6 +3,7 @@
   "common.settings": "Settings",
   "common.save": "Save",
   "common.cancel": "Cancel",
+  "common.ok": "OK",
   "common.close": "Close",
   "common.delete": "Delete",
   "common.reset": "Reset Defaults",
@@ -35,12 +36,31 @@
   "modal.split": "Split View",
   "modal.danger": "Dangerous Command",
 
+  "dialog.title": "Confirm Action",
+
   "empty.title": "A cross-platform SSH terminal client. The core does SSH only; every other feature is an optional module you can toggle in Settings.",
   "empty.hint": "Select a connection from the left, or click ＋ to create one.",
   "danger.desc": "The following command will run on the remote host and its effects cannot be undone:",
 
-  "app.noModules": "No modules",
-  "app.modules": "Modules {x}/{y}",
+  "onboarding.tagline": "Cross-platform SSH terminal client",
+  "onboarding.question": "Choose your language",
+  "onboarding.note": "You can change this anytime under Settings → General → Language.",
+  "onboarding.start": "Get Started",
+
+  "vault.desc": "SSH passwords, API keys and other secrets are encrypted with a master password, stored locally, and distributed along with Git sync.",
+  "vault.password": "Master Password",
+  "vault.confirm": "Confirm Master Password",
+  "vault.warning": "A lost master password cannot be recovered — you can only reset the vault and re-enter every password.",
+  "vault.reset": "Forgot it? Reset the vault",
+  "vault.setupTitle": "Set Master Password",
+  "vault.setup": "Create Vault",
+  "vault.unlockTitle": "Unlock Vault",
+  "vault.unlock": "Unlock",
+  "vault.empty": "Please enter the master password",
+  "vault.mismatch": "The two master passwords do not match",
+  "vault.resetConfirm": "Resetting will erase every password in the vault and cannot be undone. Continue?",
+  "vault.resetTitle": "Reset Vault",
+  "vault.resetOk": "Reset",
 
   "settings.cat.general": "General",
   "settings.cat.terminal": "Terminal",
@@ -54,8 +74,7 @@
   "settings.section.ui": "Interface",
   "settings.section.theme": "Theme",
   "settings.language": "Language",
-  "settings.language.hint.on": "Takes effect immediately; requires the «i18n» toggle to be on.",
-  "settings.language.hint.off": "The «i18n» toggle is off, so switching language has no effect.",
+  "settings.language.hint": "Takes effect immediately.",
 
   "flags.group.connection": "Connection & Transfer (§3)",
   "flags.group.sync": "Sync / Git (§4)",
@@ -71,7 +90,9 @@
   "flags.connection.auto_reconnect": "Auto Reconnect",
   "flags.connection.connection_group": "Connection Groups",
   "flags.connection.import_export": "Import / Export",
+  "flags.connection.rdp": "Remote Desktop (RDP)",
   "flags.connection.quick_connect": "Quick Connect",
+  "flags.connection.sync_input": "Synchronized Input",
 
   "flags.sync.git_sync": "Git Sync",
   "flags.sync.git_sync_scope": "Sync Scope",
@@ -94,7 +115,6 @@
   "flags.auxiliary.auto_update": "Auto Update",
   "flags.auxiliary.theme": "Theme",
   "flags.auxiliary.shortcuts": "Shortcuts",
-  "flags.auxiliary.i18n": "i18n",
   "flags.auxiliary.crash_log": "Crash Log",
 
   "module.git_sync": "Git Sync",
@@ -110,5 +130,5 @@
   "module.port_forward": "Port Forward",
   "module.session_log": "Session Log",
   "module.import_export": "Import / Export",
-  "module.i18n": "i18n"
+  "module.rdp": "Remote Desktop"
 }

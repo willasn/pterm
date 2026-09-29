@@ -143,7 +143,7 @@ fn connect_jump_session(spec: &JumpSpec, keepalive_secs: u32) -> AppResult<Sessi
 
 /// 解析跳板机的认证方式。
 ///
-/// 密码缺失时读取专用的钥匙串条目 `conn:{id}:jump-password`，
+/// 密码缺失时读取专用的保险库条目 `conn:{id}:jump-password`，
 /// **绝不**回退到目标主机的密码条目。
 fn resolve_auth(spec: &JumpSpec) -> AuthSpec {
     match &spec.auth {

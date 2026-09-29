@@ -4,7 +4,7 @@
 (function (PShell) {
   "use strict";
 
-  const { el, $, toast, ask } = PShell.util;
+  const { el, $, toast, ask, errorText } = PShell.util;
 
   /** groupId -> group；group 结构见 createGroup */
   const groups = new Map();
@@ -55,6 +55,33 @@
 
   function count() {
     return groups.size;
+  }
+
+  /** 标签顺序快照（同步组重排时用）。 */
+  function orderIds() {
+    return order.slice();
+  }
+
+  /** 按给定顺序重排标签；未列出但仍存在的标签按原顺序追加在后面。 */
+  function setOrder(ids) {
+    const seen = new Set();
+    const next = [];
+    (ids || []).forEach((id) => {
+      if (groups.has(id) && !seen.has(id)) {
+        seen.add(id);
+        next.push(id);
+      }
+    });
+    order.forEach((id) => {
+      if (!seen.has(id) && groups.has(id)) next.push(id);
+    });
+    order = next;
+    render();
+  }
+
+  /** 按标签（组）id 取分组对象。 */
+  function byId(groupId) {
+    return groups.get(groupId) || null;
   }
 
   function setConfig(next) {
@@ -133,6 +160,10 @@
     const items = [
       { label: "重命名标签", icon: "✎", run: () => startRename(group, tab, tab.querySelector(".name")) },
     ];
+    // 克隆会话只针对 SSH：只有 SSH 会话带原始连接参数（RDP 走外部客户端、不产生标签）
+    if (ctrl && ctrl.params) {
+      items.push({ label: "克隆会话", icon: "❐", run: () => cloneSession(ctrl) });
+    }
     if (group.activeId && state && !running) {
       items.push({ label: "重新连接", icon: "⟲", run: () => PShell.ssh.reconnect(group.activeId) });
     }
@@ -145,6 +176,33 @@
       );
       if (group.memberIds.length > 1) {
         items.push({ label: "取消分屏", icon: "⊟", run: () => PShell.split.stop() });
+      }
+    }
+
+    // 同步输入：组内同步开关 + 组的增删（分组后组内输入互相广播）
+    if (PShell.syncInput && PShell.syncInput.enabled()) {
+      const allTabs = groupList().map((item) => item.id);
+      const syncGroup = PShell.syncInput.groupOfTab(group.id);
+      items.push(
+        { sep: true },
+        {
+          label: syncGroup && syncGroup.active ? "关闭组内同步输入" : "开启组内同步输入",
+          icon: "⇋",
+          run: () => PShell.syncInput.toggleSync(group.id),
+        },
+        { label: "当前添加到组", icon: "＋", run: () => PShell.syncInput.pick([group.id], group.id) },
+        { label: "全部添加到组", icon: "⧉", run: () => PShell.syncInput.pick(allTabs, group.id) }
+      );
+      if (syncGroup) {
+        items.push({ label: "移出同步组", icon: "－", run: () => PShell.syncInput.leave(group.id) });
+      }
+      if (PShell.syncInput.hasGroups()) {
+        items.push({
+          label: "移除全部组",
+          icon: "⊘",
+          danger: true,
+          run: () => PShell.syncInput.clearAll(),
+        });
       }
     }
 
@@ -170,6 +228,20 @@
     if (mod && typeof mod.open === "function") mod.open();
   }
 
+  /**
+   * 克隆会话：用同一份连接参数再开一个独立的 SSH 会话（新标签）。
+   * 清空 session_id 让后端分配新会话，并按当前终端尺寸初始化。
+   */
+  function cloneSession(ctrl) {
+    if (!ctrl || !ctrl.params) return;
+    const params = Object.assign({}, ctrl.params, {
+      session_id: null,
+      cols: ctrl.term.cols,
+      rows: ctrl.term.rows,
+    });
+    Promise.resolve(PShell.ssh.connect(params)).catch((err) => toast(errorText(err), "error"));
+  }
+
   /** 标签上的标题与状态取自组内当前活跃会话，重命名后以自定义名为准。 */
   function syncTab(group) {
     const tab = group.tab;
@@ -190,6 +262,58 @@
       countNode.textContent = String(size);
       countNode.hidden = size < 2;
     }
+
+    applySyncStyle(tab, group);
+  }
+
+  /** #rrggbb 转 rgba(...)，用于给同步中的标签叠加同色浅底。 */
+  function hexToRgba(hex, alpha) {
+    const value = String(hex || "").replace("#", "");
+    if (value.length !== 6) return "transparent";
+    const r = parseInt(value.slice(0, 2), 16);
+    const g = parseInt(value.slice(2, 4), 16);
+    const b = parseInt(value.slice(4, 6), 16);
+    return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+  }
+
+  /**
+   * 标签的同步组外观：
+   * - 已分组：同色轮廓 + 组序号徽标（用于区分不同组）。
+   * - 组内同步已开启：额外叠加同色浅底与加粗轮廓，和普通状态明显区分。
+   */
+  function applySyncStyle(tab, group) {
+    const info =
+      PShell.syncInput && typeof PShell.syncInput.styleFor === "function"
+        ? PShell.syncInput.styleFor(group.id)
+        : null;
+    if (!info) {
+      delete tab.dataset.sync;
+      delete tab.dataset.syncActive;
+      tab.style.removeProperty("--tab-sync-color");
+      tab.style.removeProperty("--tab-sync-tint");
+      const stale = tab.querySelector(".sync-badge");
+      if (stale) stale.remove();
+      return;
+    }
+    tab.dataset.sync = "1";
+    tab.style.setProperty("--tab-sync-color", info.color);
+    if (info.active) {
+      tab.dataset.syncActive = "1";
+      tab.style.setProperty("--tab-sync-tint", hexToRgba(info.color, 0.16));
+    } else {
+      delete tab.dataset.syncActive;
+      tab.style.removeProperty("--tab-sync-tint");
+    }
+    let badge = tab.querySelector(".sync-badge");
+    if (!badge) {
+      badge = el("span", { class: "sync-badge" });
+      const countNode = tab.querySelector(".count");
+      if (countNode) tab.insertBefore(badge, countNode);
+      else tab.appendChild(badge);
+    }
+    badge.textContent = String(info.index);
+    badge.style.background = info.color;
+    badge.title = info.active ? `同步组 ${info.index}（同步输入已开启）` : `同步组 ${info.index}`;
   }
 
   /** 只刷新一个标签（会话状态变化时调用，避免整栏重排）。 */
@@ -297,6 +421,10 @@
       order = order.filter((id) => id !== group.id);
       group.paneEl.remove();
       if (group.tab) group.tab.remove();
+      // 标签彻底消失：清理它在同步组里的成员关系
+      if (PShell.syncInput && typeof PShell.syncInput.onTabGone === "function") {
+        PShell.syncInput.onTabGone(group.id);
+      }
       if (activeGroupId === group.id) {
         activeGroupId = null;
         activeId = null;
@@ -391,6 +519,11 @@
     const at = order.indexOf(group.id) + 1;
     order = order.filter((id) => created.indexOf(id) === -1);
     order.splice(at, 0, ...created);
+
+    // 拆出来的新标签继承原标签的同步组成员关系，避免同步链路被分屏取消切断
+    if (PShell.syncInput && typeof PShell.syncInput.onTabsFromSplit === "function") {
+      PShell.syncInput.onTabsFromSplit(group.id, created);
+    }
 
     render();
     return rest.length;
@@ -526,6 +659,9 @@
     groupOf,
     list: groupList,
     count,
+    byId,
+    orderIds,
+    setOrder,
     hasTabs,
     hasSplit,
   };

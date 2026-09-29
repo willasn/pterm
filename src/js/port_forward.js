@@ -265,7 +265,10 @@
 
   async function loadConnections() {
     try {
-      connections = (await PShell.ipc.listConnections()) || [];
+      // 端口转发走 SSH 隧道，RDP 连接不在此列出
+      connections = ((await PShell.ipc.listConnections()) || []).filter(
+        (c) => (c.protocol || "ssh") !== "rdp"
+      );
     } catch (_) {
       connections = [];
     }

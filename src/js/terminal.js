@@ -446,6 +446,11 @@
         syncInputSource();
       },
 
+      /** 复制选中内容到剪贴板；返回 false 表示本次不接管（无选中）。 */
+      copySelection: copyToClipboard,
+      /** 把剪贴板内容粘贴到本会话；返回 false 表示本次不接管。 */
+      pasteClipboard: pasteFromClipboard,
+
       activate() {
         activate(info.id);
       },
@@ -483,6 +488,7 @@
       }
       echo.predict(data);
       send(ctrl, data);
+      mirror(ctrl, data);
     }
 
     term.onData((data) => {
@@ -517,6 +523,41 @@
       }
     });
 
+    // 复制 / 粘贴的统一入口：快捷键（shortcuts.js 的 terminal.copy / .paste）与右击菜单都走这里
+    const clipboardApi = () => navigator.clipboard || null;
+
+    /** 把选中文本写入剪贴板。无选中、或本环境没有剪贴板 API 时返回 false，让按键原样落到终端。 */
+    function copyToClipboard() {
+      const text = term.getSelection();
+      if (!text) return false;
+      const api = clipboardApi();
+      if (!api || typeof api.writeText !== "function") return false;
+      api.writeText(text).catch(() => toast("写入剪贴板失败", "error"));
+      return true;
+    }
+
+    /**
+     * 把剪贴板内容写入终端。走 xterm 的 paste()：括号粘贴模式、危险命令检测、事件流
+     * 都与系统粘贴键一致，因此粘贴进来的危险命令同样会被拦下确认。
+     */
+    function pasteFromClipboard() {
+      const api = clipboardApi();
+      if (!api || typeof api.readText !== "function") {
+        toast("当前环境不支持读取剪贴板，请使用系统粘贴键", "warn");
+        return false;
+      }
+      api
+        .readText()
+        .then((text) => {
+          if (!text) return;
+          // 可能是右击菜单发起的粘贴，焦点不在终端：仍写进这个会话，并把焦点收回来
+          term.paste(text);
+          ctrl.focus();
+        })
+        .catch(() => toast("读取剪贴板失败：请授予剪贴板权限，或使用系统粘贴键", "warn"));
+      return true;
+    }
+
     // 点击非活跃 pane 时把它切换为当前会话
     pane.addEventListener("mousedown", () => {
       if (PShell.tabs.activeId() !== info.id) PShell.tabs.activate(info.id);
@@ -525,6 +566,21 @@
     // term.open 会自己把 .xterm 容器插入 pane；提示条为绝对定位，随后追加即可
     term.open(pane);
     pane.appendChild(banner);
+
+    // 终端内右击：原生菜单已被 context_menu.js 全局屏蔽，这里按配置补一个「复制 / 粘贴」菜单
+    const onContextMenu = (event) => {
+      const t = (config && config.terminal) || {};
+      if (t.right_click_menu === false) return;
+      if (!PShell.menu || typeof PShell.menu.open !== "function") return;
+      event.preventDefault();
+      PShell.menu.open(event.clientX, event.clientY, [
+        { label: "复制", disabled: !term.hasSelection(), run: () => copyToClipboard() },
+        { label: "粘贴", run: () => pasteFromClipboard() },
+      ]);
+    };
+    term.element.addEventListener("contextmenu", onContextMenu);
+    detachHandlers.push(() => term.element.removeEventListener("contextmenu", onContextMenu));
+
     // 右下角模式角标：既提示当前模式，也提供一个可见的切换入口
     imeBadge = el("button", {
       class: "pane-ime",
@@ -607,6 +663,7 @@
     if (confirmed) {
       recordHistory(ctrl, verdict.command);
       send(ctrl, raw);
+      mirror(ctrl, raw);
     } else {
       // 用户取消：不发送回车，让远端缓冲区保持原样
       toast("已取消执行该命令", "info");
@@ -626,6 +683,22 @@
       // 否则屏幕上会留下一条 shell 从未收到的命令。
       ctrl.echo.reset();
       toast(PShell.util.errorText(err), "error");
+    });
+  }
+
+  /**
+   * 同步输入：把刚输入的数据广播到同一同步组的其它会话（全局模式则广播到全部）。
+   * 只写处于就绪状态的目标，避免把字符丢给未连接 / 已断开的会话；源会话仍由 send 负责。
+   */
+  function mirror(ctrl, data) {
+    const mod = PShell.syncInput;
+    if (!mod || typeof mod.targetsFor !== "function") return;
+    const ids = mod.targetsFor(ctrl.id) || [];
+    ids.forEach((id) => {
+      if (id === ctrl.id) return;
+      const target = controllers.get(id);
+      if (!target || !isWritable(target)) return;
+      PShell.ipc.sshWrite(id, data).catch(() => {});
     });
   }
 
@@ -697,6 +770,18 @@
     });
   }
 
+  /** 复制当前终端（活跃会话）的选中内容。无选中返回 false，快捷键派发据此放行按键。 */
+  function copySelection() {
+    const ctrl = active();
+    return ctrl ? ctrl.copySelection() : false;
+  }
+
+  /** 把剪贴板内容粘贴到当前终端（活跃会话）。返回 false 表示本次不接管按键。 */
+  function pasteClipboard() {
+    const ctrl = active();
+    return ctrl ? ctrl.pasteClipboard() : false;
+  }
+
   PShell.terminal = {
     open,
     close,
@@ -706,6 +791,8 @@
     activate,
     setConfig,
     refitAll,
+    copySelection,
+    pasteClipboard,
     hasTabs,
     updateEmptyState,
     isSupported: () => !!Terminal,

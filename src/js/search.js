@@ -208,10 +208,7 @@
     hitNodes = [];
 
     const terms = termsOf(query);
-    if (!terms.length) {
-      resultsHost.appendChild(note("输入关键词开始搜索。"));
-      return;
-    }
+    if (!terms.length) return;
 
     let total = 0;
     groupSpecs().forEach((spec) => {
@@ -270,22 +267,9 @@
     return nodes;
   }
 
-  function sourceSummary() {
-    if (!sources) return "";
-    const parts = [`连接 ${sources.connections.length}`];
-    if (flags.snippets) parts.push(`片段 ${sources.snippets.length}`);
-    if (flags.command_history) parts.push(`历史 ${sources.history.length}`);
-    parts.push(`设置 ${sources.settings.length}`);
-    return parts.join(" · ");
-  }
-
   function renderBody() {
     const host = $("search-body");
     if (!host) return;
-    const hint = $("search-hint");
-    if (hint) hint.textContent = enabled ? sourceSummary() : "";
-    const tip = $("search-tip");
-    if (tip) tip.hidden = !enabled;
 
     resultsHost = null;
     hitNodes = [];
@@ -344,7 +328,7 @@
   async function insertText(text, label) {
     const ctrl = activeSession();
     if (!ctrl) {
-      toast("当前没有打开的会话", "error");
+      toast("没有可写入的终端会话，请先从左侧连接一个主机", "info");
       return;
     }
     try {

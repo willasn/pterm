@@ -20,6 +20,8 @@ pub struct TerminalConfig {
     pub cursor_blink: bool,
     pub bell: bool,
     pub copy_on_select: bool,
+    /// 终端内右击是否弹出「复制 / 粘贴」菜单
+    pub right_click_menu: bool,
     pub term_type: String,
     pub keepalive_secs: u32,
     /// 终端背景色。留空则跟随主题的 --term-bg
@@ -42,6 +44,7 @@ impl Default for TerminalConfig {
             cursor_blink: true,
             bell: false,
             copy_on_select: true,
+            right_click_menu: true,
             term_type: "xterm-256color".into(),
             keepalive_secs: 30,
             background: String::new(),
@@ -62,14 +65,24 @@ pub const DEFAULT_MAX_TOKENS: u32 = 2048;
 pub const DEFAULT_TIMEOUT_SECS: u64 = 60;
 pub const DEFAULT_CONTEXT_BYTES: usize = 4096;
 
+/// AI 协议取值。决定请求地址后缀、鉴权头与请求 / 响应格式（见 ai_assistant/protocol.rs）。
+/// - [`PROTOCOL_OPENAI`]：OpenAI 兼容 Chat Completions（默认，兼容 DeepSeek / 各类网关）
+/// - [`PROTOCOL_OPENAI_RESPONSES`]：OpenAI Responses 接口
+/// - [`PROTOCOL_ANTHROPIC`]：Anthropic Messages（Claude 官方）
+pub const PROTOCOL_OPENAI: &str = "openai";
+pub const PROTOCOL_OPENAI_RESPONSES: &str = "openai_responses";
+pub const PROTOCOL_ANTHROPIC: &str = "anthropic";
+/// 未填写协议时的默认值：历史配置都按 OpenAI 兼容处理。
+pub const DEFAULT_AI_PROTOCOL: &str = PROTOCOL_OPENAI;
+
 /// 单个自定义模型配置。每个模型自带 API 地址、API Key 与生成参数，
 /// 可混合不同供应商（OpenAI、DeepSeek、自建网关、本地 Ollama 等）。
 ///
-/// `id` 是稳定标识：API Key 以它作为钥匙串键名，重命名展示名不会丢 Key。
+/// `id` 是稳定标识：API Key 以它作为保险库键名，重命名展示名不会丢 Key。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, rename_all = "snake_case")]
 pub struct AiModelConfig {
-    /// 稳定标识，仅用于钥匙串键名，不展示给用户
+    /// 稳定标识，仅用于保险库键名，不展示给用户
     pub id: String,
     /// 展示名，如「DeepSeek 对话」
     pub name: String,
@@ -77,12 +90,19 @@ pub struct AiModelConfig {
     pub model: String,
     /// 该模型专用的 API 根地址，如 https://api.deepseek.com/v1
     pub base_url: String,
+    /// 请求协议（见 [`DEFAULT_AI_PROTOCOL`]）。决定 base_url 之后拼接的路径后缀、
+    /// 鉴权头与请求 / 响应格式。旧配置缺省时按 OpenAI 兼容处理。
+    pub protocol: String,
     /// 采样温度。`None` = 用 [`DEFAULT_TEMPERATURE`]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f32>,
     /// 单次请求最大输出 token。`None` = 用 [`DEFAULT_MAX_TOKENS`]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
+    /// 单次请求最大输入 token（模型上下文窗口）。仅用于前端面板估算上下文占比，
+    /// 不发往服务端；`None` 时面板按 128000 计。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_input_tokens: Option<u32>,
     /// 请求超时（秒）。`None` = 用 [`DEFAULT_TIMEOUT_SECS`]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timeout_secs: Option<u64>,
@@ -117,8 +137,10 @@ impl Default for AiModelConfig {
             name: "默认".into(),
             model: "gpt-4o-mini".into(),
             base_url: "https://api.openai.com/v1".into(),
+            protocol: DEFAULT_AI_PROTOCOL.into(),
             temperature: None,
             max_tokens: None,
+            max_input_tokens: None,
             timeout_secs: None,
             context_bytes: None,
         }
@@ -126,12 +148,12 @@ impl Default for AiModelConfig {
 }
 
 /// 生成一个模型条目的稳定标识。用 uuid 而非序号，避免删除 / 重排后
-/// 钥匙串键名与模型错配。
+/// 保险库键名与模型错配。
 pub fn new_model_id() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
-/// AI 供应商配置。**不包含任何 API Key**——Key 全部存系统钥匙串，
+/// AI 供应商配置。**不包含任何 API Key**——Key 全部存加密保险库，
 /// 每个模型各有一把，按 [`AiModelConfig::id`] 索引。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, rename_all = "snake_case")]
@@ -202,6 +224,8 @@ pub struct ShortcutBinding {
     pub action: String,
     /// 组合键，如 "CmdOrCtrl+,"
     pub keys: String,
+    /// 是否启用。关闭后按键不再派发该动作，直接交给终端处理。
+    pub enabled: bool,
 }
 
 impl Default for ShortcutBinding {
@@ -209,11 +233,21 @@ impl Default for ShortcutBinding {
         Self {
             action: String::new(),
             keys: String::new(),
+            // 必须为 true：旧配置文件里没有这个字段，容器级 serde(default)
+            // 会取这里的值。若给 false，升级后所有快捷键会被静默禁用。
+            enabled: true,
         }
     }
 }
 
 pub fn default_shortcuts() -> Vec<ShortcutBinding> {
+    // 复制 / 粘贴的默认键按平台给：macOS 沿用系统习惯的 ⌘C / ⌘V；
+    // Windows 用 Ctrl+Shift+C / V，把 Ctrl+C 的中断语义完整留给终端。
+    let (copy_keys, paste_keys) = if cfg!(target_os = "macos") {
+        ("Cmd+C", "Cmd+V")
+    } else {
+        ("Ctrl+Shift+C", "Ctrl+Shift+V")
+    };
     let pairs = [
         ("tab.new", "CmdOrCtrl+T"),
         ("tab.close", "CmdOrCtrl+W"),
@@ -222,16 +256,18 @@ pub fn default_shortcuts() -> Vec<ShortcutBinding> {
         ("app.quick_connect", "CmdOrCtrl+K"),
         ("app.quick_panel", "CmdOrCtrl+Shift+P"),
         ("app.search", "CmdOrCtrl+Shift+F"),
-        ("ai.toggle", "CmdOrCtrl+I"),
-        ("ai.explain_error", "CmdOrCtrl+E"),
+        ("app.ai", "CmdOrCtrl+I"),
         ("view.split_h", "CmdOrCtrl+Shift+E"),
         ("view.split_v", "CmdOrCtrl+Shift+O"),
+        ("terminal.copy", copy_keys),
+        ("terminal.paste", paste_keys),
     ];
     pairs
         .into_iter()
         .map(|(action, keys)| ShortcutBinding {
             action: action.into(),
             keys: keys.into(),
+            enabled: true,
         })
         .collect()
 }
@@ -280,7 +316,7 @@ impl AppConfig {
         let mut cfg: AppConfig = serde_yaml::from_str(&text)
             .map_err(|e| AppError::Config(format!("解析 {} 失败：{e}", path.display())))?;
         // 用户可能删掉了某些键，补齐默认值并回写，保证文件始终是完整可编辑的。
-        // 必须落盘：迁移会给模型条目生成稳定 id，而 API Key 以 id 为钥匙串键名，
+        // 必须落盘：迁移会给模型条目生成稳定 id，而 API Key 以 id 为保险库键名，
         // 不落盘的话每次启动 id 都会变，已保存的 Key 就全部失联。
         if cfg.fill_missing() {
             cfg.save(path)?;
@@ -336,7 +372,7 @@ impl AppConfig {
         }
 
         // 补齐稳定 id 与 API 地址。id 必须落盘，否则每次启动都会变，
-        // 以 id 为键名的钥匙串 API Key 会全部失联。
+        // 以 id 为键名的保险库 API Key 会全部失联。
         let fallback_base = AiModelConfig::default().base_url;
         for model in self.ai.models.iter_mut() {
             if model.id.is_empty() {
@@ -391,6 +427,18 @@ mod tests {
             "缺失 local_echo 时必须取 Default 的 true，否则本地回显会被静默关闭"
         );
         assert!(cfg.terminal.copy_on_select, "其余缺失字段也应取 Default");
+        assert!(cfg.terminal.right_click_menu, "右击菜单默认开启");
+    }
+
+    /// 升级前写入的快捷键绑定没有 `enabled` 字段，缺失时必须取 Default 的 true，
+    /// 否则用户已有的自定义快捷键会被静默禁用。
+    #[test]
+    fn missing_shortcut_enabled_falls_back_to_true() {
+        let yaml = "version: 1\nshortcuts:\n  - action: tab.new\n    keys: CmdOrCtrl+T\n";
+        let cfg: AppConfig = serde_yaml::from_str(yaml).expect("应能解析缺 enabled 的快捷键配置");
+        assert_eq!(cfg.shortcuts.len(), 1, "显式给出的绑定不应被丢掉");
+        assert_eq!(cfg.shortcuts[0].action, "tab.new");
+        assert!(cfg.shortcuts[0].enabled, "缺失 enabled 时必须视为启用");
     }
 
     /// 空配置（用户把内容删光）不能导致解析失败。
@@ -409,8 +457,10 @@ mod tests {
             name: "测试".into(),
             model: "gpt-4o-mini".into(),
             base_url: "https://example.com/v1".into(),
+            protocol: DEFAULT_AI_PROTOCOL.into(),
             temperature: None,
             max_tokens: None,
+            max_input_tokens: None,
             timeout_secs: None,
             context_bytes: None,
         };
@@ -462,6 +512,6 @@ mod tests {
         let id = cfg.ai.models[0].id.clone();
         assert!(!id.is_empty(), "迁移必须生成稳定 id");
         assert!(!cfg.fill_missing(), "第二次不应再有改动");
-        assert_eq!(cfg.ai.models[0].id, id, "id 必须稳定，否则钥匙串 Key 会失联");
+        assert_eq!(cfg.ai.models[0].id, id, "id 必须稳定，否则保险库 Key 会失联");
     }
 }

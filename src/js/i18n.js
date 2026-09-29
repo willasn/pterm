@@ -1,7 +1,7 @@
-/* 多语言 i18n（FEATURES.md §6）。
+/* 多语言 i18n：设置「通用 → 语言」的基础设置。
  *
  * 中文作为内置基线直接写在 HTML / JS 里，英文经 src/locales/en-US.json 外置。
- * `t(key, fallback, params)` 在 i18n 关闭或当前语言为 zh-CN 时直接返回 fallback（中文原文），
+ * `t(key, fallback, params)` 在当前语言为 zh-CN（基线）时直接返回 fallback（中文原文），
  * 否则从当前语言包取 key；`{x}` 形式的占位符用 params 插值。
  *
  * 静态骨架文案用 `data-i18n` / `data-i18n-title` 标记，原文即 fallback；
@@ -14,7 +14,6 @@
 
   const state = {
     locale: BASELINE,
-    enabled: false,
     dict: null,
     loading: null,
   };
@@ -72,12 +71,12 @@
     state.locale = next;
     state.loading = (async () => {
       try {
-        if (!state.enabled || next === BASELINE) {
+        if (next === BASELINE) {
           state.dict = null;
         } else {
           state.dict = await load(next);
         }
-        document.documentElement.lang = state.enabled && next !== BASELINE ? next : BASELINE;
+        document.documentElement.lang = next;
         apply();
       } catch (err) {
         // 语言包缺失 / 出错时回退中文，不让空白界面卡住用户
@@ -91,8 +90,6 @@
 
   /** 应用配置：由 app.js 在启动 / 保存设置 / 重置时调用。 */
   function setConfig(config) {
-    const features = (config && config.features) || {};
-    state.enabled = !!((features.auxiliary || {}).i18n);
     return setLocale((config && config.language) || BASELINE);
   }
 

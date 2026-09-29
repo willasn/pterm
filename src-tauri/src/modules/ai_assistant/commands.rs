@@ -21,7 +21,7 @@ use crate::error::{AppError, AppResult};
 use crate::state::AppState;
 
 use super::client::{self, ChatMessage, ChatOptions};
-use super::{agent, danger, EVENT_AI_CANCELLED, EVENT_AI_DONE, EVENT_AI_ERROR};
+use super::{agent, danger, protocol, EVENT_AI_CANCELLED, EVENT_AI_DONE, EVENT_AI_ERROR};
 
 /// 一次 AI 提问的入参。Ask 模式没有场景之分，输入即问题。
 #[derive(Debug, Clone, Deserialize)]
@@ -173,11 +173,11 @@ pub fn ai_cancel(state: State<'_, AppState>, id: String) -> AppResult<()> {
 /// 连通性测试入参。
 ///
 /// 字段来自设置界面里「还没保存」的表单，因此可以先测再存；`api_key` 留空时
-/// 回落到该模型已存进钥匙串的那把 Key。
+/// 回落到该模型已存进保险库的那把 Key。
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct AiTestModelInput {
-    /// 已保存过的模型带上它的 id，才能从钥匙串取到原有 Key
+    /// 已保存过的模型带上它的 id，才能从保险库取到原有 Key
     #[serde(default)]
     pub id: Option<String>,
     #[serde(default)]
@@ -186,6 +186,9 @@ pub struct AiTestModelInput {
     pub model: String,
     #[serde(default)]
     pub base_url: String,
+    /// 协议：决定请求地址后缀、鉴权头与请求 / 响应格式（留空按 OpenAI 兼容）
+    #[serde(default)]
+    pub protocol: String,
     #[serde(default)]
     pub api_key: Option<String>,
     #[serde(default)]
@@ -205,8 +208,10 @@ pub async fn ai_test_model(
         name: input.name,
         model: input.model,
         base_url: input.base_url,
+        protocol: input.protocol,
         temperature: None,
         max_tokens: None,
+        max_input_tokens: None,
         timeout_secs: input.timeout_secs,
         context_bytes: None,
     };
@@ -214,9 +219,18 @@ pub async fn ai_test_model(
     client::test_model(&ctx, &model, input.api_key.as_deref()).await
 }
 
+/// 返回可选协议清单（值、展示名、路径后缀、说明）。
+///
+/// 设置界面据此渲染「协议」下拉与「会加什么后缀」提示；是纯静态元数据，
+/// 因此不做模块门控——即使 AI 助手关闭也要能显示当前配置用了哪个协议。
+#[tauri::command]
+pub fn ai_protocols() -> Vec<protocol::ProtocolInfo> {
+    protocol::catalog()
+}
+
 /// 单条模型的保存入参。
 ///
-/// `api_key` 为 `None` 表示不动钥匙串；`Some("")` 表示删除该模型的 Key。
+/// `api_key` 为 `None` 表示不动保险库；`Some("")` 表示删除该模型的 Key。
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct AiSaveModelInput {
@@ -231,7 +245,7 @@ pub struct AiSaveModelResult {
     pub models: Vec<AiModelConfig>,
 }
 
-/// 把单个模型写入配置的模型列表（新增或覆盖）。Key 依旧只进系统钥匙串。
+/// 把单个模型写入配置的模型列表（新增或覆盖）。Key 依旧只进加密保险库。
 ///
 /// 与全局 `save_config` 分开是为了支持「逐个模型保存」：填好一个、测通一个、存一个，
 /// 不必等设置里其它分类的改动一起提交。
@@ -267,7 +281,7 @@ pub fn ai_save_model(
         ));
     }
 
-    // Key 先落钥匙串：写失败就直接返回，配置里不会留下一个「没有凭据的模型」
+    // Key 先落保险库：写失败就直接返回，配置里不会留下一个「没有凭据的模型」
     if let Some(key) = input.api_key.as_deref() {
         if key.trim().is_empty() {
             secrets::delete(&secrets::ai_model_key_key(&model.id))?;
@@ -287,7 +301,7 @@ pub fn ai_save_model(
     Ok(AiSaveModelResult { models })
 }
 
-/// 从模型列表里删除一条，并清掉它在钥匙串里的 Key。
+/// 从模型列表里删除一条，并清掉它在保险库里的 Key。
 ///
 /// 与单条保存对称：模型列表由每个模型自己的按钮维护，删除也要立刻生效，
 /// 否则面板还会列出已经删掉的模型。返回删除后的完整列表。
@@ -298,7 +312,7 @@ pub fn ai_delete_model(state: State<'_, AppState>, model_id: String) -> AppResul
         cfg.ai.models.retain(|m| m.id != model_id);
         cfg.ai.models.clone()
     })?;
-    // 配置里已经没有这个模型了，钥匙串里的 Key 也就没有归属，直接清掉避免残留
+    // 配置里已经没有这个模型了，保险库里的 Key 也就没有归属，直接清掉避免残留
     if let Err(e) = secrets::delete(&secrets::ai_model_key_key(&model_id)) {
         log::warn!("删除模型 {model_id} 的 API Key 失败：{e}");
     }

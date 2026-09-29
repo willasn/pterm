@@ -3,7 +3,7 @@
 //! 职责概述：
 //! - 通过 OpenAI 兼容的 Chat Completions 接口完成「提问 / 解答」与 Agent 自动执行
 //!   两种模式（见 `client.rs`、`agent.rs`）。
-//! - 请求**不内置任何 API Key**，Key 存系统钥匙串，由用户配置。
+//! - 请求**不内置任何 API Key**，Key 存加密保险库，由用户配置。
 //! - 流式响应走 SSE，逐字广播 `ai:chunk` 事件，支持中途取消（见 `client.rs`）。
 //! - Agent 给出的命令经 `danger.rs` 做权威危险检测，命中时附带原因，
 //!   前端据此高亮并在写入终端前二次确认。
@@ -14,6 +14,7 @@ pub mod client;
 pub mod commands;
 pub mod context;
 pub mod danger;
+pub mod protocol;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};

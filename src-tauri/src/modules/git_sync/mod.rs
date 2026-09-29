@@ -1,8 +1,8 @@
 //! Git 同步模块（FEATURES.md §4）。
 //!
 //! 职责：
-//! - 把 `config.yaml` / 连接 / 命令片段导出为仓库内的纯文本 payload，提交后推送到
-//!   用户自己的远程仓库；拉取时反向导入。**不做任何云同步**。
+//! - 把 `config.yaml` / 连接 / 命令片段 / 加密保险库导出为仓库内的 payload，
+//!   提交后推送到用户自己的远程仓库；拉取时反向导入。**不做任何云同步**。
 //! - 优先走 [`repo`]（进程内 libgit2，不依赖系统 git）；只有 [`fallback::unsupported_reason`]
 //!   明确报告 libgit2 处理不了的场景（变基中、LFS 等）才回退系统 CLI，并记录原因。
 //!
@@ -20,12 +20,13 @@ use std::time::Duration;
 
 use git2::Repository;
 use parking_lot::{Mutex, MutexGuard};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 
 use crate::config::app_config::AppConfig;
 use crate::config::feature_flags::{module_id, FeatureFlags, GitRemoteConfig, PluggableModule, SyncScope};
 use crate::config::store::{secrets, SharedStore, SnippetRecord, StoredConnection};
+use crate::config::vault::{self, ImportOutcome};
 use crate::config::ConfigManager;
 use crate::error::{AppError, AppResult};
 use crate::modules::ModuleContext;
@@ -38,13 +39,17 @@ pub const NETWORK_TIMEOUT: Duration = Duration::from_secs(120);
 /// 本地操作（status / commit / 远端登记）超时。
 const LOCAL_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// 同步 payload 文件名。仓库内只有这三个文件是人类可读的文本。
+/// 同步 payload 文件名。前三个是明文配置，`secrets.json` 是主密码加密的密文。
 const FILE_CONFIG: &str = "config.yaml";
 const FILE_CONNECTIONS: &str = "connections.json";
 const FILE_SNIPPETS: &str = "snippets.json";
+const FILE_SECRETS: &str = "secrets.json";
 
 /// 同步导入后配置发生变化时广播，前端据此重新拉取配置。
 pub const EVENT_CONFIG_UPDATED: &str = "git:config-updated";
+
+/// 同步导入的保险库与本机主密码不一致时广播，前端据此弹出冲突处理引导。
+pub const EVENT_VAULT_CONFLICT: &str = "git:vault-conflict";
 
 // ---------------------------------------------------------------------------
 // 服务与上下文
@@ -121,7 +126,7 @@ pub struct RemoteView {
     pub name: String,
     pub url: String,
     pub branch: Option<String>,
-    /// 是否已在系统钥匙串中保存密码 / 访问令牌
+    /// 是否已在加密保险库中保存密码 / 访问令牌
     pub has_credential: bool,
 }
 
@@ -187,6 +192,31 @@ impl SyncOutcomeView {
             fallback_reason: None,
         }
     }
+}
+
+/// 「测试连接」的输入：地址 / 用户名取自设置表单，密码可临时输入或沿用保险库。
+#[derive(Debug, Clone, Deserialize)]
+pub struct GitTestInput {
+    /// 远端名称，密码缺省时据它回落到保险库中已保存的凭据
+    pub name: String,
+    pub url: String,
+    #[serde(default)]
+    pub username: Option<String>,
+    /// 明文密码 / 访问令牌；`None` 表示沿用保险库中已保存的
+    #[serde(default)]
+    pub password: Option<String>,
+}
+
+/// 「测试连接」的结果。
+#[derive(Debug, Clone, Serialize)]
+pub struct GitTestView {
+    pub remote: String,
+    pub url: String,
+    /// 远端引用条目数
+    pub refs: usize,
+    pub default_branch: Option<String>,
+    pub elapsed_ms: u64,
+    pub message: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -726,6 +756,50 @@ impl SyncContext {
         repo::diff(&repository)
     }
 
+    /// 测试远端连通性并校验凭据：一次握手 + 读引用列表，同时验证地址可达、
+    /// 用户名 / 密码（令牌）有效。只读，不读写用户的同步仓库、不产生提交。
+    pub fn test_connection(&self, input: &GitTestInput) -> AppResult<GitTestView> {
+        let url = input.url.trim();
+        if url.is_empty() {
+            return Err(AppError::Config("未填写远程地址".into()));
+        }
+        let name = normalize_remote_name(&input.name);
+        // 表单里新输入的密码优先；未输入则回落到保险库中已保存的凭据
+        let password = match input.password.as_deref().map(str::trim) {
+            Some("") => None,
+            Some(value) => Some(value.to_string()),
+            None => stored_password(&name),
+        };
+        let username = input
+            .username
+            .as_deref()
+            .map(str::trim)
+            .filter(|u| !u.is_empty())
+            .map(|u| u.to_string());
+        let credential = auth::Credential {
+            url: url.to_string(),
+            username,
+            password,
+        };
+
+        let started = std::time::Instant::now();
+        let probe = repo::probe_remote(url, vec![credential])?;
+        let elapsed_ms = started.elapsed().as_millis() as u64;
+
+        let mut message = format!("连接成功，远端共有 {} 个引用", probe.refs);
+        if let Some(branch) = probe.default_branch.as_deref() {
+            message.push_str(&format!("，默认分支 {branch}"));
+        }
+        Ok(GitTestView {
+            remote: name,
+            url: url.to_string(),
+            refs: probe.refs,
+            default_branch: probe.default_branch,
+            elapsed_ms,
+            message,
+        })
+    }
+
     // -- 内部工具 ---------------------------------------------------------
 
     fn flags(&self) -> FeatureFlags {
@@ -776,7 +850,7 @@ impl SyncContext {
         out
     }
 
-    /// 收集各远端在系统钥匙串中已保存的密码 / 访问令牌，供 git2 凭据回调使用。
+    /// 收集各远端在加密保险库中已保存的密码 / 访问令牌，供 git2 凭据回调使用。
     /// 用户名与密码都没有的远端不产生条目，让回调继续尝试本机既有凭据。
     fn credentials(&self) -> Vec<auth::Credential> {
         self.effective_remotes()
@@ -825,6 +899,11 @@ impl SyncContext {
         if matches!(scope, SyncScope::Config | SyncScope::All) {
             self.export_config(dir)?;
             self.export_connections(dir)?;
+            if self.flags().sync.git_sync_secrets {
+                self.export_secrets(dir)?;
+            } else {
+                log::info!("已按设置暂停同步 secrets.json，跳过导出");
+            }
         }
         if matches!(scope, SyncScope::Snippets | SyncScope::All) {
             self.export_snippets(dir)?;
@@ -833,19 +912,35 @@ impl SyncContext {
     }
 
     fn export_config(&self, dir: &Path) -> AppResult<()> {
-        // API Key 全部在本机钥匙串，配置文件里本就不含任何凭据，可直接导出
+        // 配置文件里不含任何凭据（AI Key 等在加密保险库），可直接导出
         let cfg = self.config.snapshot();
         cfg.save(&dir.join(FILE_CONFIG))
     }
 
     fn export_connections(&self, dir: &Path) -> AppResult<()> {
-        let mut list = self.store.list_connections()?;
-        // 密码 / passphrase 只存在于本机钥匙串，导出时一律不带
-        for conn in &mut list {
-            conn.has_password = false;
-            conn.has_passphrase = false;
-        }
+        // 密码 / passphrase 存在加密保险库（secrets.json），连接本身只带标记
+        let list = self.store.list_connections()?;
         write_json(&dir.join(FILE_CONNECTIONS), &list)
+    }
+
+    /// 把敏感字段的密文保险库一并复制到仓库，实现跨设备同步。
+    /// 未设置主密码（例如刚重置过保险库）时删掉仓库里的旧密文，避免它被再次导入。
+    /// 存在未解决的「主密码冲突」时不导出，避免用本地密文覆盖远端造成数据丢失。
+    fn export_secrets(&self, dir: &Path) -> AppResult<()> {
+        if vault::pending_conflict()? {
+            log::warn!("存在未解决的主密码冲突，暂不导出 secrets.json");
+            return Ok(());
+        }
+        let target = dir.join(FILE_SECRETS);
+        match vault::export_bytes()? {
+            Some(bytes) => std::fs::write(target, bytes)?,
+            None => {
+                if target.exists() {
+                    std::fs::remove_file(target)?;
+                }
+            }
+        }
+        Ok(())
     }
 
     fn export_snippets(&self, dir: &Path) -> AppResult<()> {
@@ -860,6 +955,11 @@ impl SyncContext {
         if matches!(scope, SyncScope::Config | SyncScope::All) {
             imported += self.import_config(dir)?;
             imported += self.import_connections(dir)?;
+            if self.flags().sync.git_sync_secrets {
+                self.import_secrets(dir)?;
+            } else {
+                log::info!("已按设置暂停同步 secrets.json，跳过导入");
+            }
         }
         if matches!(scope, SyncScope::Snippets | SyncScope::All) {
             imported += self.import_snippets(dir)?;
@@ -892,23 +992,37 @@ impl SyncContext {
         let text = std::fs::read_to_string(&path)?;
         let incoming: Vec<StoredConnection> = serde_json::from_str(&text)
             .map_err(|e| AppError::Config(format!("解析同步的 {} 失败：{e}", path.display())))?;
-        let local = self.store.list_connections()?;
         let count = incoming.len();
-        for mut conn in incoming {
-            // 敏感字段只在钥匙串里：本地已存在同 id 时沿用本地标记，否则视为未保存
-            match local.iter().find(|c| c.id == conn.id) {
-                Some(existing) => {
-                    conn.has_password = existing.has_password;
-                    conn.has_passphrase = existing.has_passphrase;
-                }
-                None => {
-                    conn.has_password = false;
-                    conn.has_passphrase = false;
-                }
-            }
-            self.store.upsert_connection(&conn)?;
+        for conn in &incoming {
+            self.store.upsert_connection(conn)?;
         }
         Ok(count)
+    }
+
+    /// 用仓库里的加密保险库覆盖本地。
+    ///
+    /// 主密码一致时保持解锁、直接采用；不一致时暂存到保险库并广播冲突事件，
+    /// 由前端引导用户选择「采用远端 / 保留本地 / 暂停同步」。
+    fn import_secrets(&self, dir: &Path) -> AppResult<()> {
+        let path = dir.join(FILE_SECRETS);
+        if !path.exists() {
+            return Ok(());
+        }
+        let bytes = std::fs::read(&path)?;
+        match vault::import_bytes(&bytes)? {
+            ImportOutcome::Conflict => {
+                log::warn!("同步仓库中的保险库使用不同主密码，已广播冲突事件等待用户决策");
+                if let Err(e) = self.app.emit(EVENT_VAULT_CONFLICT, ()) {
+                    log::warn!("广播保险库冲突事件失败：{e}");
+                }
+            }
+            ImportOutcome::Adopted => {
+                log::info!("已导入加密保险库，需要输入主密码解锁")
+            }
+            ImportOutcome::Same => log::info!("已采用同步仓库中的保险库（主密码一致）"),
+            ImportOutcome::Unchanged => {}
+        }
+        Ok(())
     }
 
     fn import_snippets(&self, dir: &Path) -> AppResult<usize> {
@@ -966,7 +1080,7 @@ fn finish(view: &mut SyncOutcomeView, notes: Vec<String>) {
     view.message = message;
 }
 
-/// 远端名规范化：留空时回退 `origin`。凭据按该名称存入钥匙串，两侧必须一致。
+/// 远端名规范化：留空时回退 `origin`。凭据按该名称存入加密保险库，两侧必须一致。
 pub fn normalize_remote_name(name: &str) -> String {
     let trimmed = name.trim();
     if trimmed.is_empty() {
@@ -976,7 +1090,7 @@ pub fn normalize_remote_name(name: &str) -> String {
     }
 }
 
-/// 读取某远端在系统钥匙串中的密码 / 访问令牌。不存在或读失败视为未配置。
+/// 读取某远端在加密保险库中的密码 / 访问令牌。不存在或读失败视为未配置。
 fn stored_password(remote_name: &str) -> Option<String> {
     match secrets::get(&secrets::git_password_key(remote_name)) {
         Ok(Some(value)) if !value.is_empty() => Some(value),

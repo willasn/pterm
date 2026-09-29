@@ -23,8 +23,8 @@ pub enum AppError {
     #[error("数据库错误：{0}")]
     Db(String),
 
-    #[error("钥匙串错误：{0}")]
-    Keyring(String),
+    #[error("保险库错误：{0}")]
+    Vault(String),
 
     #[error("Git 错误：{0}")]
     Git(String),
@@ -69,12 +69,6 @@ impl From<ssh2::Error> for AppError {
 impl From<git2::Error> for AppError {
     fn from(e: git2::Error) -> Self {
         AppError::Git(e.to_string())
-    }
-}
-
-impl From<keyring::Error> for AppError {
-    fn from(e: keyring::Error) -> Self {
-        AppError::Keyring(e.to_string())
     }
 }
 

@@ -8,21 +8,19 @@ mod utils;
 
 use std::sync::Arc;
 
-use tauri::menu::{Menu, MenuItem};
-use tauri::tray::{TrayIconBuilder, TrayIconEvent};
 use tauri::Manager;
 
 use config::store::Store;
 use config::ConfigManager;
 use features::import_export::ImportExportModule;
 use features::port_forward::{PortForwardManager, PortForwardModule};
+use features::rdp::RdpModule;
 use features::session_log::{SessionLog, SessionLogModule};
 use features::sftp::{SftpManager, SftpModule};
 use modules::ai_assistant::{AiAssistantModule, AiService};
 use modules::command_history::CommandHistoryModule;
 use modules::git_sync::{GitSync, GitSyncModule};
 use modules::global_search::GlobalSearchModule;
-use modules::i18n::I18nModule;
 use modules::quick_panel::QuickPanelModule;
 use modules::shortcuts::ShortcutsModule;
 use modules::snippets::SnippetsModule;
@@ -39,8 +37,15 @@ pub fn run() {
         .setup(|app| {
             let paths = Paths::resolve()?;
             let config = ConfigManager::load(paths.config_file())?;
-            // 旧版「全局 AI Key」按模型条目 id 迁移到新的钥匙串键名（幂等）
-            config::commands::migrate_legacy_ai_key(&config.snapshot());
+            // 敏感字段统一由主密码加密的保险库保管（配置目录下的 secrets.json）
+            config::vault::init(paths.config_dir.join("secrets.json"))?;
+            // 首次设置 / 输入主密码后，派生密钥会存进配置目录下的 vault.token；
+            // 这里尝试静默解锁，让「新装首次输入」之外不再重复要求主密码。
+            match config::vault::auto_unlock() {
+                Ok(true) => log::info!("已用本地自动解锁令牌解锁保险库"),
+                Ok(false) => {}
+                Err(e) => log::warn!("自动解锁保险库失败：{e}"),
+            }
             let crash_log = config.flags().auxiliary.crash_log;
             utils::init_logging(crash_log, paths.crash_log.clone());
             log::info!("pshell 启动，配置目录 {}", paths.config_dir.display());
@@ -64,6 +69,8 @@ pub fn run() {
             registry.register(Arc::new(PortForwardModule::new(port_forward.clone())));
             // 导入导出为纯函数式文件 IO，无运行期状态，注册只为统一生命周期日志
             registry.register(Arc::new(ImportExportModule::new()));
+            // 远程桌面（RDP）：不实现协议，连接交给系统 / 外部客户端
+            registry.register(Arc::new(RdpModule::new()));
             // 命令片段同样无运行期状态，数据全部落在 SQLite 的 snippets 表
             registry.register(Arc::new(SnippetsModule::new()));
             // 命令历史同样无运行期状态，数据全部落在 SQLite 的 command_history 表
@@ -76,16 +83,11 @@ pub fn run() {
             registry.register(Arc::new(ShortcutsModule::new()));
             // 快捷命令面板列动作并在前端过滤执行（js/quick_panel.js），无运行期状态
             registry.register(Arc::new(QuickPanelModule::new()));
-            // 系统托盘由下方 build_tray() 按开关构建，这里注册只为设置徽标
+            // 系统托盘由模块生命周期构建 / 移除（modules/system_tray），这里注册即可
             registry.register(Arc::new(SystemTrayModule::new()));
-            // 多语言切换完全在前端完成（js/i18n.js + src/locales/），注册只为生命周期日志
-            registry.register(Arc::new(I18nModule::new()));
             // AI 助手服务与模块共用同一实例：命令层与后台流式任务共用一个 HTTP 客户端
             let ai = AiService::new();
             registry.register(Arc::new(AiAssistantModule::new(ai.clone())));
-
-            // 托盘开关在启动时即确定，运行期不动态增删托盘，故在构建 AppState 前取一次
-            let system_tray_enabled = config.flags().auxiliary.system_tray;
 
             let state = AppState::new(
                 config,
@@ -102,11 +104,6 @@ pub fn run() {
             state.modules.apply(&ctx)?;
             app.manage(state);
 
-            // 系统托盘按开关构建（FEATURES.md §6）：托盘图标 + 右键菜单
-            if system_tray_enabled {
-                build_tray(app.handle())?;
-            }
-
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -121,6 +118,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             // 设置与配置
             config::commands::app_info,
+            // 首次启动引导（核心，不随模块开关）
+            config::commands::onboarding_status,
+            config::commands::onboarding_complete,
             config::commands::get_config,
             config::commands::save_config,
             config::commands::reset_config,
@@ -132,6 +132,15 @@ pub fn run() {
             config::commands::ai_configured_models,
             config::commands::set_ai_model_key,
             config::commands::clear_ai_model_key,
+            // 主密码保险库（核心，不随模块开关）
+            config::commands::vault_status,
+            config::commands::vault_setup,
+            config::commands::vault_unlock,
+            config::commands::vault_change_password,
+            config::commands::vault_lock,
+            config::commands::vault_reset,
+            config::commands::vault_adopt_pending,
+            config::commands::vault_discard_pending,
             // SSH 核心
             ssh::commands::ssh_connect,
             ssh::commands::ssh_write,
@@ -152,6 +161,7 @@ pub fn run() {
             modules::git_sync::commands::git_sync_resolve,
             modules::git_sync::commands::git_sync_credentials,
             modules::git_sync::commands::git_sync_set_credential,
+            modules::git_sync::commands::git_sync_test,
             // 会话日志（可开关）
             features::session_log::commands::session_log_status,
             features::session_log::commands::session_log_list,
@@ -164,6 +174,7 @@ pub fn run() {
             features::sftp::commands::sftp_list,
             features::sftp::commands::sftp_download,
             features::sftp::commands::sftp_upload,
+            features::sftp::commands::sftp_cancel_transfer,
             features::sftp::commands::sftp_delete,
             features::sftp::commands::sftp_rename,
             features::sftp::commands::sftp_chmod,
@@ -175,6 +186,12 @@ pub fn run() {
             features::import_export::commands::connection_export,
             features::import_export::commands::connection_import,
             features::import_export::commands::import_export_defaults,
+            // 远程桌面（可开关）
+            features::rdp::commands::rdp_client_available,
+            features::rdp::commands::rdp_saved_password,
+            features::rdp::commands::rdp_open,
+            features::rdp::commands::rdp_probe,
+            features::rdp::commands::rdp_open_installer,
             // 输入源自动切换（可开关，仅 macOS 生效）
             features::ime::commands::ime_use_ascii,
             features::ime::commands::ime_restore,
@@ -195,6 +212,7 @@ pub fn run() {
             modules::ai_assistant::commands::ai_test_model,
             modules::ai_assistant::commands::ai_save_model,
             modules::ai_assistant::commands::ai_delete_model,
+            modules::ai_assistant::commands::ai_protocols,
             // 崩溃日志（可开关）
             utils::commands::crash_log_read,
             utils::commands::crash_log_export,
@@ -209,55 +227,4 @@ pub fn run() {
                 log::info!("pshell 已退出");
             }
         });
-}
-
-/// 构建系统托盘图标与右键菜单（FEATURES.md §6）。
-///
-/// 仅在 `auxiliary.system_tray` 为 true 时由启动流程调用：
-/// 左键单击恢复到主窗口，右键菜单提供「显示 / 退出」。
-/// 「退出」通过 [`tauri::AppHandle::exit`] 真正结束进程，不触发上面的隐藏逻辑。
-fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
-    let show = MenuItem::with_id(app, "show", "显示", true, None::<&str>)?;
-    let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show, &quit])?;
-
-    // 左键单击默认弹出菜单（show_menu_on_left_click 为 true），这里改用单击恢复窗口，
-    // 让右键弹出菜单，符合「驻留后台 + 一键呼出」的直觉。
-    let mut builder = TrayIconBuilder::with_id("pshell-tray")
-        .tooltip("pshell")
-        .menu(&menu)
-        .show_menu_on_left_click(false)
-        .on_tray_icon_event(|tray, event| {
-            if let TrayIconEvent::Click {
-                button: tauri::tray::MouseButton::Left,
-                ..
-            } = event
-            {
-                let app = tray.app_handle();
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.show();
-                    let _ = window.unminimize();
-                    let _ = window.set_focus();
-                }
-            }
-        })
-        .on_menu_event(|app, event| match event.id().as_ref() {
-            "show" => {
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.show();
-                    let _ = window.unminimize();
-                    let _ = window.set_focus();
-                }
-            }
-            "quit" => app.exit(0),
-            _ => {}
-        });
-
-    // 复用应用默认窗口图标作为托盘图标。
-    if let Some(icon) = app.default_window_icon().cloned() {
-        builder = builder.icon(icon);
-    }
-
-    builder.build(app)?;
-    Ok(())
 }

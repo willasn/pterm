@@ -2,7 +2,7 @@
 //!
 //! 凭据来源优先级：
 //! 1. 用户在「设置 → Git 同步 → 访问凭据」中配置的用户名 + 密码 / 访问令牌
-//!    （HTTPS 场景；密码只存系统钥匙串，由调用方读入后传入本回调）；
+//!    （HTTPS 场景；密码只存加密保险库，由调用方读入后传入本回调）；
 //! 2. ssh-agent → 3. `~/.ssh` 私钥 → 4. git credential helper → 5. 仅用户名。
 //!
 //! 之所以先试 ssh-agent：日常使用中私钥通常已加载进 agent，命中后可以避免
@@ -16,7 +16,7 @@ use git2::{Config, Cred, CredentialType, RemoteCallbacks};
 /// 依次尝试的默认私钥文件名。
 const SSH_KEY_NAMES: [&str; 3] = ["id_ed25519", "id_ecdsa", "id_rsa"];
 
-/// 一条显式配置的远端凭据。用户名来自配置，密码来自系统钥匙串。
+/// 一条显式配置的远端凭据。用户名来自配置，密码来自加密保险库。
 #[derive(Debug, Clone)]
 pub struct Credential {
     /// 对应的远端地址，用于与回调收到的 url 匹配

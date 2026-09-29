@@ -39,8 +39,6 @@
         <button id="ie-status" class="git-status" title="配置导入导出" data-i18n-title="common.importExport" hidden></button>
         <button id="snip-status" class="git-status" title="命令片段" data-i18n-title="common.snippets" hidden></button>
         <button id="hist-status" class="git-status" title="命令历史" data-i18n-title="common.history" hidden></button>
-        <span id="app-version" class="muted"></span>
-        <span id="module-summary" class="muted"></span>
       </footer>
       <!-- 右缘拖拽条：左右拖动调整侧栏宽度 -->
       <div class="sidebar-resizer" id="sidebar-resizer" title="拖动调整宽度" data-i18n-title="common.sidebarResize"></div>
@@ -89,6 +87,8 @@
             <textarea id="ai-input" rows="2" spellcheck="false"></textarea>
             <div class="ai-composer-bar">
               <div class="ai-mode-switch" id="ai-mode-switch"></div>
+              <!-- 上下文占比图标：紧邻 Agent，鼠标移上弹出明细（见 ai.js renderContextMeter） -->
+              <span class="ai-context-meter" id="ai-context-meter" hidden></span>
               <span class="ai-model-host" id="ai-model-host"></span>
               <button class="ai-send" id="ai-send" type="button" title="发送"></button>
             </div>
@@ -96,6 +96,31 @@
         </div>
       </aside>
     </main>
+  </div>
+
+  <!-- 首次启动引导：仅一屏语言选择（核心，不随模块开关）。
+       本机标记文件决定是否展示，标记不随 Git 同步，换机后会重新引导一次。 -->
+  <div class="onboarding" id="onboarding" hidden>
+    <div class="onboarding-card" role="dialog" aria-modal="true" aria-labelledby="onboarding-title">
+      <div class="onboarding-brand">
+        <span class="onboarding-mark" aria-hidden="true">>_</span>
+        <h1 class="onboarding-title" id="onboarding-title">pshell</h1>
+        <p class="onboarding-tagline" data-i18n="onboarding.tagline">跨平台 SSH 终端客户端</p>
+      </div>
+      <p class="onboarding-question" data-i18n="onboarding.question">选择界面语言</p>
+      <div class="onboarding-langs" id="onboarding-langs">
+        <button class="onboarding-lang" type="button" data-locale="zh-CN" aria-pressed="false">
+          <span class="onboarding-lang-name">简体中文</span>
+          <span class="onboarding-lang-code">zh-CN</span>
+        </button>
+        <button class="onboarding-lang" type="button" data-locale="en-US" aria-pressed="false">
+          <span class="onboarding-lang-name">English</span>
+          <span class="onboarding-lang-code">en-US</span>
+        </button>
+      </div>
+      <p class="onboarding-note" data-i18n="onboarding.note">之后可随时在「设置 → 通用 → 语言」中修改。</p>
+      <button class="btn primary onboarding-start" id="onboarding-start" type="button" data-i18n="onboarding.start">开始使用</button>
+    </div>
   </div>
 
   <!-- 连接编辑 -->
@@ -118,7 +143,7 @@
 
   <!-- 设置 -->
   <div class="modal-mask" id="modal-settings" hidden>
-    <div class="modal wide">
+    <div class="modal wide settings">
       <header class="modal-head">
         <h2 data-i18n="modal.settings">设置</h2>
         <button class="icon-btn" data-close="modal-settings">✕</button>
@@ -171,14 +196,30 @@
 
   <!-- SFTP（可开关；关闭时入口隐藏、命令被后端门控拒绝） -->
   <div class="modal-mask" id="modal-sftp" hidden>
-    <div class="modal wide">
+    <div class="modal wide sftp">
       <header class="modal-head">
         <h2 data-i18n="modal.sftp">SFTP 文件</h2>
         <button class="icon-btn" data-close="modal-sftp">✕</button>
       </header>
       <div class="modal-body" id="sftp-body"></div>
+      <!-- 拖拽上传提示：本地文件拖到窗口内时浮现 -->
+      <div class="sftp-dropzone" id="sftp-dropzone">
+        <div class="sftp-dropzone-card">
+          <span class="sftp-dropzone-icon">⬆</span>
+          <span class="sftp-dropzone-title">松开即可上传到当前目录</span>
+          <span class="sftp-dropzone-path" id="sftp-dropzone-path"></span>
+        </div>
+      </div>
+      <!-- 建立连接过场：避免等待期间看起来像卡住 -->
+      <div class="sftp-connecting" id="sftp-connecting" hidden>
+        <div class="sftp-connecting-card">
+          <span class="sftp-spinner"></span>
+          <span class="sftp-connecting-text" id="sftp-connecting-text">正在连接…</span>
+        </div>
+      </div>
       <footer class="modal-foot">
-        <span class="muted" id="sftp-hint"></span>
+        <!-- 传输进度与「关闭」同一行 -->
+        <div class="sftp-transfers" id="sftp-transfers" hidden></div>
         <span class="spacer"></span>
         <button class="btn ghost" data-close="modal-sftp" data-i18n="common.close">关闭</button>
       </footer>
@@ -222,14 +263,17 @@
     <div class="modal wide">
       <header class="modal-head">
         <h2 data-i18n="modal.snippets">命令片段</h2>
+        <span id="snip-count" class="muted snip-count"></span>
+        <label class="snip-search-wrap" id="snip-search-wrap" hidden>
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="11" cy="11" r="7"></circle>
+            <line x1="16.5" y1="16.5" x2="21" y2="21"></line>
+          </svg>
+          <input id="snip-search" type="text" spellcheck="false" placeholder="筛选片段…" aria-label="筛选片段" />
+        </label>
         <button class="icon-btn" data-close="modal-snippets">✕</button>
       </header>
       <div class="modal-body" id="snip-body"></div>
-      <footer class="modal-foot">
-        <span class="muted" id="snip-hint"></span>
-        <span class="spacer"></span>
-        <button class="btn ghost" data-close="modal-snippets" data-i18n="common.close">关闭</button>
-      </footer>
     </div>
   </div>
 
@@ -264,12 +308,6 @@
         <button class="icon-btn" data-close="modal-search">✕</button>
       </header>
       <div class="modal-body" id="search-body"></div>
-      <footer class="modal-foot">
-        <span class="muted" id="search-hint"></span>
-        <span class="muted" id="search-tip">空格分隔的多个关键词需同时命中。</span>
-        <span class="spacer"></span>
-        <button class="btn ghost" data-close="modal-search" data-i18n="common.close">关闭</button>
-      </footer>
     </div>
   </div>
 
@@ -305,21 +343,134 @@
     </div>
   </div>
 
-  <!-- 危险命令二次确认 -->
-  <div class="modal-mask" id="modal-danger" hidden>
+  <!-- 主密码保险库：新装首次设置；之后由本地自动解锁令牌静默解锁，仅在需要时弹出（核心，不随模块开关） -->
+  <div class="modal-mask" id="modal-vault" hidden>
     <div class="modal narrow">
-      <header class="modal-head warn">
-        <h2 data-i18n="modal.danger">危险命令确认</h2>
+      <header class="modal-head">
+        <h2 id="vault-title">主密码保险库</h2>
       </header>
       <div class="modal-body">
-        <p data-i18n="danger.desc">即将在远端执行以下命令，其影响不可撤销：</p>
+        <p class="desc" id="vault-desc" data-i18n="vault.desc">SSH 密码 / API Key 等敏感信息以主密码加密保存在本地，并随 Git 同步一起分发。</p>
+        <div class="field">
+          <div class="field-label">
+            <span class="name" data-i18n="vault.password">主密码</span>
+          </div>
+          <div class="field-control">
+            <input type="password" id="vault-password" autocomplete="off" spellcheck="false" />
+          </div>
+        </div>
+        <div class="field" id="vault-confirm-field" hidden>
+          <div class="field-label">
+            <span class="name" data-i18n="vault.confirm">确认主密码</span>
+          </div>
+          <div class="field-control">
+            <input type="password" id="vault-password2" autocomplete="off" spellcheck="false" />
+          </div>
+        </div>
+        <p class="inline-note error" id="vault-error" hidden></p>
+        <p class="inline-note" id="vault-note" data-i18n="vault.warning" hidden>主密码遗失后无法恢复，只能重置保险库并重新输入所有密码。</p>
+      </div>
+      <footer class="modal-foot">
+        <button class="btn ghost" id="vault-reset" data-i18n="vault.reset" hidden>忘记主密码？重置保险库</button>
+        <span class="spacer"></span>
+        <button class="btn primary" id="vault-submit">解锁</button>
+      </footer>
+    </div>
+  </div>
+
+  <!-- 主密码冲突：Git 同步导入的保险库与本机主密码不一致 -->
+  <div class="modal-mask" id="modal-vault-conflict" hidden>
+    <div class="modal narrow">
+      <header class="modal-head warn">
+        <h2 data-i18n="vault.conflictTitle">主密码不一致</h2>
+      </header>
+      <div class="modal-body">
+        <p class="desc">Git 同步仓库中的保险库由另一套主密码加密，与本机不一致。为避免丢失数据，做出选择前不会覆盖任何一侧。</p>
+        <div class="field">
+          <div class="field-label">
+            <span class="name" data-i18n="vault.conflictRemoteLabel">远端主密码</span>
+          </div>
+          <div class="field-control">
+            <input type="password" id="vault-conflict-password" autocomplete="off" spellcheck="false" placeholder="选择「采用远端」时填写" />
+          </div>
+        </div>
+        <p class="inline-note error" id="vault-conflict-error" hidden></p>
+        <p class="inline-note">「采用远端」会用远端保险库替换本机，其它设备上已有的密码即可解锁；「保留本地」会用本机密文重新覆盖远端仓库。</p>
+      </div>
+      <footer class="modal-foot">
+        <button class="btn ghost" id="vault-conflict-pause">暂停同步 secrets.json</button>
+        <button class="btn ghost" id="vault-conflict-keep">保留本地并覆盖远端</button>
+        <span class="spacer"></span>
+        <button class="btn primary" id="vault-conflict-adopt">采用远端</button>
+      </footer>
+    </div>
+  </div>
+
+  <!-- 密码补录：快捷连接认证不通过时手动输入密码，由 util.js 的 promptPassword() 驱动 -->
+  <div class="modal-mask" id="modal-password" hidden>
+    <div class="modal dialog" role="dialog" aria-modal="true" aria-labelledby="password-title" aria-describedby="password-message">
+      <div class="dialog-head">
+        <span class="dialog-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" /></svg>
+        </span>
+        <div class="dialog-titles">
+          <h2 class="dialog-title" id="password-title">输入密码</h2>
+          <p class="dialog-message" id="password-message"></p>
+        </div>
+      </div>
+      <div class="field compact">
+        <div class="field-label">
+          <span class="name" id="password-label">密码</span>
+        </div>
+        <div class="field-control">
+          <input type="password" id="password-input" autocomplete="off" spellcheck="false" />
+        </div>
+      </div>
+      <footer class="dialog-foot">
+        <button class="btn ghost" id="password-cancel">取消</button>
+        <button class="btn primary" id="password-ok">连接</button>
+      </footer>
+    </div>
+  </div>
+
+  <!-- 通用二次确认：统一替代系统原生确认框，由 util.js 的 ask() 驱动 -->
+  <div class="modal-mask" id="modal-confirm" hidden>
+    <div class="modal dialog" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title" aria-describedby="confirm-message">
+      <div class="dialog-head">
+        <span class="dialog-icon warn" id="confirm-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" /><line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" /></svg>
+        </span>
+        <div class="dialog-titles">
+          <h2 class="dialog-title" id="confirm-title">确认操作</h2>
+          <p class="dialog-message" id="confirm-message"></p>
+        </div>
+      </div>
+      <footer class="dialog-foot">
+        <button class="btn ghost" id="confirm-cancel">取消</button>
+        <button class="btn primary" id="confirm-ok">确定</button>
+      </footer>
+    </div>
+  </div>
+
+  <!-- 危险命令二次确认（与通用确认弹窗同一视觉语言） -->
+  <div class="modal-mask" id="modal-danger" hidden>
+    <div class="modal dialog" role="alertdialog" aria-modal="true">
+      <div class="dialog-head">
+        <span class="dialog-icon danger" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" /><line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" /></svg>
+        </span>
+        <div class="dialog-titles">
+          <h2 class="dialog-title danger" data-i18n="modal.danger">危险命令确认</h2>
+          <p class="dialog-message" data-i18n="danger.desc">即将在远端执行以下命令，其影响不可撤销：</p>
+        </div>
+      </div>
+      <div class="dialog-body">
         <pre class="danger-cmd" id="danger-cmd"></pre>
         <p class="danger-reason" id="danger-reason"></p>
       </div>
-      <footer class="modal-foot">
-        <span class="spacer"></span>
+      <footer class="dialog-foot">
         <button class="btn ghost" id="danger-cancel" data-i18n="common.cancel">取消</button>
-        <button class="btn danger" id="danger-confirm" data-i18n="common.confirm">确认执行</button>
+        <button class="btn danger-solid" id="danger-confirm" data-i18n="common.confirm">确认执行</button>
       </footer>
     </div>
   </div>
@@ -336,6 +487,7 @@
   <script src="js/ssh.js"></script>
   <script src="js/terminal.js"></script>
   <script src="js/tabs.js"></script>
+  <script src="js/sync_input.js"></script>
   <script src="js/split.js"></script>
   <script src="js/connections.js"></script>
   <script src="js/git_sync.js"></script>
@@ -343,6 +495,7 @@
   <script src="js/sftp.js"></script>
   <script src="js/port_forward.js"></script>
   <script src="js/import_export.js"></script>
+  <script src="js/rdp.js"></script>
   <script src="js/snippets.js"></script>
   <script src="js/history.js"></script>
   <script src="js/search.js"></script>
@@ -350,6 +503,8 @@
   <script src="js/shortcuts.js"></script>
   <script src="js/ai.js"></script>
   <script src="js/settings.js"></script>
+  <script src="js/vault.js"></script>
+  <script src="js/onboarding.js"></script>
   <script src="js/app.js"></script>
 </body>
 </html>

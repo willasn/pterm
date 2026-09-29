@@ -15,7 +15,6 @@
   "use strict";
 
   const { el, $, toast, ask, errorText, confirmDialog } = PShell.util;
-  const { select } = PShell.form;
 
   let enabled = false;
   let flags = {};
@@ -27,6 +26,8 @@
   let mode = "ask";
   /** Agent 单轮循环上限，防止模型反复试探停不下来 */
   const MAX_AGENT_STEPS = 10;
+  /** 模型未配置「最大输入 token」时的兜底上限（对应设置里的输入占位值 128000） */
+  const DEFAULT_MAX_INPUT_TOKENS = 128000;
 
   /** 没有活动会话时（尚未连接 / 全部关闭）的兜底 key，仅用于显示空状态 */
   const NO_SESSION_KEY = "__no_session__";
@@ -111,11 +112,13 @@
     autoGrow();
   }
 
-  /** 底部控件行里选中的模型条目 id；下拉不存在时返回 null（后端会回退到默认模型）。 */
+  /** 底部控件行里选中的模型条目 id；无模型时返回 null（后端会回退到默认模型）。 */
   function selectedModel() {
-    const host = $("ai-model-host");
-    const node = host ? host.querySelector("select") : null;
-    return node && node.value ? node.value : null;
+    const models = (aiConfig && aiConfig.models) || [];
+    if (!models.length) return null;
+    if (selectedModelId && models.some((m) => m.id === selectedModelId)) return selectedModelId;
+    // 未选择 / 选择已失效时与下拉展示保持一致：回退到列表第一条
+    return models[0].id;
   }
 
   function activeSession() {
@@ -252,22 +255,144 @@
   // 面板
   // -------------------------------------------------------------------------
 
-  /** 模型下拉：列出设置中定义的自定义模型，value 用条目 id 以便后端定位地址与 Key。 */
+  /** 打开中的模型下拉的关闭函数；重绘前先调用，避免残留 document 监听。 */
+  let closeModelMenu = null;
+
+  /**
+   * 模型下拉：列出设置中定义的自定义模型，value 用条目 id 以便后端定位地址与 Key。
+   * 用自定义浮层替代原生 select —— 原生 option 面板无法跟随主题（选中项恒为系统蓝），
+   * 与面板其余控件的描边 / 圆角语言割裂。
+   */
   function buildModelSelect() {
     const models = (aiConfig && aiConfig.models) || [];
-    const options = models.map((m) => {
-      const label = m.name || m.model || "未命名模型";
-      return { value: m.id, label: m.model && m.name ? `${label}（${m.model}）` : label };
+    const currentId = selectedModel();
+    const wrap = el("div", { class: "ai-model-select" });
+    const nameNode = el("span", { class: "ai-model-trigger-name" });
+    const trigger = el(
+      "button",
+      {
+        class: "ai-model-trigger",
+        type: "button",
+        title: "选择模型",
+        "aria-haspopup": "listbox",
+        "aria-expanded": "false",
+      },
+      [
+        nameNode,
+        el("span", {
+          class: "ai-model-chevron",
+          html:
+            '<svg viewBox="0 0 14 14" width="10" height="10" aria-hidden="true">' +
+            '<path d="M3.5 5.25 7 8.75l3.5-3.5" fill="none" stroke="currentColor" ' +
+            'stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+        }),
+      ]
+    );
+    const menu = el("div", { class: "ai-model-menu", role: "listbox", "aria-label": "选择模型" });
+    menu.hidden = true;
+
+    models.forEach((m) => {
+      const name = m.name || m.model || "未命名模型";
+      const sub = m.name && m.model ? m.model : "";
+      const on = m.id === currentId;
+      menu.appendChild(
+        el(
+          "button",
+          {
+            class: "ai-model-option" + (on ? " selected" : ""),
+            type: "button",
+            role: "option",
+            "aria-selected": on ? "true" : "false",
+            "data-value": m.id,
+            onclick: () => choose(m.id),
+          },
+          [
+            el("span", { class: "ai-model-option-text" }, [
+              el("span", { class: "ai-model-option-name", text: name }),
+              sub ? el("span", { class: "ai-model-option-sub", text: sub }) : null,
+            ]),
+            el("span", {
+              class: "ai-model-option-check",
+              html:
+                '<svg viewBox="0 0 14 14" width="12" height="12" aria-hidden="true">' +
+                '<path d="M3 7.5 6 10.5 11 4.5" fill="none" stroke="currentColor" ' +
+                'stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+            }),
+          ]
+        )
+      );
     });
-    const node = select(options, {});
-    if (selectedModelId && models.some((m) => m.id === selectedModelId)) {
-      node.value = selectedModelId;
+
+    const current = models.filter((m) => m.id === currentId)[0] || models[0] || null;
+    nameNode.textContent = current ? current.name || current.model || "未命名模型" : "";
+
+    let outsideHandler = null;
+
+    function close() {
+      if (menu.hidden) return;
+      menu.hidden = true;
+      wrap.classList.remove("open");
+      trigger.setAttribute("aria-expanded", "false");
+      if (outsideHandler) {
+        document.removeEventListener("mousedown", outsideHandler);
+        outsideHandler = null;
+      }
+      if (closeModelMenu === close) closeModelMenu = null;
     }
-    node.title = "选择模型";
-    node.addEventListener("change", () => {
-      selectedModelId = node.value;
+
+    function open() {
+      if (!menu.hidden) return;
+      menu.hidden = false;
+      wrap.classList.add("open");
+      trigger.setAttribute("aria-expanded", "true");
+      closeModelMenu = close;
+      outsideHandler = (ev) => {
+        if (!wrap.contains(ev.target)) close();
+      };
+      document.addEventListener("mousedown", outsideHandler);
+      // 打开后把焦点移到当前选中项，键盘可直接上下选择
+      const sel = menu.querySelector(".ai-model-option.selected") || menu.querySelector(".ai-model-option");
+      if (sel) sel.focus();
+    }
+
+    function choose(id) {
+      selectedModelId = id;
+      const hit = models.filter((m) => m.id === id)[0];
+      if (hit) nameNode.textContent = hit.name || hit.model || "未命名模型";
+      menu.querySelectorAll(".ai-model-option").forEach((node) => {
+        const on = node.dataset.value === id;
+        node.classList.toggle("selected", on);
+        node.setAttribute("aria-selected", on ? "true" : "false");
+      });
+      close();
+      trigger.focus();
+      // 换模型即换上下文上限，占比图标要跟着重算
+      renderContextMeter();
+    }
+
+    trigger.addEventListener("click", () => (menu.hidden ? open() : close()));
+    wrap.addEventListener("keydown", (ev) => {
+      if (ev.key === "Escape") {
+        if (menu.hidden) return;
+        close();
+        trigger.focus();
+        return;
+      }
+      if (ev.key !== "ArrowDown" && ev.key !== "ArrowUp") return;
+      ev.preventDefault();
+      if (menu.hidden) {
+        open();
+        return;
+      }
+      const opts = Array.prototype.slice.call(menu.querySelectorAll(".ai-model-option"));
+      const idx = opts.indexOf(document.activeElement);
+      const next = ev.key === "ArrowDown" ? (idx + 1) % opts.length : (idx - 1 + opts.length) % opts.length;
+      opts[next].focus();
     });
-    return node;
+
+    wrap.appendChild(trigger);
+    wrap.appendChild(menu);
+    return wrap;
   }
 
   /** 模式切换控件（Ask / Agent），填进底部控件行的固定挂载点。 */
@@ -314,6 +439,7 @@
     renderModelSelect();
     renderCompose();
     renderScroll();
+    renderContextMeter();
   }
 
   /** 会话行：当前主机 + 连接状态点 + 当前模式。 */
@@ -330,12 +456,122 @@
   function renderModelSelect() {
     const host = $("ai-model-host");
     if (!host) return;
+    // 重绘会丢掉旧节点，先关掉可能开着的下拉，避免 document 监听残留
+    if (closeModelMenu) closeModelMenu();
     host.textContent = "";
     if (!((aiConfig && aiConfig.models) || []).length) {
       host.appendChild(el("span", { class: "ai-model-label", text: "未配置模型" }));
       return;
     }
     host.appendChild(buildModelSelect());
+  }
+
+  // -------------------------------------------------------------------------
+  // 上下文占比图标（在输入控件行里，紧邻 Agent）
+  //
+  // 会话没有真正的多轮历史（每次请求只带当前提问 + 系统上下文），这里用面板消息
+  // 流的体量粗略估算「本次对话已占用的上下文」，分母是所选模型的输入 token 上限
+  // ——设置里的输入 / 输出上限都是给大模型**单次**请求用的，故输入上限即单轮的
+  // 上下文预算。图标只画环形进度，具体数字鼠标移上才展开。仅作提示，不参与请求。
+  // -------------------------------------------------------------------------
+
+  /** 当前选中的模型条目；未选中或找不到时退回列表第一条。 */
+  function selectedModelConfig() {
+    const models = (aiConfig && aiConfig.models) || [];
+    const id = selectedModel();
+    if (id) {
+      const hit = models.filter((m) => m.id === id)[0];
+      if (hit) return hit;
+    }
+    return models[0] || null;
+  }
+
+  /** 粗略估算一段文本的 token 数：CJK / 全角字符按 1 token，其余按 4 字符 1 token。 */
+  function estimateTokens(text) {
+    if (!text) return 0;
+    let tokens = 0;
+    for (const ch of String(text)) {
+      tokens += ch.codePointAt(0) >= 0x2e80 ? 1 : 0.25;
+    }
+    return Math.ceil(tokens);
+  }
+
+  /** 汇总当前会话消息流里所有可见文本的估算 token。 */
+  function estimateContextTokens(view) {
+    const messages = (view && view.messages) || [];
+    let total = 0;
+    messages.forEach((msg) => {
+      total += estimateTokens(msg.text);
+      total += estimateTokens(msg.note);
+      total += estimateTokens(msg.command);
+      total += estimateTokens(msg.output);
+    });
+    return total;
+  }
+
+  /** 紧凑数字：128000 -> 128K，1000000 -> 1000K，1200 -> 1.2K。 */
+  function compactNumber(n) {
+    if (n >= 1000) {
+      const k = n / 1000;
+      return (k >= 100 ? Math.round(k) : Math.round(k * 10) / 10) + "K";
+    }
+    return String(n);
+  }
+
+  /**
+   * 渲染上下文占比图标：输入控件行里的一个环形进度，紧邻 Agent。
+   * 环形不写字，鼠标移上弹出「上下文使用率 / {百分比}% of {上限}」。
+   * 无会话或无模型时没有可比对象，整个图标收起。颜色随占比升高由绿转黄转红。
+   */
+  function renderContextMeter() {
+    const host = $("ai-context-meter");
+    if (!host) return;
+
+    const model = selectedModelConfig();
+    if (!sessionIdOf() || !model) {
+      host.hidden = true;
+      return;
+    }
+    host.hidden = false;
+
+    // 输入上限是单次请求的输入预算，也就是这一轮的上下文上限
+    const limit = Math.max(1, Number(model.max_input_tokens) || DEFAULT_MAX_INPUT_TOKENS);
+    const used = estimateContextTokens(currentView());
+    const ratio = Math.min(1, used / limit);
+    const pct = Math.round(ratio * 100);
+    const level = pct >= 90 ? "high" : pct >= 70 ? "warn" : "ok";
+
+    // 环形：r=5.5，周长 2πr；进度用 dasharray 表现
+    const radius = 5.5;
+    const circumference = 2 * Math.PI * radius;
+    const dash = (ratio * circumference).toFixed(2);
+
+    host.className = "ai-context-meter " + level;
+    // 完整明细既在悬浮层里，也写进 aria-label 供读屏使用
+    host.setAttribute(
+      "aria-label",
+      "上下文使用率（估算）" +
+        pct +
+        "%：当前窗口约 " +
+        compactNumber(used) +
+        " tokens，输入上限 " +
+        compactNumber(limit) +
+        " tokens"
+    );
+    host.innerHTML =
+      '<svg class="ai-meter-ring" viewBox="0 0 14 14" width="14" height="14" aria-hidden="true">' +
+      '<circle class="ai-meter-track" cx="7" cy="7" r="' + radius + '" fill="none" stroke-width="2"/>' +
+      '<circle class="ai-meter-value" cx="7" cy="7" r="' + radius + '" fill="none" stroke-width="2" ' +
+      'stroke-dasharray="' + dash + " " + circumference.toFixed(2) + '" transform="rotate(-90 7 7)"/>' +
+      "</svg>" +
+      '<span class="ai-meter-tip" role="tooltip">' +
+      '<span class="ai-meter-tip-title">上下文使用率</span>' +
+      '<span class="ai-meter-tip-main">' +
+      pct +
+      "% of " +
+      compactNumber(limit) +
+      "</span>" +
+      "</span>";
   }
 
   /** 底部输入区：占位符随模式变化。 */
@@ -495,7 +731,252 @@
 
     syncEmpty();
     syncComposeState();
+    renderContextMeter();
     if (stick) scrollToBottom();
+  }
+
+  // -------------------------------------------------------------------------
+  // 回答的 Markdown 渲染（轻量白名单子集）
+  //
+  // 只做「让回答更好读」的那几样：代码块、行内 code、加粗/斜体/删除线、列表、标题、
+  // 引用、分隔线、http(s) 链接。整棵 DOM 都用 el()/textContent 构建，不拼 HTML 串、
+  // 不用 innerHTML——模型输出里的标签只会当纯文本显示，没有注入面。
+  //
+  // 只在回答结束后渲染一次：流式期间仍用 <pre> 逐字更新，半截的 ``` 会渲染成乱码块。
+  // -------------------------------------------------------------------------
+
+  /** 关键字集合：仅用于代码块着色，命中就给主色，不命中按正文色。 */
+  const MD_KEYWORDS = new Set(
+    (
+      "if else elif fi then for while until do done in case esac function func return break continue " +
+      "import from export default class struct interface def new this self super try except catch finally " +
+      "throw raise with as pass lambda yield global local async await defer go select " +
+      "and or not is none null nil true false undefined var let const int float string bool void " +
+      "public private protected static echo cd sudo rm cp mv mkdir source cat grep sed awk"
+    ).split(" ")
+  );
+
+  /** 通用词法：注释 / 字符串 / 数字 / 标识符。注释前缀按语言家族区分，免得把 CSS 的 # 颜色值当注释。 */
+  function mdLexer(lang) {
+    const hash = /^(sh|bash|zsh|shell|fish|yaml|yml|py|python|rb|ruby|toml|ini|conf|cfg|env|dockerfile|makefile|mk|perl|r|plist)$/.test(lang);
+    const dash = /^(sql|lua|hs|haskell)$/.test(lang);
+    const comment = hash ? "#[^\\n]*" : dash ? "--[^\\n]*" : "//[^\\n]*|/\\*[\\s\\S]*?\\*/";
+    return new RegExp(
+      "(" + comment + ")|(\"(?:[^\"\\\\]|\\\\.)*\"|'(?:[^'\\\\]|\\\\.)*'|`(?:[^`\\\\]|\\\\.)*`)" +
+        "|\\b(\\d+(?:\\.\\d+)?)\\b|\\b([A-Za-z_][A-Za-z0-9_]*)\\b",
+      "g"
+    );
+  }
+
+  /** 代码块的基础着色：注释 / 字符串 / 数字 / 关键字，其余保持正文色。 */
+  function mdHighlight(host, code, lang) {
+    if (!code) return;
+    // 纯文本类语言不着色，免得把中文说明里的数字、单词染得花花绿绿
+    if (!lang || /^(text|txt|plain|log|output|console|markdown|md|diff|patch)$/.test(lang)) {
+      host.textContent = code;
+      return;
+    }
+    const re = mdLexer(lang);
+    let last = 0;
+    let m;
+    while ((m = re.exec(code)) !== null) {
+      if (m.index > last) host.appendChild(document.createTextNode(code.slice(last, m.index)));
+      let cls = "";
+      if (m[1]) cls = "cmt";
+      else if (m[2]) cls = "str";
+      else if (m[3]) cls = "num";
+      else if (MD_KEYWORDS.has(m[4])) cls = "kw";
+      if (cls) host.appendChild(el("span", { class: "md-t-" + cls, text: m[0] }));
+      else host.appendChild(document.createTextNode(m[0]));
+      last = m.index + m[0].length;
+    }
+    if (last < code.length) host.appendChild(document.createTextNode(code.slice(last)));
+  }
+
+  /** 复制按钮：写完剪贴板把文字短暂改成「已复制」，不弹 toast 打断阅读。 */
+  function mdCopyButton(code) {
+    const btn = el("button", { class: "md-copy", type: "button", text: "复制" });
+    btn.addEventListener("click", () => {
+      if (!navigator.clipboard || typeof navigator.clipboard.writeText !== "function") {
+        toast("当前环境不支持剪贴板", "error");
+        return;
+      }
+      navigator.clipboard.writeText(code).then(
+        () => {
+          btn.textContent = "已复制";
+          setTimeout(() => (btn.textContent = "复制"), 1200);
+        },
+        () => toast("复制失败", "error")
+      );
+    });
+    return btn;
+  }
+
+  /** 一个代码块：语言标签 + 复制按钮 + 代码体（不折行，长命令横向滚动，保持原样）。 */
+  function mdCodeBlock(code, lang) {
+    const text = el("code", { class: "md-code-text" });
+    mdHighlight(text, code, lang);
+    const body = el("pre", { class: "md-code-body" }, [text]);
+    return el("div", { class: "md-code" }, [
+      el("div", { class: "md-code-head" }, [
+        el("span", { class: "md-code-lang", text: lang || "text" }),
+        mdCopyButton(code),
+      ]),
+      body,
+    ]);
+  }
+
+  /** 行内标记：不做嵌套，按「先匹配先赢」拆成文本节点与行内元素。 */
+  const MD_INLINE = /(`[^`\n]+`)|(\*\*[^*\n]+\*\*)|(__[^_\n]+__)|(~~[^~\n]+~~)|(\*[^*\n]+\*)|(\[[^\]\n]+\]\(https?:\/\/[^\s)]+\))/g;
+
+  function mdInline(text) {
+    const out = [];
+    let last = 0;
+    let m;
+    MD_INLINE.lastIndex = 0;
+    while ((m = MD_INLINE.exec(text)) !== null) {
+      if (m.index > last) out.push(document.createTextNode(text.slice(last, m.index)));
+      const token = m[0];
+      if (m[1]) out.push(el("code", { class: "md-code-inline", text: token.slice(1, -1) }));
+      else if (m[2] || m[3]) out.push(el("strong", { text: token.slice(2, -2) }));
+      else if (m[4]) out.push(el("del", { class: "md-del", text: token.slice(2, -2) }));
+      else if (m[5]) out.push(el("em", { text: token.slice(1, -1) }));
+      else {
+        // 链接：正则已限定 http/https。应用没装 opener 插件，点击没法唤起系统浏览器，
+        // 而放任默认行为有可能在本窗口内导航、把界面顶掉，所以改成复制链接。
+        const hit = token.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
+        const link = el("a", { class: "md-link", href: hit[2], title: hit[2], text: hit[1] });
+        link.addEventListener("click", (event) => {
+          event.preventDefault();
+          if (!navigator.clipboard || typeof navigator.clipboard.writeText !== "function") {
+            toast("当前环境不支持剪贴板", "error");
+            return;
+          }
+          navigator.clipboard.writeText(hit[2]).then(
+            () => toast("链接已复制到剪贴板", "ok"),
+            () => toast("复制失败", "error")
+          );
+        });
+        out.push(link);
+      }
+      last = m.index + token.length;
+    }
+    if (last < text.length) out.push(document.createTextNode(text.slice(last)));
+    return out;
+  }
+
+  /** 逐行解析块级结构：围栏代码 / 标题 / 列表 / 引用 / 分隔线 / 段落。 */
+  function mdBlocks(text) {
+    const root = el("div", { class: "md" });
+    const lines = String(text == null ? "" : text).replace(/\r\n?/g, "\n").split("\n");
+    let i = 0;
+    let para = null;
+    let list = null;
+    let listTag = "";
+
+    const flushPara = () => {
+      if (para) {
+        root.appendChild(para);
+        para = null;
+      }
+    };
+    const flushList = () => {
+      if (list) {
+        root.appendChild(list);
+        list = null;
+        listTag = "";
+      }
+    };
+    const flushAll = () => {
+      flushPara();
+      flushList();
+    };
+    const appendTo = (node, nodes) => nodes.forEach((n) => node.appendChild(n));
+
+    while (i < lines.length) {
+      const line = lines[i];
+
+      // 围栏代码块
+      const fence = line.match(/^\s*```+\s*([A-Za-z0-9+#._-]*)\s*$/);
+      if (fence) {
+        flushAll();
+        const lang = (fence[1] || "").toLowerCase();
+        const buf = [];
+        i += 1;
+        // 未闭合的围栏按「到文末为止」处理，否则残缺的 ``` 会把后面全部吞进代码块
+        while (i < lines.length && !/^\s*```+\s*$/.test(lines[i])) {
+          buf.push(lines[i]);
+          i += 1;
+        }
+        i += 1;
+        root.appendChild(mdCodeBlock(buf.join("\n"), lang));
+        continue;
+      }
+
+      if (!line.trim()) {
+        flushAll();
+        i += 1;
+        continue;
+      }
+
+      // 分隔线
+      if (/^\s{0,3}(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) {
+        flushAll();
+        root.appendChild(el("hr", { class: "md-hr" }));
+        i += 1;
+        continue;
+      }
+
+      // 标题：最多认到 4 级，聊天面板里再深就没有层级意义了
+      const head = line.match(/^\s{0,3}(#{1,6})\s+(.*)$/);
+      if (head) {
+        flushAll();
+        root.appendChild(
+          el("h" + Math.min(head[1].length, 4), { class: "md-h" }, mdInline(head[2].trim()))
+        );
+        i += 1;
+        continue;
+      }
+
+      // 引用：连续多行合成一块，内部再按块级规则解析
+      if (/^\s{0,3}>\s?/.test(line)) {
+        flushAll();
+        const buf = [];
+        while (i < lines.length && /^\s{0,3}>\s?/.test(lines[i])) {
+          buf.push(lines[i].replace(/^\s{0,3}>\s?/, ""));
+          i += 1;
+        }
+        const quote = el("blockquote", { class: "md-quote" });
+        quote.appendChild(mdBlocks(buf.join("\n")));
+        root.appendChild(quote);
+        continue;
+      }
+
+      // 列表：有序 / 无序各自成块，切换类型时收掉上一块
+      const ul = line.match(/^\s*[-*+]\s+(.*)$/);
+      const ol = line.match(/^\s*\d+[.)]\s+(.*)$/);
+      if (ul || ol) {
+        flushPara();
+        const tag = ul ? "ul" : "ol";
+        if (listTag !== tag) {
+          flushList();
+          list = el(tag, { class: "md-list" });
+          listTag = tag;
+        }
+        list.appendChild(el("li", null, mdInline((ul || ol)[1])));
+        i += 1;
+        continue;
+      }
+
+      // 普通段落：连续非空行合成一段，段内换行按 <br> 保留（终端类回答依赖换行分层）
+      if (!para) para = el("p", { class: "md-p" });
+      else para.appendChild(el("br"));
+      appendTo(para, mdInline(line));
+      i += 1;
+    }
+
+    flushAll();
+    return root;
   }
 
   /** 助手消息的正文：可能是命令气泡，也可能是文本回答 / 结论。 */
@@ -552,9 +1033,15 @@
     const placeholder = msg.kind === "agent" ? "（思考中…）" : "（返回中…）";
     const text = msg.text || (msg.running ? placeholder : "");
     if (text) {
-      // 流式阶段只改这个节点的文本，所以要把引用留在消息对象上
-      msg.textNode = el("pre", { class: "log-preview", text });
-      wrap.appendChild(msg.textNode);
+      if (msg.running) {
+        // 流式阶段保持纯文本：半截的 Markdown 会渲染成乱码块，逐 token 解析也没必要
+        msg.textNode = el("pre", { class: "log-preview", text });
+        wrap.appendChild(msg.textNode);
+      } else {
+        // 回答结束，一次性渲染成结构化 DOM
+        msg.textNode = null;
+        wrap.appendChild(mdBlocks(text));
+      }
     }
     return wrap;
   }
@@ -1072,7 +1559,11 @@
       return;
     }
 
-    const confirmed = await ask("清空当前会话的 AI 对话内容？此操作不可撤销。");
+    const confirmed = await ask("清空当前会话的 AI 对话内容？此操作不可撤销。", {
+      title: "清空对话",
+      okText: "清空",
+      kind: "danger",
+    });
     if (!confirmed) return;
 
     stopSessionWork(view);
@@ -1211,9 +1702,18 @@
   const input = inputNode();
   if (input) {
     input.addEventListener("input", autoGrow);
-    // Ctrl / Cmd + Enter 等同于点主按钮
+    // 输入法组词中（中文候选面板打开）时，Enter 用于上屏，不触发发送
+    let composing = false;
+    input.addEventListener("compositionstart", () => {
+      composing = true;
+    });
+    input.addEventListener("compositionend", () => {
+      composing = false;
+    });
+    // Enter 直接发送；Shift + Enter 换行
     input.addEventListener("keydown", (event) => {
-      if (event.key !== "Enter" || !(event.ctrlKey || event.metaKey)) return;
+      if (event.key !== "Enter" || event.shiftKey) return;
+      if (composing || event.isComposing || event.keyCode === 229) return;
       event.preventDefault();
       onPrimaryAction();
     });

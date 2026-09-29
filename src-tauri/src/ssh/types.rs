@@ -7,11 +7,11 @@ use serde::{Deserialize, Serialize};
 /// 认证方式。
 ///
 /// `password` / `passphrase` 字段允许前端在本次连接时临时传入；为 `None` 时
-/// 从系统钥匙串按 `connection_id` 读取。**任何情况下都不会写盘。**
+/// 从加密保险库按 `connection_id` 读取。**任何情况下都不会写盘。**
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum AuthSpec {
-    /// 依次尝试 agent → 默认私钥 → 钥匙串密码
+    /// 依次尝试 agent → 默认私钥 → 保险库密码
     #[default]
     Auto,
     Password {
@@ -57,7 +57,7 @@ impl Default for JumpSpec {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, rename_all = "snake_case")]
 pub struct ConnectParams {
-    /// 对应 SQLite 中的连接配置 id，用于读取钥匙串与记录历史。临时连接可为空。
+    /// 对应 SQLite 中的连接配置 id，用于读取保险库与记录历史。临时连接可为空。
     pub connection_id: Option<String>,
     pub name: Option<String>,
     pub host: String,
@@ -119,7 +119,12 @@ pub enum SessionState {
     },
     Disconnected { reason: String, will_reconnect: bool },
     Closed,
-    Error { message: String },
+    Error {
+        message: String,
+        /// 是否为「认证被拒」（区别于网络 / 参数错误）。前端据此在快捷连接
+        /// 失败后弹框补录密码，而不是把超时、握手失败也当成密码问题。
+        auth_failed: bool,
+    },
 }
 
 impl SessionState {

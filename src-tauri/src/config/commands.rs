@@ -3,8 +3,9 @@ use tauri::{AppHandle, State};
 
 use crate::config::app_config::AppConfig;
 use crate::config::feature_flags::{module_id, FlagEntry, ModuleStatus};
-use crate::config::store::{secrets, StoredConnection};
-use crate::error::AppResult;
+use crate::config::store::{self, secrets, StoredConnection};
+use crate::config::vault::{self, VaultStatus};
+use crate::error::{AppError, AppResult};
 use crate::state::AppState;
 
 /// 应用信息，供「关于」与设置界面展示。
@@ -26,6 +27,34 @@ pub fn app_info(state: State<'_, AppState>) -> AppResult<AppInfo> {
         database_file: state.paths.database_file().display().to_string(),
         log_dir: state.paths.log_dir.display().to_string(),
     })
+}
+
+// ---------------------------------------------------------------------------
+// 首次启动引导
+// ---------------------------------------------------------------------------
+
+/// 引导完成标记的文件名，写在配置目录下。
+///
+/// 这是**本机**标记而非配置项：放在 config.yaml 里会随 Git 同步分发到其它机器，
+/// 导致换机后跳过引导；单独落文件才能保证「每台机器首次打开都引导一次」。
+const ONBOARDING_MARKER: &str = "onboarding.done";
+
+/// 是否需要在启动时展示首次引导（语言选择）。标记文件不存在即视为首次。
+#[tauri::command]
+pub fn onboarding_status(state: State<'_, AppState>) -> AppResult<bool> {
+    Ok(!state.paths.config_dir.join(ONBOARDING_MARKER).exists())
+}
+
+/// 记录引导已完成（用户选完语言并确认）。之后启动不再展示引导。
+#[tauri::command]
+pub fn onboarding_complete(state: State<'_, AppState>) -> AppResult<()> {
+    let path = state.paths.config_dir.join(ONBOARDING_MARKER);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&path, b"1")?;
+    log::info!("首次启动引导已完成：{}", path.display());
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -83,7 +112,8 @@ pub fn reset_config(app: AppHandle, state: State<'_, AppState>) -> AppResult<App
 /// 保存连接时一并提交的敏感字段。
 ///
 /// `password` / `passphrase` / `jump_password` 为 `None` 表示「不修改」，
-/// 空串表示「删除」。这些值只会进入系统钥匙串，绝不写入 SQLite 或配置文件。
+/// 空串表示「删除」。这些值只会进入主密码加密的保险库（`secrets.json`），
+/// 绝不写入 SQLite；该文件本身可随 Git 同步一起分发。
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct ConnectionInput {
@@ -94,6 +124,10 @@ pub struct ConnectionInput {
     pub passphrase: Option<String>,
     #[serde(default)]
     pub jump_password: Option<String>,
+    /// 「复制会话」的来源连接 id：新建时把该连接的保险库凭据（密码 / passphrase /
+    /// 跳板机密码 / RDP 密码）一并复制到新条目。前端拿不到明文，只能由后端按 id 复制。
+    #[serde(default)]
+    pub copy_secrets_from: Option<String>,
 }
 
 #[tauri::command]
@@ -108,6 +142,30 @@ pub fn save_connection(
 ) -> AppResult<StoredConnection> {
     let mut conn = input.connection;
     let now = chrono::Utc::now().to_rfc3339();
+    // 「复制会话」的来源连接 id（仅在新建时生效），见 ConnectionInput 的说明
+    let copy_from = input
+        .copy_secrets_from
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+
+    // 协议只接受 ssh / rdp，其余（含旧客户端缺字段）一律回退 SSH
+    conn.protocol = if conn.protocol.trim() == store::PROTOCOL_RDP {
+        store::PROTOCOL_RDP.to_string()
+    } else {
+        store::PROTOCOL_SSH.to_string()
+    };
+    conn.domain = conn
+        .domain
+        .map(|d| d.trim().to_string())
+        .filter(|d| !d.is_empty());
+    if conn.protocol == store::PROTOCOL_RDP {
+        // RDP 不使用 SSH 专属字段，避免脏数据被导出 / 同步到别处
+        conn.jump = None;
+        conn.key_path = None;
+        conn.has_passphrase = false;
+    }
 
     if conn.name.trim().is_empty() {
         conn.name = if conn.host.is_empty() {
@@ -116,7 +174,8 @@ pub fn save_connection(
             conn.host.clone()
         };
     }
-    if conn.id.trim().is_empty() {
+    let is_new = conn.id.trim().is_empty();
+    if is_new {
         conn.id = uuid::Uuid::new_v4().to_string();
         conn.created_at = now.clone();
     }
@@ -125,12 +184,22 @@ pub fn save_connection(
     }
     conn.updated_at = now;
 
-    // 敏感字段：只写钥匙串，并在记录上标记是否存在
-    conn.has_password = apply_secret(
-        &secrets::conn_password_key(&conn.id),
-        input.password,
-        conn.has_password,
-    )?;
+    // 复制会话：新建且来源是另一条连接时，先搬凭据再应用本次编辑，
+    // 这样本次表单里显式填写的密码 / passphrase 仍会覆盖复制来的值。
+    if is_new {
+        if let Some(src) = copy_from.filter(|s| *s != conn.id) {
+            copy_connection_secrets(&src, &conn.id);
+        }
+    }
+
+    // 敏感字段：只写加密保险库，并在记录上标记是否存在。
+    // SSH 与 RDP 各用一个键名，按协议路由，列表接口只回传 has_password 布尔标记。
+    let password_key = if conn.protocol == store::PROTOCOL_RDP {
+        secrets::rdp_password_key(&conn.id)
+    } else {
+        secrets::conn_password_key(&conn.id)
+    };
+    conn.has_password = apply_secret(&password_key, input.password, conn.has_password)?;
     conn.has_passphrase = apply_secret(
         &secrets::conn_passphrase_key(&conn.id),
         input.passphrase,
@@ -167,8 +236,31 @@ fn apply_secret(key: &str, value: Option<String>, current: bool) -> AppResult<bo
     }
 }
 
+/// 把源连接在保险库中的全部凭据复制到目标连接 id 下（「复制会话」用）。
+///
+/// 四类键名都尝试复制，源上不存在的键自然跳过；复制失败只记录日志，
+/// 不阻断保存流程（例如保险库未解锁时凭据复制不到，但连接配置仍会落盘）。
+fn copy_connection_secrets(from: &str, to: &str) {
+    for (src_key, dst_key) in [
+        (secrets::conn_password_key(from), secrets::conn_password_key(to)),
+        (secrets::conn_passphrase_key(from), secrets::conn_passphrase_key(to)),
+        (secrets::jump_password_key(from), secrets::jump_password_key(to)),
+        (secrets::rdp_password_key(from), secrets::rdp_password_key(to)),
+    ] {
+        match secrets::get(&src_key) {
+            Ok(Some(value)) if !value.is_empty() => {
+                if let Err(e) = secrets::set(&dst_key, &value) {
+                    log::warn!("复制保险库条目 {src_key} -> {dst_key} 失败：{e}");
+                }
+            }
+            Ok(_) => {}
+            Err(e) => log::warn!("读取保险库条目 {src_key} 失败：{e}"),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
-// AI 模型 API Key（每个模型一把，按模型条目 id 存系统钥匙串）
+// AI 模型 API Key（每个模型一把，按模型条目 id 存加密保险库）
 // ---------------------------------------------------------------------------
 
 /// 已配置 API Key 的模型 id 列表。**不返回 Key 本身**，也不内置任何 Key。
@@ -211,30 +303,67 @@ pub fn clear_ai_model_key(state: State<'_, AppState>, model_id: String) -> AppRe
     secrets::delete(&secrets::ai_model_key_key(&model_id))
 }
 
-/// 把旧版的「全局 AI Key」迁移到第一个模型条目，供启动流程调用。
-///
-/// 幂等：目标模型已有 Key、或旧 Key 不存在时什么都不做。迁移成功后删除旧键，
-/// 避免它一直留在钥匙串里；也正因如此，用户之后清空该模型 Key 不会「复活」旧值。
-pub fn migrate_legacy_ai_key(cfg: &AppConfig) {
-    let Some(model) = cfg.ai.models.first() else {
-        return;
-    };
-    let legacy = match secrets::get(&secrets::legacy_ai_api_key_key()) {
-        Ok(Some(v)) if !v.is_empty() => v,
-        _ => return,
-    };
-    // 目标已有 Key 说明用户已经配过新结构，不覆盖
-    if matches!(
-        secrets::get(&secrets::ai_model_key_key(&model.id)),
-        Ok(Some(v)) if !v.is_empty()
-    ) {
-        return;
+// ---------------------------------------------------------------------------
+// 主密码保险库
+// ---------------------------------------------------------------------------
+
+/// 保险库状态：界面据此决定「设置主密码 / 解锁 / 已就绪」。
+#[tauri::command]
+pub fn vault_status() -> AppResult<VaultStatus> {
+    vault::status()
+}
+
+/// 首次设置主密码，创建空保险库并直接解锁。
+#[tauri::command]
+pub fn vault_setup(password: String) -> AppResult<()> {
+    if password.trim().is_empty() {
+        return Err(AppError::Vault("主密码不能为空".into()));
     }
-    match secrets::set(&secrets::ai_model_key_key(&model.id), &legacy) {
-        Ok(()) => {
-            let _ = secrets::delete(&secrets::legacy_ai_api_key_key());
-            log::info!("已把旧版全局 AI Key 迁移到模型条目");
-        }
-        Err(e) => log::warn!("迁移旧版 AI Key 失败：{e}"),
+    vault::setup(&password)
+}
+
+/// 用主密码解锁保险库。密码错误时返回错误，不会清空已有数据。
+#[tauri::command]
+pub fn vault_unlock(password: String) -> AppResult<()> {
+    vault::unlock(&password)
+}
+
+/// 修改主密码：先用当前密码校验，再用新密码重新加密全部敏感字段。
+#[tauri::command]
+pub fn vault_change_password(current: String, new_password: String) -> AppResult<()> {
+    if current.trim().is_empty() {
+        return Err(AppError::Vault("请输入当前主密码".into()));
     }
+    if new_password.trim().is_empty() {
+        return Err(AppError::Vault("新主密码不能为空".into()));
+    }
+    vault::change_password(&current, &new_password)
+}
+
+/// 手动锁定，丢弃内存中的密钥与明文。锁定时保留本地自动解锁令牌（`vault.token`），
+/// 下次启动仍可静默解锁；本次会话需重新输入主密码。
+#[tauri::command]
+pub fn vault_lock() -> AppResult<()> {
+    vault::lock()
+}
+
+/// 通过主密码冲突：采用 Git 同步仓库中的保险库（需提供远端主密码）。
+#[tauri::command]
+pub fn vault_adopt_pending(password: String) -> AppResult<()> {
+    if password.trim().is_empty() {
+        return Err(AppError::Vault("请输入远端主密码".into()));
+    }
+    vault::adopt_pending(&password)
+}
+
+/// 主密码冲突：丢弃同步仓库中的保险库，保留本地不变。
+#[tauri::command]
+pub fn vault_discard_pending() -> AppResult<()> {
+    vault::discard_pending()
+}
+
+/// 忘记主密码时的兜底：删除保险库文件（其中所有敏感字段一并丢失）。
+#[tauri::command]
+pub fn vault_reset() -> AppResult<()> {
+    vault::reset()
 }

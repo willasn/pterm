@@ -27,6 +27,9 @@
 
     // ---------- 应用与配置 ----------
     appInfo: () => call("app_info"),
+    // 首次启动引导（核心，不随模块开关）：标记文件为本机私有，不随 Git 同步
+    onboardingStatus: () => call("onboarding_status"),
+    onboardingComplete: () => call("onboarding_complete"),
     getConfig: () => call("get_config"),
     saveConfig: (config) => call("save_config", { config }),
     featureFlags: () => call("feature_flags"),
@@ -38,7 +41,19 @@
     saveConnection: (input) => call("save_connection", { input }),
     deleteConnection: (id) => call("delete_connection", { id }),
 
-    // ---------- AI 模型 API Key（每个模型一把，仅存系统钥匙串） ----------
+    // ---------- 主密码保险库（核心，不随模块开关） ----------
+    vaultStatus: () => call("vault_status"),
+    vaultSetup: (password) => call("vault_setup", { password }),
+    vaultUnlock: (password) => call("vault_unlock", { password }),
+    vaultChangePassword: (current, newPassword) =>
+      call("vault_change_password", { current, newPassword }),
+    vaultLock: () => call("vault_lock"),
+    vaultReset: () => call("vault_reset"),
+    // 主密码冲突（Git 同步的保险库与本机不一致）
+    vaultAdoptPending: (password) => call("vault_adopt_pending", { password }),
+    vaultDiscardPending: () => call("vault_discard_pending"),
+
+    // ---------- AI 模型 API Key（每个模型一把，存加密保险库） ----------
     aiConfiguredModels: () => call("ai_configured_models"),
     setAiModelKey: (modelId, key) => call("set_ai_model_key", { modelId, key }),
     clearAiModelKey: (modelId) => call("clear_ai_model_key", { modelId }),
@@ -47,6 +62,8 @@
     aiTestModel: (input) => call("ai_test_model", { input }),
     aiSaveModel: (model, apiKey) => call("ai_save_model", { input: { model, api_key: apiKey } }),
     aiDeleteModel: (modelId) => call("ai_delete_model", { modelId }),
+    // 可选协议清单（值 / 展示名 / 路径后缀 / 说明），用于渲染协议下拉与后缀提示
+    aiProtocols: () => call("ai_protocols"),
 
     // ---------- AI 助手（可开关） ----------
     aiAsk: (input) => call("ai_ask", { input }),
@@ -80,12 +97,16 @@
     sessionLogClear: () => call("session_log_clear"),
 
     // ---------- SFTP（可开关） ----------
+    // 上传/下载带 transferId：进度事件按它回传，中断也按它发起。
     sftpConnect: (params) => call("sftp_connect", { params }),
     sftpDisconnect: (id) => call("sftp_disconnect", { id }),
     sftpSessions: () => call("sftp_sessions"),
     sftpList: (id, path) => call("sftp_list", { id, path }),
-    sftpDownload: (id, remote, local) => call("sftp_download", { id, remote, local }),
-    sftpUpload: (id, local, remote) => call("sftp_upload", { id, local, remote }),
+    sftpDownload: (id, remote, local, transferId) =>
+      call("sftp_download", { id, remote, local, transferId }),
+    sftpUpload: (id, local, remote, transferId) =>
+      call("sftp_upload", { id, local, remote, transferId }),
+    sftpCancelTransfer: (transferId) => call("sftp_cancel_transfer", { transferId }),
     sftpDelete: (id, path) => call("sftp_delete", { id, path }),
     sftpRename: (id, from, to) => call("sftp_rename", { id, from, to }),
     sftpChmod: (id, path, mode) => call("sftp_chmod", { id, path, mode }),
@@ -99,6 +120,13 @@
     connectionExport: (path, ids) => call("connection_export", { path, ids }),
     connectionImport: (path, format) => call("connection_import", { path, format }),
     importExportDefaults: () => call("import_export_defaults"),
+
+    // ---------- 远程桌面（可开关） ----------
+    rdpClientAvailable: () => call("rdp_client_available"),
+    rdpSavedPassword: (connectionId) => call("rdp_saved_password", { connectionId }),
+    rdpOpen: (input) => call("rdp_open", { input }),
+    rdpProbe: (host, port, timeoutMs) => call("rdp_probe", { host, port, timeoutMs }),
+    rdpOpenInstaller: () => call("rdp_open_installer"),
 
     // ---------- 命令片段（可开关） ----------
     snippetList: () => call("snippet_list"),
@@ -122,5 +150,6 @@
     gitResolve: (strategy) => call("git_sync_resolve", { strategy }),
     gitCredentials: () => call("git_sync_credentials"),
     gitSetCredential: (name, password) => call("git_sync_set_credential", { name, password }),
+    gitTest: (input) => call("git_sync_test", { input }),
   };
 })(window.PShell);

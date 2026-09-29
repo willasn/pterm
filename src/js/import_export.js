@@ -2,7 +2,7 @@
  *
  * 只在 features.connection.import_export 打开时可用：关闭时侧栏入口隐藏、
  * 面板不加载，后端 command 也会以 ModuleDisabled 拒绝。
- * 导出**永不包含凭据**：密码 / passphrase 只在系统钥匙串里，导出结构里没有这些字段；
+ * 导出**永不包含凭据**：密码 / passphrase 只在加密保险库里，导出结构里没有这些字段；
  * 导入一律新建连接（重新分配 id、不覆盖已有配置），支持 pshell 导出文件与
  * OpenSSH 的 ~/.ssh/config。文件读写全部在 Rust 侧完成，前端只负责取路径。 */
 (function (PShell) {

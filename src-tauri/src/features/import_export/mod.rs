@@ -1,6 +1,6 @@
 //! 连接配置导入导出（FEATURES.md §3）。
 //!
-//! 导出为带标识的 JSON，**永不携带凭据**：密码 / passphrase 只存在于系统钥匙串，
+//! 导出为带标识的 JSON，**永不携带凭据**：密码 / passphrase 只存在于加密保险库，
 //! 既不在 SQLite 也不在导出文件里；导出结构里根本没有这些字段。
 //!
 //! 导入支持两种来源：
@@ -46,6 +46,12 @@ pub struct ExportedConnection {
     pub port: u16,
     #[serde(default)]
     pub username: String,
+    /// ssh | rdp，非法值导入时回退为 ssh
+    #[serde(default = "crate::config::store::default_protocol")]
+    pub protocol: String,
+    /// RDP 域（Windows 域账号）
+    #[serde(default)]
+    pub domain: Option<String>,
     /// password | private_key | agent | auto，非法值导入时回退为 auto
     #[serde(default)]
     pub auth_kind: String,
@@ -122,6 +128,8 @@ pub fn exportable(connections: &[StoredConnection]) -> Vec<ExportedConnection> {
             host: c.host.clone(),
             port: c.port,
             username: c.username.clone(),
+            protocol: c.protocol.clone(),
+            domain: c.domain.clone(),
             auth_kind: c.auth_kind.clone(),
             key_path: c.key_path.clone(),
             group_name: c.group_name.clone(),
@@ -416,6 +424,8 @@ fn flush_block(
         host,
         port: block.port.unwrap_or(22),
         username,
+        protocol: crate::config::store::default_protocol(),
+        domain: None,
         auth_kind,
         key_path,
         group_name: None,
@@ -491,12 +501,25 @@ fn unquote(value: &str) -> String {
 fn into_stored(candidate: ExportedConnection, now: &str) -> StoredConnection {
     let name = candidate.name.trim().to_string();
     let host = candidate.host.trim().to_string();
+    let protocol = normalize_protocol(&candidate.protocol);
+    // 端口未给时按协议取默认值：SSH 22、RDP 3389
+    let default_port = if protocol == crate::config::store::PROTOCOL_RDP {
+        3389
+    } else {
+        22
+    };
     StoredConnection {
         id: uuid::Uuid::new_v4().to_string(),
         name: if name.is_empty() { host.clone() } else { name },
         host,
-        port: if candidate.port == 0 { 22 } else { candidate.port },
+        port: if candidate.port == 0 {
+            default_port
+        } else {
+            candidate.port
+        },
         username: candidate.username.trim().to_string(),
+        protocol,
+        domain: candidate.domain,
         auth_kind: normalize_auth(&candidate.auth_kind),
         key_path: candidate.key_path,
         group_name: candidate.group_name,
@@ -516,6 +539,15 @@ fn normalize_auth(raw: &str) -> String {
     match AUTH_KINDS.iter().find(|k| **k == value) {
         Some(hit) => (*hit).to_string(),
         None => "auto".to_string(),
+    }
+}
+
+/// 只接受 ssh / rdp，其余（含缺失）回退为 ssh。
+fn normalize_protocol(raw: &str) -> String {
+    if raw.trim() == crate::config::store::PROTOCOL_RDP {
+        crate::config::store::PROTOCOL_RDP.to_string()
+    } else {
+        crate::config::store::PROTOCOL_SSH.to_string()
     }
 }
 
@@ -541,6 +573,8 @@ mod tests {
             host: host.into(),
             port: 22,
             username: "root".into(),
+            protocol: "ssh".into(),
+            domain: None,
             auth_kind: "password".into(),
             key_path: None,
             group_name: None,
@@ -644,6 +678,8 @@ Host web prod=web
                 host: "10.0.0.1".into(),
                 port: 22,
                 username: "root".into(),
+                protocol: "ssh".into(),
+                domain: None,
                 auth_kind: "password".into(),
                 key_path: None,
                 group_name: None,
@@ -656,6 +692,8 @@ Host web prod=web
                 host: "10.0.0.2".into(),
                 port: 22,
                 username: "root".into(),
+                protocol: "ssh".into(),
+                domain: None,
                 auth_kind: "不存在的类型".into(),
                 key_path: None,
                 group_name: None,
@@ -680,5 +718,48 @@ Host web prod=web
         let (conns, warnings) = parse_pshell(text).unwrap();
         assert!(conns.is_empty());
         assert_eq!(warnings.len(), 3);
+    }
+
+    /// RDP 条目导入后协议、域须保留，且未给端口时按 3389 兜底。
+    #[test]
+    fn import_keeps_rdp_protocol_and_defaults_port_to_3389() {
+        let candidate = ExportedConnection {
+            name: "桌面".into(),
+            host: "10.0.0.9".into(),
+            port: 0,
+            username: "admin".into(),
+            protocol: "rdp".into(),
+            domain: Some("CORP".into()),
+            auth_kind: "password".into(),
+            key_path: None,
+            group_name: None,
+            jump: None,
+            color: None,
+        };
+        let saved = into_stored(candidate, "t");
+        assert_eq!(saved.protocol, crate::config::store::PROTOCOL_RDP);
+        assert_eq!(saved.domain.as_deref(), Some("CORP"));
+        assert_eq!(saved.port, 3389);
+    }
+
+    /// 未知协议值一律回退为 ssh，避免脏数据让连接进入无效协议分支。
+    #[test]
+    fn import_falls_back_to_ssh_for_unknown_protocol() {
+        let candidate = ExportedConnection {
+            name: "x".into(),
+            host: "h".into(),
+            port: 0,
+            username: "u".into(),
+            protocol: "telnet".into(),
+            domain: None,
+            auth_kind: "auto".into(),
+            key_path: None,
+            group_name: None,
+            jump: None,
+            color: None,
+        };
+        let saved = into_stored(candidate, "t");
+        assert_eq!(saved.protocol, crate::config::store::PROTOCOL_SSH);
+        assert_eq!(saved.port, 22);
     }
 }

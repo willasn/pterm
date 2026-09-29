@@ -40,18 +40,6 @@
     else document.body.style.removeProperty("--accent");
   }
 
-  /** 侧栏底部的模块概览。模块必须显式启用，因此这里只报「启用数 / 总数」。 */
-  function renderModuleSummary() {
-    const host = $("module-summary");
-    if (!host) return;
-    if (!state.modules.length) {
-      host.textContent = t("app.noModules", "无模块");
-      return;
-    }
-    const enabled = state.modules.filter((m) => m.enabled).length;
-    host.textContent = t("app.modules", "模块 {x}/{y}", { x: enabled, y: state.modules.length });
-  }
-
   /**
    * 需要接收配置的模块，按此顺序应用 setConfig。
    *
@@ -60,12 +48,14 @@
   const CONFIG_CONSUMERS = [
     "tabs",
     "terminal",
+    "syncInput",
     "connections",
     "gitSync",
     "sessionLog",
     "sftp",
     "portForward",
     "importExport",
+    "rdp",
     "snippets",
     "history",
     "search",
@@ -91,10 +81,9 @@
         console.error("[app] " + name + ".setConfig 失败", err);
       }
     });
-    renderModuleSummary();
     // i18n 返回 Promise（要加载语言包），单独处理
     if (PShell.i18n && typeof PShell.i18n.setConfig === "function") {
-      PShell.i18n.setConfig(config).then(() => renderModuleSummary());
+      PShell.i18n.setConfig(config);
     }
   }
 
@@ -121,6 +110,11 @@
       fatal("终端组件缺失", "vendor/xterm.js 未加载，请确认 src/vendor 下的文件是否完整。");
       return;
     }
+    // 首次启动：先让用户选界面语言。标记文件写在配置目录、不随 Git 同步，
+    // 因此仅「这台机器第一次打开」出现，换机后会重新引导一次。
+    const locale = await PShell.onboarding.run();
+    // 敏感字段由主密码加密的保险库保管，未解锁时先要求设置 / 输入主密码
+    await PShell.vault.ensureUnlocked();
     try {
       const [info, config, flags, modules] = await Promise.all([
         PShell.ipc.appInfo(),
@@ -131,14 +125,18 @@
       state.info = info;
       state.flags = flags || [];
       state.modules = modules || [];
+      const previousLanguage = config.language;
+      if (locale) config.language = locale;
       applyConfig(config);
-
-      const version = $("app-version");
-      if (version) version.textContent = `${info.name} ${info.version}`;
 
       // 先拉连接列表，再让 setConfig 渲染，避免出现一次「还没有连接」的闪动
       await PShell.connections.refresh();
       PShell.terminal.updateEmptyState();
+
+      // 把首次选择的语言落盘，之后启动直接生效；失败不阻断启动
+      if (locale && locale !== previousLanguage) {
+        PShell.ipc.saveConfig(config).catch((err) => console.warn("[app] 保存语言失败", err));
+      }
     } catch (err) {
       fatal("初始化失败", errorText(err));
     }
@@ -326,7 +324,6 @@
   PShell.app = {
     applyTheme,
     applyConfig,
-    renderModuleSummary,
     config: () => state.config,
     reload: boot,
   };

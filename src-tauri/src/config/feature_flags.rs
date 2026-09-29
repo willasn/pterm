@@ -12,12 +12,12 @@ pub mod module_id {
     pub const PORT_FORWARD: &str = "port_forward";
     pub const SESSION_LOG: &str = "session_log";
     pub const IMPORT_EXPORT: &str = "import_export";
+    pub const RDP: &str = "rdp";
     pub const COMMAND_HISTORY: &str = "command_history";
     pub const THEME: &str = "theme";
     pub const SHORTCUTS: &str = "shortcuts";
     pub const QUICK_PANEL: &str = "quick_panel";
     pub const SYSTEM_TRAY: &str = "system_tray";
-    pub const I18N: &str = "i18n";
     pub const IME_SWITCH: &str = "ime_switch";
 }
 
@@ -78,8 +78,12 @@ pub struct ConnectionFlags {
     pub connection_group: bool,
     /// 配置导入导出
     pub import_export: bool,
+    /// Windows 远程桌面（RDP）连接：调用系统 RDP 客户端打开远程桌面
+    pub rdp: bool,
     /// 快捷连接（user@host:port 一行直达）
     pub quick_connect: bool,
+    /// 同步输入：把一台终端上的输入广播到同步组内的标签（或全局所有会话）
+    pub sync_input: bool,
     /// 终端获得焦点时自动把系统输入源切到英文、失焦时还原（仅 macOS）。
     /// 关闭后需用户自行保证终端里使用英文输入法，否则输入法异常时快打会漏字。
     pub ime_auto_switch: bool,
@@ -101,7 +105,9 @@ impl Default for ConnectionFlags {
             auto_reconnect_base_delay_ms: 1000,
             connection_group: true,
             import_export: true,
+            rdp: false,
             quick_connect: true,
+            sync_input: true,
             ime_auto_switch: true,
             session_log_retention_days: 30,
         }
@@ -137,7 +143,7 @@ pub struct GitRemoteConfig {
     pub url: String,
     /// 推送目标分支，留空则用当前分支同名
     pub branch: Option<String>,
-    /// HTTPS 登录用户名（非敏感）。密码 / 访问令牌存系统钥匙串，不在此处。
+    /// HTTPS 登录用户名（非敏感）。密码 / 访问令牌存加密保险库，不在此处。
     pub username: Option<String>,
 }
 
@@ -161,6 +167,9 @@ pub struct SyncFlags {
     pub git_repo_path: Option<String>,
     /// 同步范围
     pub git_sync_scope: SyncScope,
+    /// 是否同步敏感字段密文（`secrets.json`）。关闭后本地与远端互不覆盖，
+    /// 用于「主密码冲突」时暂时搁置敏感字段同步。
+    pub git_sync_secrets: bool,
     /// 冲突提示（检测到冲突时不自动合并）
     pub git_conflict_prompt: bool,
     /// 界面状态显示（ahead/behind、脏文件数、最后同步时间）
@@ -186,6 +195,7 @@ impl Default for SyncFlags {
             git_sync: false,
             git_repo_path: None,
             git_sync_scope: SyncScope::Config,
+            git_sync_secrets: true,
             git_conflict_prompt: true,
             git_status_badge: true,
             git_commit_template: true,
@@ -250,8 +260,6 @@ pub struct AuxiliaryFlags {
     pub theme: bool,
     /// 快捷键
     pub shortcuts: bool,
-    /// 多语言
-    pub i18n: bool,
     /// 崩溃日志
     pub crash_log: bool,
 }
@@ -267,7 +275,6 @@ impl Default for AuxiliaryFlags {
             auto_update: false,
             theme: true,
             shortcuts: true,
-            i18n: false,
             crash_log: true,
         }
     }
@@ -302,12 +309,12 @@ impl FeatureFlags {
             module_id::PORT_FORWARD => self.connection.port_forward,
             module_id::SESSION_LOG => self.connection.session_log,
             module_id::IMPORT_EXPORT => self.connection.import_export,
+            module_id::RDP => self.connection.rdp,
             module_id::COMMAND_HISTORY => self.auxiliary.command_history,
             module_id::THEME => self.auxiliary.theme,
             module_id::SHORTCUTS => self.auxiliary.shortcuts,
             module_id::QUICK_PANEL => self.auxiliary.quick_panel,
             module_id::SYSTEM_TRAY => self.auxiliary.system_tray,
-            module_id::I18N => self.auxiliary.i18n,
             module_id::IME_SWITCH => self.connection.ime_auto_switch,
             // 未登记的标识视为可用，避免误伤核心功能
             _ => true,
@@ -336,12 +343,15 @@ impl FeatureFlags {
             "auto_reconnect" => self.connection.auto_reconnect,
             "connection_group" => self.connection.connection_group,
             "import_export" => self.connection.import_export,
+            "rdp" => self.connection.rdp,
             "quick_connect" => self.connection.quick_connect,
+            "sync_input" => self.connection.sync_input,
             "ime_auto_switch" => self.connection.ime_auto_switch,
         ]));
         out.extend(entries!("sync", [
             "git_sync" => self.sync.git_sync,
             "git_sync_scope" => self.sync.git_sync_scope,
+            "git_sync_secrets" => self.sync.git_sync_secrets,
             "git_conflict_prompt" => self.sync.git_conflict_prompt,
             "git_status_badge" => self.sync.git_status_badge,
             "git_commit_template" => self.sync.git_commit_template,
@@ -363,7 +373,6 @@ impl FeatureFlags {
             "auto_update" => self.auxiliary.auto_update,
             "theme" => self.auxiliary.theme,
             "shortcuts" => self.auxiliary.shortcuts,
-            "i18n" => self.auxiliary.i18n,
             "crash_log" => self.auxiliary.crash_log,
         ]));
         out
@@ -454,13 +463,13 @@ mod tests {
     }
 
     #[test]
-    fn i18n_follows_its_flag() {
+    fn rdp_follows_its_flag() {
         let mut flags = FeatureFlags::default();
-        flags.auxiliary.i18n = false;
-        assert!(!flags.module_enabled(module_id::I18N));
+        flags.connection.rdp = false;
+        assert!(!flags.module_enabled(module_id::RDP));
 
-        flags.auxiliary.i18n = true;
-        assert!(flags.module_enabled(module_id::I18N));
+        flags.connection.rdp = true;
+        assert!(flags.module_enabled(module_id::RDP));
     }
 
     #[test]

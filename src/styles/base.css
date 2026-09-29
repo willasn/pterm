@@ -147,6 +147,18 @@ body {
   flex: none;
 }
 
+/* 协议徽标：RDP 连接在名称后标注，避免与 SSH 混淆 */
+.conn-item .proto {
+  flex: none;
+  font-size: 10px;
+  line-height: 1;
+  padding: 2px 5px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  letter-spacing: 0.04em;
+}
+
 .conn-item .edit {
   opacity: 0;
   font-size: 12px;
@@ -158,9 +170,9 @@ body {
 
 .sidebar-foot {
   display: flex;
-  gap: 10px;
+  gap: 12px;
   justify-content: space-between;
-  padding: 6px 12px;
+  padding: 8px 12px 16px;
   border-top: 1px solid var(--border);
 }
 
@@ -266,6 +278,17 @@ button {
 .btn.danger:hover {
   background: var(--danger);
   color: #fff;
+}
+
+/* 危险操作确认按钮：实心红，作为弹窗里的主行动 */
+.btn.danger-solid {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #fff;
+}
+
+.btn.danger-solid:hover {
+  filter: brightness(1.08);
 }
 
 .btn.ghost {
@@ -439,6 +462,105 @@ textarea:disabled {
   color: var(--danger);
 }
 
+/* ---------- 统一确认弹窗 ---------- */
+/* 由 util.js 的 ask() 与 confirmDialog() 共用，视觉上比系统原生弹窗更贴近应用风格。 */
+.modal.dialog {
+  width: 420px;
+  padding: 18px 18px 14px;
+  gap: 14px;
+  overflow: hidden;
+  animation: dialog-pop 0.18s cubic-bezier(0.2, 0.8, 0.3, 1);
+}
+
+@keyframes dialog-pop {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.dialog-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.dialog-icon {
+  flex: none;
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  background: rgba(76, 141, 255, 0.14);
+  color: var(--accent);
+}
+
+.dialog-icon svg {
+  width: 20px;
+  height: 20px;
+}
+
+.dialog-icon.warn {
+  background: rgba(210, 153, 34, 0.16);
+  color: var(--warn);
+}
+
+.dialog-icon.danger {
+  background: rgba(229, 83, 75, 0.16);
+  color: var(--danger);
+}
+
+.dialog-titles {
+  flex: 1;
+  min-width: 0;
+}
+
+.dialog-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 36px;
+}
+
+.dialog-title.danger {
+  color: var(--danger);
+}
+
+.dialog-message {
+  margin: 2px 0 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-dim);
+  word-break: break-word;
+}
+
+.dialog-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  gap: 8px;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.dialog-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* 危险命令块：左侧红色标记，替代整框描边，视觉更轻 */
+.modal.dialog .danger-cmd {
+  border-color: var(--border);
+  border-left: 3px solid var(--danger);
+}
+
 /* ---------- 提示条 ---------- */
 .toast-host {
   position: fixed;
@@ -540,4 +662,136 @@ textarea:disabled {
 ::-webkit-scrollbar-thumb:hover {
   background: var(--text-dim);
   background-clip: content-box;
+}
+
+/* ---------- 首次启动引导 ---------- */
+/* 新装首次打开时盖住整个界面的一屏语言选择（见 js/onboarding.js）。
+   此时配置尚未应用、body 恒为深色，因此这里显式给出品牌强调色：
+   若沿用 theme.css 的 --accent 会是「未被用户配置覆盖」的兜底蓝，
+   而应用真正生效的默认强调色是品牌绿，会出现「引导蓝、进应用变绿」的跳变。 */
+.onboarding {
+  --accent: #4ade80;
+  --accent-text: #0d1117;
+
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 90;
+  background-color: var(--bg);
+  /* 极淡的终端点阵底纹 + 中心微光，呼应终端定位 */
+  background-image: radial-gradient(circle at 50% 30%, rgba(74, 222, 128, 0.1), transparent 62%),
+    radial-gradient(rgba(255, 255, 255, 0.045) 1px, transparent 1px);
+  background-size: 100% 100%, 22px 22px;
+}
+
+.onboarding[hidden] {
+  display: none;
+}
+
+.onboarding-card {
+  width: 460px;
+  max-width: calc(100vw - 40px);
+  padding: 32px 32px 26px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+}
+
+.onboarding-brand {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.onboarding-mark {
+  padding: 7px 9px;
+  margin-bottom: 12px;
+  border-radius: 10px;
+  background: var(--accent);
+  color: #0d1117;
+  font-family: var(--font-mono);
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.onboarding-title {
+  margin: 0;
+  font-size: 30px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+
+.onboarding-tagline {
+  margin: 5px 0 0;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.onboarding-question {
+  margin: 26px 0 12px;
+  font-size: 13px;
+}
+
+.onboarding-langs {
+  display: flex;
+  gap: 10px;
+  width: 100%;
+}
+
+.onboarding-lang {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  padding: 14px 10px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+}
+
+.onboarding-lang:hover {
+  background: var(--bg-hover);
+}
+
+.onboarding-lang.selected {
+  border-color: var(--accent);
+  background: var(--bg-elev);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.onboarding-lang-name {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.onboarding-lang-code {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
+.onboarding-lang.selected .onboarding-lang-code {
+  color: var(--accent);
+}
+
+.onboarding-note {
+  margin: 16px 0 20px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.onboarding-start {
+  width: 100%;
+  padding: 9px 14px;
+  font-size: 13px;
 }

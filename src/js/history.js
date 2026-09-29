@@ -254,7 +254,11 @@
 
   async function clearAll() {
     if (busy) return;
-    const confirmed = await ask("清空全部命令历史？此操作不可撤销。");
+    const confirmed = await ask("清空全部命令历史？此操作不可撤销。", {
+      title: "清空确认",
+      okText: "清空",
+      kind: "danger",
+    });
     if (!confirmed) return;
     busy = true;
     renderBody();

@@ -2,7 +2,6 @@ pub mod ai_assistant;
 pub mod command_history;
 pub mod git_sync;
 pub mod global_search;
-pub mod i18n;
 pub mod quick_panel;
 pub mod shortcuts;
 pub mod snippets;

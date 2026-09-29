@@ -127,7 +127,10 @@
 
     let connections = [];
     try {
-      connections = (await PShell.ipc.listConnections()) || [];
+      // 分屏开的是 SSH 终端，RDP 连接不在此列出
+      connections = ((await PShell.ipc.listConnections()) || []).filter(
+        (c) => (c.protocol || "ssh") !== "rdp"
+      );
     } catch (err) {
       toast(errorText(err), "error");
       if (!modal.hidden) modal.hidden = true;

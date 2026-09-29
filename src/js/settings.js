@@ -62,13 +62,25 @@
     "connection.auto_reconnect": { label: "断线自动重连", hint: "按指数退避重试" },
     "connection.connection_group": { label: "连接分组", hint: "侧栏按分组名归类连接" },
     "connection.import_export": { label: "配置导入导出" },
+    "connection.rdp": {
+      label: "远程桌面（RDP）",
+      hint: "新建连接时可选 RDP 协议打开 Windows 远程桌面：Windows 调用系统 mstsc，macOS 调用微软「Windows App」（需自行安装）",
+    },
     "connection.quick_connect": { label: "快捷连接", hint: "侧栏直接输入 user@host:port" },
+    "connection.sync_input": {
+      label: "同步输入",
+      hint: "把一台终端上的输入广播到同一同步组内的标签；分组与组内同步开关在标签右键菜单中操作",
+    },
     "connection.ime_auto_switch": {
       label: "输入法自动切换",
       hint: "终端聚焦时切到英文输入源、失焦时还原（仅 macOS）；终端内可输中文需切到输入法模式",
     },
     "sync.git_sync": { label: "Git 同步", hint: "用 Git 仓库同步配置，不做云同步" },
     "sync.git_sync_scope": { label: "同步范围" },
+    "sync.git_sync_secrets": {
+      label: "同步敏感字段密文",
+      hint: "关闭后 secrets.json 不再随 Git 同步（主密码冲突时可临时关闭）",
+    },
     "sync.git_conflict_prompt": { label: "冲突提示", hint: "检测到冲突时不自动合并" },
     "sync.git_status_badge": { label: "状态徽标", hint: "显示 ahead/behind 与脏文件数" },
     "sync.git_commit_template": { label: "提交模板", hint: "使用下方的提交信息模板" },
@@ -86,7 +98,6 @@
     "auxiliary.auto_update": { label: "自动更新" },
     "auxiliary.theme": { label: "主题", hint: "关闭后外观设置不生效" },
     "auxiliary.shortcuts": { label: "快捷键", hint: "关闭后不响应自定义组合键" },
-    "auxiliary.i18n": { label: "多语言" },
     "auxiliary.crash_log": { label: "崩溃日志" },
   };
 
@@ -105,6 +116,7 @@
     "connection.port_forward": "port_forward",
     "connection.session_log": "session_log",
     "connection.import_export": "import_export",
+    "connection.rdp": "rdp",
   };
 
   const MODULE_LABELS = {
@@ -121,6 +133,7 @@
     port_forward: "端口转发",
     session_log: "会话日志",
     import_export: "配置导入导出",
+    rdp: "远程桌面",
   };
 
   let draft = null;
@@ -128,8 +141,10 @@
   let modules = [];
   let info = null;
   let activeCat = "general";
-  /** 已在系统钥匙串中保存 API Key 的模型 id 集合 */
+  /** 已在加密保险库中保存 API Key 的模型 id 集合 */
   let configuredModelIds = new Set();
+  /** 后端返回的可选协议清单（值 / 展示名 / 路径后缀 / 说明），供协议下拉与后缀提示使用 */
+  let protocolList = [];
   /** AI 模型编辑列表：与 draft.ai.models 解耦，模型逐条测试 / 保存，不随整页保存提交 */
   let aiModels = [];
   /** 后端配置里已存在的模型 id；不在其中的是「尚未保存的新条目」 */
@@ -138,11 +153,13 @@
   let testedModelIds = new Set();
   /** 本次提交的 Git 密码：键为 remote 名；缺失 = 不修改，"" = 删除，非空 = 写入 */
   let gitPasswordInputs = new Map();
-  /** 已在系统钥匙串中保存密码 / 令牌的 remote 名 */
+  /** 已在加密保险库中保存密码 / 令牌的 remote 名 */
   let gitCredentialNames = new Set();
   /** 「关于」页里最近一次读取的崩溃日志（CrashLogInfo）；null = 尚未读取 */
   let crashTail = null;
   let crashBusy = false;
+  /** 保险库状态（VaultStatus）；null = 尚未读取 */
+  let vaultState = null;
 
   // ---------------------------------------------------------------------------
   // 通用控件助手
@@ -200,6 +217,7 @@
   function renderGeneral() {
     const themeOn = !!draft.features.auxiliary.theme;
     return [
+      masterPasswordSection(),
       section(t("settings.section.ui", "界面"), null, [languageField()]),
       section(
         t("settings.section.theme", "主题"),
@@ -214,27 +232,146 @@
     ];
   }
 
-  /** 「语言」字段：i18n 关闭时禁用；改动后立即切换语言并重绘设置面板与模块概览。 */
+  /**
+   * 主密码：查看状态 + 用当前密码换成新密码。
+   *
+   * 保险库里的密文会随 Git 同步分发，所以改完密码要尽快把新的 secrets.json 推到远端，
+   * 否则其它设备同步到的仍是旧密文、需要用旧密码解锁。这里在改成功后主动同步一次
+   * （仅在 Git 同步已启用时；同步失败只提示，不影响改密本身已经成功的事实）。
+   */
+  function masterPasswordSection() {
+    const configured = !!(vaultState && vaultState.configured);
+    const unlocked = !!(vaultState && vaultState.unlocked);
+
+    const currentInput = input("password", { placeholder: "当前主密码", autocomplete: "off" });
+    const nextInput = input("password", { placeholder: "新主密码", autocomplete: "off" });
+    const againInput = input("password", { placeholder: "再次输入新主密码", autocomplete: "off" });
+    const statusNode = el("p", { class: "inline-note", text: "" });
+    const button = el("button", {
+      class: "btn primary",
+      type: "button",
+      text: "修改主密码",
+      onclick: change,
+    });
+
+    function setStatus(text, kind) {
+      statusNode.className = "inline-note" + (kind ? " " + kind : "");
+      statusNode.textContent = text || "";
+    }
+
+    async function change() {
+      const current = currentInput.value;
+      const next = nextInput.value;
+      if (!current) {
+        setStatus("请输入当前主密码", "error");
+        return;
+      }
+      if (!next) {
+        setStatus("请输入新主密码", "error");
+        return;
+      }
+      if (next !== againInput.value) {
+        setStatus("两次输入的新主密码不一致", "error");
+        return;
+      }
+      const confirmed = await ask(
+        "修改主密码后，本机保险库会立即用新密码重新加密。其它设备需要同步后用新主密码解锁，旧密码将失效。确定继续？",
+        { title: "修改主密码", okText: "继续" }
+      );
+      if (!confirmed) return;
+
+      button.disabled = true;
+      setStatus("正在重新加密保险库…", "");
+      try {
+        await PShell.ipc.vaultChangePassword(current, next);
+        currentInput.value = "";
+        nextInput.value = "";
+        againInput.value = "";
+        vaultState = { configured: true, unlocked: true };
+        setStatus("主密码已修改。", "ok");
+        toast("主密码已修改", "ok");
+        await syncAfterPasswordChange(statusNode);
+      } catch (err) {
+        setStatus("修改失败：" + errorText(err), "error");
+        toast(errorText(err), "error");
+      } finally {
+        button.disabled = false;
+      }
+    }
+
+    const rows = [
+      el("p", {
+        class: "inline-note",
+        text: configured
+          ? unlocked
+            ? "保险库已设置并解锁。"
+            : "保险库已设置，当前处于锁定状态。"
+          : "尚未设置主密码。",
+      }),
+      field("当前主密码", null, currentInput),
+      field("新主密码", "仅本机生效，其它设备需用新密码解锁", nextInput),
+      field("确认新主密码", null, againInput),
+      el("div", { class: "log-actions" }, [button]),
+      statusNode,
+    ];
+    return section(
+      "主密码",
+      "SSH 密码 / API Key / Git 凭据等都以此密码加密保存在本地，并随 Git 同步以密文分发。改密后需要让新的密文同步出去，其它设备才能用新密码解锁。",
+      rows
+    );
+  }
+
+  /**
+   * 改密后主动同步一次，把新的 secrets.json 密文推到远端。
+   *
+   * 同步范围不含配置（`secrets.json`）时密文不会被分发，此时只提示、不白跑一次网络同步。
+   * Git 同步未启用或同步失败也一样只提示，不回滚、不阻断——改密本身已经成功。
+   */
+  async function syncAfterPasswordChange(statusNode) {
+    const gitOn = modules.some((m) => m.id === "git_sync" && m.enabled);
+    if (!gitOn) {
+      statusNode.textContent += " Git 同步未启用，仓库中的旧密文需在启用后同步更新。";
+      return;
+    }
+
+    // 用后端实际生效的同步范围判断（草稿可能还没保存），只有含连接配置才会带上 secrets.json
+    let scope = "config";
+    try {
+      const status = await PShell.ipc.gitStatus();
+      scope = (status && status.scope) || "config";
+    } catch (_) {
+      /* 读不到状态就按默认范围继续，同步结果本身会给出反馈 */
+    }
+    if (scope === "snippets") {
+      statusNode.textContent +=
+        " 当前同步范围为「仅命令片段」，不含 secrets.json，新密文未分发；如需分发请改为「仅连接配置」或「全部」后再同步。";
+      return;
+    }
+
+    try {
+      const outcome = await PShell.ipc.gitSyncNow();
+      const message = (outcome && outcome.message) || "已同步";
+      statusNode.textContent += " 已同步：" + message;
+      if (PShell.gitSync && typeof PShell.gitSync.refresh === "function") {
+        PShell.gitSync.refresh().catch(() => {});
+      }
+    } catch (err) {
+      statusNode.textContent +=
+        " 自动同步失败：" + errorText(err) + "；请到「Git 同步」面板手动同步。";
+      toast("主密码已修改，但自动同步失败", "warn");
+    }
+  }
+
+  /** 「语言」字段：通用页的基础设置，改动后立即切换语言并重绘设置面板与模块概览。 */
   function languageField() {
-    const i18nOn = !!draft.features.auxiliary.i18n;
     const node = bind(select(LANGUAGES), draft, "language");
-    node.disabled = !i18nOn;
     node.addEventListener("change", () => {
       PShell.i18n.setLocale(draft.language).then(() => {
         renderNav();
         renderBody();
-        if (PShell.app && typeof PShell.app.renderModuleSummary === "function") {
-          PShell.app.renderModuleSummary();
-        }
       });
     });
-    return field(
-      t("settings.language", "语言"),
-      i18nOn
-        ? t("settings.language.hint.on", "切换后立即生效；需开启「多语言」开关。")
-        : t("settings.language.hint.off", "「多语言」开关已关闭，切换语言暂不生效。"),
-      node
-    );
+    return field(t("settings.language", "语言"), t("settings.language.hint", "切换后立即生效。"), node);
   }
 
   function renderTerminal() {
@@ -251,6 +388,7 @@
       toggleField("光标闪烁", null, "terminal.cursor_blink"),
       toggleField("响铃", "远端触发 BEL 时发出提示音", "terminal.bell"),
       toggleField("选中即复制", "选中文本自动写入剪贴板", "terminal.copy_on_select"),
+      toggleField("右击菜单", "终端内右击弹出「复制 / 粘贴」菜单", "terminal.right_click_menu"),
       toggleField(
         "本地回显",
         "按键立即上屏，远端回显到达后再对齐；关闭后字符只在远端回显到达时出现",
@@ -380,9 +518,14 @@
         optionalNumber(num({ step: "0.1", min: 0, max: 2, placeholder: "0.2" }), model, "temperature", false)
       ),
       field(
-        "最大输出",
-        "单次请求的 max_tokens；留空用默认值",
+        "最大输出 token",
+        "单次回复的 max_tokens 上限；留空用默认值",
         optionalNumber(num({ min: 1, placeholder: "2048" }), model, "max_tokens", true)
+      ),
+      field(
+        "最大输入 token",
+        "模型上下文窗口；用于 AI 面板底部估算上下文占比，留空用默认值",
+        optionalNumber(num({ min: 1, placeholder: "128000" }), model, "max_input_tokens", true)
       ),
       field(
         "请求超时",
@@ -397,7 +540,21 @@
     ];
   }
 
-  /** 生成模型条目的稳定标识。与后端一样用 uuid，保证 API Key 的钥匙串键名不冲突。 */
+  /** 协议下拉的选项；后端清单不可用时至少保留 OpenAI 兼容一项，避免下拉为空。 */
+  function protocolOptions() {
+    const list = protocolList.length
+      ? protocolList
+      : [{ value: "openai", label: "OpenAI 兼容（Chat Completions）", suffix: "/chat/completions", note: "" }];
+    return list.map((p) => ({ value: p.value, label: p.label }));
+  }
+
+  /** 按值取协议元信息（含后缀 suffix、说明 note）；找不到时返回 null。 */
+  function protocolSpec(value) {
+    const want = value || "openai";
+    return protocolList.filter((p) => p.value === want)[0] || null;
+  }
+
+  /** 生成模型条目的稳定标识。与后端一样用 uuid，保证 API Key 的保险库键名不冲突。 */
   function newModelId() {
     if (window.crypto && typeof window.crypto.randomUUID === "function") {
       return window.crypto.randomUUID();
@@ -411,8 +568,10 @@
       name: "",
       model: "",
       base_url: "",
+      protocol: "openai",
       temperature: null,
       max_tokens: null,
+      max_input_tokens: null,
       timeout_secs: null,
       context_bytes: null,
     });
@@ -444,8 +603,10 @@
       name: (model.name || "").trim(),
       model: (model.model || "").trim(),
       base_url: (model.base_url || "").trim(),
+      protocol: model.protocol || "openai",
       temperature: model.temperature == null ? null : model.temperature,
       max_tokens: model.max_tokens == null ? null : model.max_tokens,
+      max_input_tokens: model.max_input_tokens == null ? null : model.max_input_tokens,
       timeout_secs: model.timeout_secs == null ? null : model.timeout_secs,
       context_bytes: model.context_bytes == null ? null : model.context_bytes,
     };
@@ -496,15 +657,36 @@
       model,
       "base_url"
     );
+    // 协议下拉：决定 base_url 之后拼接的路径后缀与请求 / 响应格式
+    const protocolNode = select(protocolOptions());
+    protocolNode.value = model.protocol || "openai";
+    protocolNode.title = "决定请求地址后缀与请求 / 响应格式";
+    // 「会加什么后缀」提示：随协议与地址实时更新
+    const endpointNote = el("p", { class: "inline-note", text: "" });
+    function syncEndpointHint() {
+      const base = (model.base_url || "").trim().replace(/\/+$/, "");
+      const shown = base || "（未填 API 地址）";
+      const spec = protocolSpec(model.protocol);
+      endpointNote.textContent = spec
+        ? "实际请求地址：" + shown + spec.suffix + (spec.note ? "；" + spec.note : "")
+        : "实际请求地址：" + shown;
+    }
+    protocolNode.addEventListener("change", () => {
+      model.protocol = protocolNode.value;
+      syncEndpointHint();
+      invalidate();
+    });
+    urlNode.addEventListener("input", syncEndpointHint);
+    syncEndpointHint();
     const keyNode = input("password", {
-      placeholder: stored ? "已保存在系统钥匙串，留空则不修改" : "粘贴该模型的 API Key",
+      placeholder: stored ? "已保存在加密保险库，留空则不修改" : "粘贴该模型的 API Key",
     });
 
     const keyControl = el("div", {}, [
       keyNode,
       el("p", { class: "inline-note" }, [
         stored ? badge("已配置", "on") : badge("未配置", "off"),
-        el("span", { text: stored ? " 钥匙串中已有该模型的 Key" : " 尚未保存 Key" }),
+        el("span", { text: stored ? " 保险库中已有该模型的 Key" : " 尚未保存 Key" }),
       ]),
     ]);
 
@@ -536,7 +718,7 @@
       node.addEventListener("input", invalidate)
     );
 
-    /** 保存时给后端的 api_key：null = 不修改钥匙串，非空 = 写入。 */
+    /** 保存时给后端的 api_key：null = 不修改保险库，非空 = 写入。 */
     function apiKeyPayload() {
       const typed = keyNode.value.trim();
       return typed === "" ? null : typed;
@@ -548,6 +730,7 @@
         name: (model.name || "").trim(),
         model: (model.model || "").trim(),
         base_url: (model.base_url || "").trim(),
+        protocol: model.protocol || "openai",
         api_key: apiKeyPayload(),
         timeout_secs: model.timeout_secs == null ? null : model.timeout_secs,
       };
@@ -621,7 +804,8 @@
     async function runDelete() {
       const label = (model.name || model.model || "该模型").trim();
       const confirmed = await ask(
-        "删除模型「" + label + "」？若已保存，钥匙串中的 API Key 也会一并清除。"
+        "删除模型「" + label + "」？若已保存，保险库中的 API Key 也会一并清除。",
+        { title: "删除确认", okText: "删除", kind: "danger" }
       );
       if (!confirmed) return;
 
@@ -657,7 +841,9 @@
       field("展示名", null, nameNode),
       field("模型 ID", null, modelIdNode),
       field("API 地址", null, urlNode),
-      field("API Key", "留空则沿用钥匙串中已保存的 Key", keyControl),
+      field("协议", "决定请求地址后缀与请求 / 响应格式", protocolNode),
+      endpointNote,
+      field("API Key", "留空则沿用保险库中已保存的 Key", keyControl),
       ...modelParamFields(model),
       el("div", { class: "log-actions" }, [testBtn, saveBtn]),
       statusNode,
@@ -670,7 +856,7 @@
       : [notice("尚未添加模型。添加后即可在 AI 助手面板中选择使用。")];
     return section(
       "自定义模型",
-      "每个模型独立配置 API 地址、API Key 与生成参数，可混合不同供应商（OpenAI、DeepSeek、自建网关、本地 Ollama 等）。每个模型单独「测试连通性 → 保存」，新增模型必须先测试通过才能保存；Key 只写入系统钥匙串；生成参数留空即使用默认值。",
+      "每个模型独立配置协议、API 地址、API Key 与生成参数，可混合不同供应商（OpenAI、DeepSeek、Anthropic、自建网关等）。协议决定请求地址后缀与请求 / 响应格式，下方会实时给出「实际请求地址」。每个模型单独「测试连通性 → 保存」，新增模型必须先测试通过才能保存；Key 只写入加密保险库；生成参数留空即使用默认值。",
       [
         el("div", { class: "ai-model-list" }, rows),
         el("div", { class: "log-actions" }, [
@@ -746,7 +932,7 @@
     return name || "origin";
   }
 
-  /** 单个远端的访问凭据：用户名随配置保存，密码 / 令牌只进系统钥匙串。 */
+  /** 单个远端的访问凭据：用户名随配置保存，密码 / 令牌只进加密保险库。 */
   function credentialRow(remote, index) {
     const name = remoteName(remote);
     const stored = gitCredentialNames.has(name);
@@ -756,16 +942,60 @@
       `features.sync.git_remotes.${index}.username`
     );
     const pwd = input("password", {
-      placeholder: stored ? "已保存在系统钥匙串，留空则不修改" : "密码或访问令牌（PAT）",
+      placeholder: stored ? "已保存在加密保险库，留空则不修改" : "密码或访问令牌（PAT）",
     });
     pwd.addEventListener("input", () => {
       if (pwd.value === "") gitPasswordInputs.delete(name);
       else gitPasswordInputs.set(name, pwd.value);
     });
 
+    const statusNode = el("p", { class: "inline-note", text: "" });
+    const testBtn = el("button", {
+      class: "btn ghost",
+      type: "button",
+      text: "测试连接",
+      onclick: runTest,
+    });
+
+    /**
+     * 用当前表单里的地址 / 用户名 / 密码连一次远端并读引用列表：
+     * 一次即可验证地址可达与凭据正确。密码已输入就用输入的，否则后端回落保险库。
+     */
+    async function runTest() {
+      const url = (((draft.features.sync.git_remotes || [])[index] || {}).url || "").trim();
+      if (!url) {
+        toast("请先填写远程地址", "warn");
+        return;
+      }
+      testBtn.disabled = true;
+      testBtn.textContent = "测试中…";
+      statusNode.className = "inline-note";
+      statusNode.textContent = "正在连接 " + url + " …";
+      try {
+        const result = await PShell.ipc.gitTest({
+          name,
+          url,
+          username: (user.value || "").trim() || null,
+          password: pwd.value === "" ? null : pwd.value,
+        });
+        statusNode.className = "inline-note ok";
+        statusNode.textContent =
+          "连接成功：" + result.message + "（" + result.elapsed_ms + " ms）";
+        toast("Git 远端连接与凭据均正常", "ok");
+      } catch (err) {
+        statusNode.className = "inline-note error";
+        statusNode.textContent = "测试失败：" + errorText(err);
+        toast(errorText(err), "error");
+      } finally {
+        testBtn.disabled = false;
+        testBtn.textContent = "测试连接";
+      }
+    }
+
     const control = el("div", {}, [
       el("div", { class: "input-row" }, [
         pwd,
+        testBtn,
         el("button", {
           class: "btn ghost",
           type: "button",
@@ -773,19 +1003,20 @@
           onclick: () => {
             gitPasswordInputs.set(name, "");
             pwd.value = "";
-            pwd.placeholder = "保存后将删除钥匙串中的密码";
+            pwd.placeholder = "保存后将删除保险库中的密码";
           },
         }),
       ]),
       el("p", { class: "inline-note" }, [
         stored ? badge("已保存", "on") : badge("未保存", "off"),
-        el("span", { text: stored ? " 钥匙串中已有凭据" : " 尚未保存凭据" }),
+        el("span", { text: stored ? " 保险库中已有凭据" : " 尚未保存凭据" }),
       ]),
+      statusNode,
     ]);
 
     return el("div", { class: "git-credential-row" }, [
       field("用户名", `远端 ${name}`, user),
-      field("密码 / 令牌", "留空即不修改", control),
+      field("密码 / 令牌", "留空即不修改；可先点「测试连接」验证地址与凭据", control),
     ]);
   }
 
@@ -795,7 +1026,7 @@
       : [notice("暂未配置远端地址，填写后即可配置凭据。")];
     return section(
       "访问凭据",
-      "HTTPS 远端需要用户名与密码 / 访问令牌（如 GitHub PAT）。密码只写入系统钥匙串，绝不写入配置文件，也不会同步到仓库；SSH 远端请改用 ssh-agent 或 ~/.ssh 私钥。",
+      "HTTPS 远端需要用户名与密码 / 访问令牌（如 GitHub PAT）。密码只写入加密保险库，不写入配置文件；它会以密文随 Git 同步一起分发。SSH 远端请改用 ssh-agent 或 ~/.ssh 私钥。填好后可点「测试连接」验证地址可达、凭据正确。",
       rows
     );
   }
@@ -843,23 +1074,85 @@
     return field("仓库路径", "留空则使用应用数据目录下的 sync", el("div", { class: "input-row" }, row));
   }
 
-  function renderShortcuts() {
-    // shortcuts.js 只导出 actions()，没有导出内部注册表；此前直接读 ACTIONS 会抛错、整页渲染失败
-    const actions = PShell.shortcuts.actions().map((item) => item.id);
-    const editor = listEditor({
-      items: draft.shortcuts,
-      addLabel: "添加快捷键",
-      emptyText: "暂无快捷键绑定。",
-      blank: () => ({ action: "", keys: "" }),
-      fields: [
-        { path: "action", placeholder: "动作 id，如 tab.new", width: "170px" },
-        { path: "keys", placeholder: "组合键，如 CmdOrCtrl+T", width: "1fr" },
-      ],
+  /**
+   * 快捷键行的数据来源。每个已实现的动作固定占一行，左侧只读描述取自动作注册表；
+   * 某个动作还没有绑定时就地补一条空绑定（组合键留空 = 未绑定，保存时会被丢掉）。
+   */
+  function shortcutRows() {
+    const actions = PShell.shortcuts.actions();
+    const bindings = (draft.shortcuts = draft.shortcuts || []);
+    const used = new Set();
+    const rows = actions.map((action) => {
+      let binding = bindings.filter((item) => item && item.action === action.id)[0];
+      if (!binding) {
+        binding = { action: action.id, keys: "", enabled: true };
+        bindings.push(binding);
+      }
+      used.add(binding);
+      return { label: action.label, hint: action.hint || "", binding, removable: false };
     });
+    // 配置里多出来的条目（同一动作的重复绑定、或当前版本没实现的动作 id）原样保留并允许删除，
+    // 否则它们会一直留在配置文件里却完全不可见。
+    bindings.forEach((item) => {
+      if (!item || used.has(item)) return;
+      const known = actions.filter((action) => action.id === item.action)[0];
+      rows.push({
+        label: known ? known.label + "（重复条目）" : "未实现的动作：" + (item.action || "（空）"),
+        hint: known
+          ? "同一动作绑定了多条，只有靠前的那条生效"
+          : "当前版本没有实现该动作，按键不会触发",
+        binding: item,
+        removable: true,
+      });
+    });
+    return rows;
+  }
 
+  function renderShortcuts() {
+    const list = el("div", { class: "list-editor" });
     const report = el("div");
+    /** 动作 id -> 描述文字，用于把冲突报告里的 id 换成可读文案 */
+    const labels = {};
 
-    /** 冲突检测随编辑即时刷新。增删行只重建行，故 input 与 click 都要监听。 */
+    function renderRows() {
+      list.textContent = "";
+      shortcutRows().forEach((row) => {
+        if (!labels[row.binding.action]) labels[row.binding.action] = row.label;
+        const node = el("div", { class: "list-row" });
+        node.style.gridTemplateColumns = row.removable ? "1fr 28px" : "1fr 54px 210px";
+
+        node.appendChild(
+          el("div", { class: "field-label" }, [
+            el("span", { class: "name", text: row.label }),
+            el("span", { class: "hint", text: row.hint }),
+          ])
+        );
+
+        if (!row.removable) {
+          const box = bind(input("checkbox"), row.binding, "enabled");
+          box.title = "关闭后该组合键不再派发动作，按键原样交给终端";
+          node.appendChild(el("label", { class: "toggle-row" }, [box]));
+          node.appendChild(bind(input("text", { placeholder: "留空 = 未绑定" }), row.binding, "keys"));
+        } else {
+          node.appendChild(
+            el("button", {
+              class: "icon-btn",
+              title: "删除该条目",
+              text: "✕",
+              onclick: () => {
+                const index = draft.shortcuts.indexOf(row.binding);
+                if (index >= 0) draft.shortcuts.splice(index, 1);
+                renderRows();
+                refreshReport();
+              },
+            })
+          );
+        }
+        list.appendChild(node);
+      });
+    }
+
+    /** 冲突检测随编辑即时刷新：改键、切换启用、删条目都要重算。 */
     function refreshReport() {
       report.textContent = "";
       const issues = PShell.shortcuts.conflicts(draft.shortcuts);
@@ -868,19 +1161,26 @@
         return;
       }
       issues.forEach((issue) => {
-        report.appendChild(el("p", { class: "inline-note " + issue.level, text: issue.text }));
+        const who = labels[issue.action] || issue.action;
+        let text = (who ? "「" + who + "」：" : "") + issue.text;
+        if (issue.duplicateOf) {
+          text += "（与「" + (labels[issue.duplicateOf] || issue.duplicateOf) + "」冲突）";
+        }
+        report.appendChild(el("p", { class: "inline-note " + issue.level, text }));
       });
     }
-    editor.addEventListener("input", refreshReport);
-    editor.addEventListener("click", refreshReport);
+
+    renderRows();
     refreshReport();
+    list.addEventListener("input", refreshReport);
+    list.addEventListener("click", refreshReport);
 
     return [
-      notice("可用的动作 id：" + actions.join("、") + "。其余 id 会被保存但不会触发。"),
       section(
         "键盘快捷键",
-        "组合键写法如 CmdOrCtrl+T（macOS 上是 ⌘，其他平台是 Ctrl），多个修饰键用 + 连接。",
-        [editor, report]
+        "组合键写法如 CmdOrCtrl+T（macOS 上是 ⌘，其他平台是 Ctrl），多个修饰键用 + 连接；" +
+          "也可直接写 Cmd / Ctrl / Shift / Alt。",
+        [list, report]
       ),
     ];
   }
@@ -1102,18 +1402,22 @@
     try {
       // 这些命令相互独立：任何一个失败都不该让整个设置面板打不开（原先用 Promise.all，
       // 一个 AI 模块未就绪就会让 open() 直接跳到 catch，表现就是「点设置没反应」）。
-      const [cfg, flagList, moduleList, appInfo, keySet, gitCreds] = await Promise.all([
+      const [cfg, flagList, moduleList, appInfo, keySet, gitCreds, vState, protos] = await Promise.all([
         PShell.ipc.getConfig(),
         PShell.ipc.featureFlags(),
         PShell.ipc.moduleStatus(),
         PShell.ipc.appInfo(),
         PShell.ipc.aiConfiguredModels().catch(() => []),
         PShell.ipc.gitCredentials().catch(() => []),
+        PShell.ipc.vaultStatus().catch(() => null),
+        PShell.ipc.aiProtocols().catch(() => []),
       ]);
       draft = deepClone(cfg);
       flags = flagList || [];
       modules = moduleList || [];
+      protocolList = protos || [];
       info = appInfo || null;
+      vaultState = vState || null;
       configuredModelIds = new Set(keySet || []);
       aiModels = deepClone((cfg.ai && cfg.ai.models) || []);
       savedModelIds = new Set(aiModels.map((m) => m.id));
@@ -1145,13 +1449,18 @@
         name: (remote.name || "").trim() || "origin",
         url: (remote.url || "").trim(),
         branch: emptyToNull(remote.branch),
-        // 用户名非敏感，随配置保存；密码 / 令牌走系统钥匙串
+        // 用户名非敏感，随配置保存；密码 / 令牌走加密保险库
         username: emptyToNull(remote.username),
       }))
       .filter((remote) => remote.url);
 
+    // 组合键留空 = 未绑定，直接丢掉；已启用 / 已禁用的绑定都要留存（禁用靠 enabled 字段表达）
     draft.shortcuts = (draft.shortcuts || [])
-      .map((item) => ({ action: (item.action || "").trim(), keys: (item.keys || "").trim() }))
+      .map((item) => ({
+        action: (item.action || "").trim(),
+        keys: (item.keys || "").trim(),
+        enabled: item.enabled !== false,
+      }))
       .filter((item) => item.action && item.keys);
   }
 
@@ -1163,7 +1472,7 @@
       modules = moduleList || modules;
 
       // Git 凭据同 API Key：也必须在 save_config 之后（set 带模块门控），
-      // 且只写系统钥匙串，绝不进配置文件。
+      // 且只写加密保险库，绝不进配置文件。
       if (gitPasswordInputs.size) {
         if (draft.features.sync.git_sync) {
           for (const [name, value] of gitPasswordInputs) {
@@ -1192,7 +1501,8 @@
 
   async function reset() {
     const confirmed = await ask(
-      "恢复默认设置？功能开关、终端外观、AI 与 Git 配置都会回到初始值。连接列表与系统钥匙串中的凭据不受影响。"
+      "恢复默认设置？功能开关、终端外观、AI 与 Git 配置都会回到初始值。连接列表与加密保险库中的凭据不受影响。",
+      { title: "恢复默认设置", okText: "恢复默认", kind: "danger" }
     );
     if (!confirmed) return;
     try {
@@ -1208,7 +1518,7 @@
       applyToApp();
       renderBody();
       if (configuredModelIds.size) {
-        toast("已恢复默认设置；钥匙串中的模型 API Key 仍保留，删除对应模型即可一并清除", "info");
+        toast("已恢复默认设置；保险库中的模型 API Key 仍保留，删除对应模型即可一并清除", "info");
       } else {
         toast("已恢复默认设置", "ok");
       }

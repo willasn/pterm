@@ -1,5 +1,11 @@
 /* 设置面板：左侧分类导航 + 右侧配置驱动表单 */
 
+/* 各分类内容长短不一，固定窗口高度避免切换 tab 时弹窗忽大忽小 */
+.modal.settings {
+  height: calc(100vh - 80px);
+  max-height: 720px;
+}
+
 .settings-layout {
   display: grid;
   grid-template-columns: 150px 1fr;
@@ -37,13 +43,31 @@
 }
 
 .settings-section {
-  margin-bottom: 18px;
+  margin-bottom: 20px;
+}
+
+/* 分区标题：左侧强调色边条 + 底纹，比字段条目更醒目，便于快速定位与区分层级 */
+.settings-section > h3,
+.flag-group-title {
+  display: flex;
+  align-items: center;
+  padding: 5px 10px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text);
+  border-left: 3px solid var(--accent);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  background: var(--bg-hover);
 }
 
 .settings-section > h3 {
-  margin: 0 0 2px;
-  font-size: 13px;
-  font-weight: 600;
+  margin: 0 0 8px;
+}
+
+/* section(null, …) 会生成空标题，别让它显示成一条空色带 */
+.settings-section > h3:empty {
+  display: none;
 }
 
 .settings-section > .desc {
@@ -72,6 +96,7 @@
 
 .field-label .name {
   display: block;
+  font-weight: 500;
 }
 
 .field-label .hint {
@@ -133,10 +158,9 @@
   opacity: 0.7;
 }
 
+/* 功能开关页的分组标题；视觉与 .settings-section > h3 保持一致，只调间距 */
 .flag-group-title {
-  margin: 14px 0 6px;
-  font-size: 12px;
-  color: var(--text-dim);
+  margin: 14px 0 8px;
 }
 
 .list-editor {
@@ -388,7 +412,7 @@
   gap: 8px;
 }
 
-/* 模型下拉：无边框，随面板宽度收缩 */
+/* 模型下拉：自定义浮层（原生 select 的 option 面板无法跟随主题，选中项恒为系统蓝） */
 .ai-model-host {
   display: flex;
   flex: 0 1 auto;
@@ -396,19 +420,143 @@
   margin-left: auto;
 }
 
-.ai-model-host select {
-  width: 160px;
-  min-width: 72px;
-  max-width: 100%;
-  border: none;
-  background: transparent;
-  color: var(--text-dim);
-  font-size: 11px;
-  padding: 3px 0;
+.ai-model-select {
+  position: relative;
+  display: flex;
+  min-width: 0;
 }
 
-.ai-model-host select:hover {
+/* 触发器：胶囊按钮，与输入容器同一套描边 / 圆角语言 */
+.ai-model-trigger {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 3px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-alt);
+  color: var(--text-dim);
+  font-size: 11px;
+  line-height: 1.6;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+
+.ai-model-trigger:hover,
+.ai-model-select.open .ai-model-trigger {
+  background: var(--bg-hover);
   color: var(--text);
+}
+
+.ai-model-select.open .ai-model-trigger {
+  border-color: var(--accent);
+}
+
+.ai-model-trigger:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.ai-model-trigger-name {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.ai-model-chevron {
+  flex: none;
+  display: flex;
+  color: var(--text-dim);
+  transition: transform 0.15s ease;
+}
+
+.ai-model-select.open .ai-model-chevron {
+  transform: rotate(180deg);
+}
+
+/* 弹出层：向上展开，圆角 + 阴影，与面板其余浮层一致 */
+.ai-model-menu {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 6px);
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 180px;
+  max-width: 260px;
+  max-height: 240px;
+  overflow-y: auto;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-elev);
+  box-shadow: var(--shadow);
+}
+
+.ai-model-menu[hidden] {
+  display: none;
+}
+
+.ai-model-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.4;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+
+.ai-model-option:hover,
+.ai-model-option:focus-visible {
+  background: var(--bg-hover);
+  outline: none;
+}
+
+.ai-model-option.selected {
+  color: var(--accent);
+}
+
+.ai-model-option-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  flex: 1;
+  min-width: 0;
+}
+
+.ai-model-option-name,
+.ai-model-option-sub {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.ai-model-option-sub {
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
+.ai-model-option-check {
+  flex: none;
+  display: flex;
+  color: var(--accent);
+  opacity: 0;
+}
+
+.ai-model-option.selected .ai-model-option-check {
+  opacity: 1;
 }
 
 /* 没有配置模型时占位说明用的小字 */
@@ -441,6 +589,82 @@
 
 .ai-send.busy {
   background: var(--danger);
+}
+
+/* 输入控件行里的上下文占比图标：只画环形进度，鼠标移上弹出明细 */
+.ai-context-meter {
+  position: relative;
+  flex: none;
+  display: flex;
+  align-items: center;
+  cursor: default;
+}
+
+.ai-context-meter[hidden] {
+  display: none;
+}
+
+.ai-meter-ring {
+  flex: none;
+}
+
+.ai-meter-track {
+  stroke: var(--border);
+}
+
+.ai-meter-value {
+  stroke: var(--ok);
+  stroke-linecap: round;
+  transition: stroke-dasharray 0.2s ease;
+}
+
+/* 悬浮明细：标题 + 「{百分比}% of {输入上限}」，默认藏起，hover 时浮在图标上方 */
+.ai-meter-tip {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-elev);
+  font-size: 11px;
+  line-height: 1.4;
+  white-space: nowrap;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateX(-50%) translateY(2px);
+  transition: opacity 0.12s ease, transform 0.12s ease;
+  z-index: 20;
+  pointer-events: none;
+}
+
+.ai-context-meter:hover .ai-meter-tip {
+  opacity: 1;
+  visibility: visible;
+  transform: translateX(-50%);
+}
+
+.ai-meter-tip-title {
+  color: var(--text-dim);
+}
+
+.ai-meter-tip-main {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 占比升高：黄色预警、红色告警 */
+.ai-context-meter.warn .ai-meter-value {
+  stroke: var(--warn);
+}
+
+.ai-context-meter.high .ai-meter-value {
+  stroke: var(--danger);
 }
 
 /* 大图标空状态 */
@@ -545,6 +769,147 @@
 
 .ai-msg .log-actions {
   margin-top: 8px;
+}
+
+/* ---------------------------------------------------------------------------
+   AI 回答的 Markdown 渲染（见 ai.js mdBlocks）
+   面板空间有限：字号、间距都收敛，标题不做文档级放大
+   --------------------------------------------------------------------------- */
+
+.ai-msg .md {
+  font-size: 12px;
+  line-height: 1.6;
+  word-break: break-word;
+}
+
+.ai-msg .md > *:first-child {
+  margin-top: 0;
+}
+
+.ai-msg .md > *:last-child {
+  margin-bottom: 0;
+}
+
+.ai-msg .md-p {
+  margin: 8px 0 0;
+}
+
+.ai-msg .md-h {
+  margin: 12px 0 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.ai-msg .md-list {
+  margin: 8px 0 0;
+  padding-left: 20px;
+}
+
+.ai-msg .md-list li {
+  margin: 2px 0;
+}
+
+.ai-msg .md-quote {
+  margin: 8px 0 0;
+  padding: 2px 10px;
+  border-left: 3px solid var(--border);
+  color: var(--text-dim);
+}
+
+.ai-msg .md-hr {
+  margin: 12px 0;
+  border: none;
+  border-top: 1px solid var(--border);
+}
+
+.ai-msg .md-code-inline {
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: var(--bg-hover);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.ai-msg .md-link {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.ai-msg .md-link:hover {
+  text-decoration: underline;
+}
+
+.ai-msg .md-del {
+  color: var(--text-dim);
+}
+
+/* 代码块：头部固定「语言 + 复制」，代码体不折行、超出横向滚动，保证命令原样可复制 */
+.md-code {
+  margin: 8px 0 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-alt);
+  overflow: hidden;
+}
+
+.md-code-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-hover);
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
+.md-code-lang {
+  font-family: var(--font-mono);
+}
+
+.md-copy {
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.md-copy:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.md-code-body {
+  margin: 0;
+  padding: 10px;
+  max-height: 320px;
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre;
+}
+
+/* 代码块基础配色：只用主题变量，深浅两套主题都能读 */
+.md-t-kw {
+  color: var(--accent);
+}
+
+.md-t-str {
+  color: var(--ok);
+}
+
+.md-t-num {
+  color: var(--warn);
+}
+
+.md-t-cmt {
+  color: var(--text-dim);
+  font-style: italic;
 }
 
 /* Agent 已执行步骤：默认折叠，展开看输出 */
@@ -719,6 +1084,62 @@
   letter-spacing: 0.06em;
 }
 
+/* 命令片段：标题右侧的总数（FEATURES.md §6） */
+.snip-count {
+  margin-left: 10px;
+  font-size: 12px;
+  font-weight: 400;
+}
+
+/* 命令片段：头部筛选框，与标题同行（FEATURES.md §6） */
+.modal-head .snip-search-wrap {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 6px;
+  max-width: 320px;
+  height: 28px;
+  margin: 0 12px 0 16px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-alt);
+  color: var(--text-dim);
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+/* [hidden] 要被真正隐藏：.snip-search-wrap 是 flex，浏览器默认样式会被覆盖 */
+.modal-head .snip-search-wrap[hidden] {
+  display: none;
+}
+
+.modal-head .snip-search-wrap:focus-within {
+  border-color: var(--accent);
+  background: var(--bg);
+  color: var(--text);
+}
+
+.modal-head .snip-search-wrap svg {
+  flex: none;
+  opacity: 0.7;
+}
+
+.modal-head .snip-search-wrap input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  font-size: 12px;
+}
+
+.modal-head .snip-search-wrap input:focus {
+  border: none;
+  background: transparent;
+}
+
 /* 命令片段：条目名称比分组标题更亮、更大，且缩进以示从属关系 */
 .snip-item {
   padding-left: 14px;
@@ -752,6 +1173,45 @@
   margin-top: 8px;
 }
 
+/* 窗口：未连接时按内容自适应，连接后再固定高度，切换目录不伸缩 */
+.modal.sftp {
+  position: relative;
+}
+
+.modal.sftp.expanded {
+  height: calc(100vh - 80px);
+  max-height: 760px;
+}
+
+#sftp-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow: hidden;
+}
+
+#sftp-body .settings-section {
+  margin-bottom: 0;
+}
+
+/* 已有连接：标签 + 下拉 + 右侧断开，无标题无说明 */
+.sftp-conn-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sftp-conn-label {
+  flex: 0 0 auto;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.sftp-conn-row .sftp-picker {
+  flex: 0 1 340px;
+  min-width: 0;
+}
+
 .sftp-toolbar {
   display: flex;
   flex-wrap: wrap;
@@ -765,9 +1225,24 @@
   min-width: 160px;
 }
 
+.sftp-count {
+  margin-top: 6px;
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+/* 文件区占满剩余高度，仅列表内部滚动 */
+.sftp-files {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
 .sftp-list {
   margin-top: 6px;
-  max-height: 320px;
+  flex: 1 1 auto;
+  min-height: 0;
   overflow: auto;
 }
 
@@ -851,6 +1326,252 @@
 
 .sftp-editor-input {
   width: 100%;
+}
+
+/* ---------- 拖拽上传浮层（本地 → 远端当前目录） ---------- */
+
+.sftp-dropzone {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius);
+  background: rgba(0, 0, 0, 0.28);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.16s ease;
+}
+
+.sftp-dropzone.active {
+  opacity: 1;
+}
+
+.sftp-dropzone-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  max-width: 70%;
+  padding: 24px 34px;
+  border: 2px dashed var(--accent);
+  border-radius: var(--radius);
+  background: var(--bg-alt);
+  box-shadow: var(--shadow);
+  transform: scale(0.94);
+  transition: transform 0.18s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.sftp-dropzone.active .sftp-dropzone-card {
+  transform: scale(1);
+}
+
+.sftp-dropzone-icon {
+  color: var(--accent);
+  font-size: 26px;
+  line-height: 1;
+  animation: sftp-float 1.1s ease-in-out infinite;
+}
+
+.sftp-dropzone-title {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.sftp-dropzone-path {
+  max-width: 100%;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@keyframes sftp-float {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-6px);
+  }
+}
+
+/* ---------- 建立连接过场 ---------- */
+
+.sftp-connecting {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius);
+  background: rgba(0, 0, 0, 0.28);
+}
+
+.sftp-connecting[hidden] {
+  display: none;
+}
+
+.sftp-connecting-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 22px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-alt);
+  box-shadow: var(--shadow);
+  animation: sftp-pop 0.22s ease;
+}
+
+.sftp-connecting-text {
+  font-size: 13px;
+}
+
+.sftp-spinner {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: sftp-spin 0.8s linear infinite;
+}
+
+@keyframes sftp-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes sftp-pop {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ---------- 传输进度（与「关闭」同一行） ---------- */
+
+.sftp-transfers {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.sftp-transfers[hidden] {
+  display: none;
+}
+
+/* 有进度条时让它独占左侧空间，不再需要撑开用的 spacer */
+.sftp-transfers:not([hidden]) + .spacer {
+  display: none;
+}
+
+/* 单条传输：箭头 + 名称 + 百分比 + 进度条 + 速度/用时 + 中断或移除 */
+.sftp-tr {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  animation: sftp-pop 0.18s ease;
+}
+
+.sftp-tr-dir {
+  flex: 0 0 auto;
+  color: var(--accent);
+  font-size: 11px;
+}
+
+.sftp-tr-name {
+  flex: 0 1 auto;
+  max-width: 150px;
+  min-width: 0;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sftp-tr-cancel {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 10px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.sftp-tr-cancel:hover {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.sftp-tr-bar {
+  flex: 0 0 auto;
+  width: 64px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--border);
+  overflow: hidden;
+}
+
+.sftp-tr-fill {
+  width: 0;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--accent);
+  transition: width 0.12s linear;
+}
+
+.sftp-tr[data-status="done"] .sftp-tr-fill {
+  background: var(--ok);
+}
+
+.sftp-tr[data-status="error"] .sftp-tr-fill {
+  background: var(--danger);
+}
+
+.sftp-tr[data-status="cancelled"] .sftp-tr-fill {
+  background: var(--text-dim);
+}
+
+.sftp-tr-pct {
+  flex: 0 0 auto;
+  color: var(--text-dim);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.sftp-tr-stat {
+  flex: 0 1 auto;
+  max-width: 210px;
+  min-width: 0;
+  color: var(--text-dim);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ---------------------------------------------------------------------------

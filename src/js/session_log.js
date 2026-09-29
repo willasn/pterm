@@ -237,7 +237,8 @@
 
   async function clearAll() {
     const confirmed = await ask(
-      "清空全部会话日志文件？此操作不可撤销，正在记录的会话会继续写入，但历史内容无法恢复。"
+      "清空全部会话日志文件？此操作不可撤销，正在记录的会话会继续写入，但历史内容无法恢复。",
+      { title: "清空确认", okText: "清空", kind: "danger" }
     );
     if (!confirmed) return;
     selected = null;

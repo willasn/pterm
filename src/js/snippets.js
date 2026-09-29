@@ -21,6 +21,8 @@
   let values = {};
   let preview = "";
   let lastError = null;
+  /** 列表筛选关键词（仅前端过滤，不落库）。 */
+  let query = "";
 
   function syncFlags(config) {
     return (config && config.features && config.features.auxiliary) || {};
@@ -64,13 +66,16 @@
 
   function renderBadge() {
     const node = $("snip-status");
-    if (!node) return;
-    if (!enabled) {
-      node.hidden = true;
-      return;
+    if (node) {
+      if (!enabled) {
+        node.hidden = true;
+      } else {
+        node.hidden = false;
+        node.textContent = `片段 ${snippets.length}`;
+      }
     }
-    node.hidden = false;
-    node.textContent = `片段 ${snippets.length}`;
+    const count = $("snip-count");
+    if (count) count.textContent = enabled ? `共 ${snippets.length} 个片段` : "";
   }
 
   // -------------------------------------------------------------------------
@@ -78,13 +83,26 @@
   // -------------------------------------------------------------------------
 
   /** 分组名去重，保持后端返回的排序（未分组在最前）。 */
-  function groupNames() {
+  function groupNames(list) {
     const seen = [];
-    snippets.forEach((s) => {
+    list.forEach((s) => {
       const group = s.group_name || "";
       if (seen.indexOf(group) < 0) seen.push(group);
     });
     return seen;
+  }
+
+  /** 按关键词过滤：名称、分组、说明、内容任一命中即可。 */
+  function filteredSnippets() {
+    const q = query.trim().toLowerCase();
+    if (!q) return snippets;
+    return snippets.filter((s) => {
+      const hay = [s.name, s.group_name, s.description, s.content]
+        .filter(Boolean)
+        .join("\n")
+        .toLowerCase();
+      return hay.indexOf(q) >= 0;
+    });
   }
 
   function itemNode(snippet) {
@@ -110,28 +128,45 @@
     );
   }
 
-  function listSection() {
-    const nodes = [];
+  /** 列表区只重绘自身，避免过滤输入时整块重建导致输入框失焦。 */
+  function renderList() {
+    const host = $("snip-list");
+    if (!host) return;
+    host.textContent = "";
     if (!snippets.length) {
-      nodes.push(note("还没有保存任何片段。点击「新建片段」开始。"));
-    } else {
-      const items = [];
-      groupNames().forEach((group) => {
-        items.push(el("li", { class: "snip-group", text: group || "未分组" }));
-        snippets
-          .filter((s) => (s.group_name || "") === group)
-          .forEach((s) => items.push(itemNode(s)));
-      });
-      nodes.push(el("ul", { class: "log-list" }, items));
-      nodes.push(note("点击片段名称进入编辑。"));
+      host.appendChild(note("还没有保存任何片段。点击「新建片段」开始。"));
+      return;
     }
-    nodes.push(
+    const list = filteredSnippets();
+    if (!list.length) {
+      host.appendChild(note("没有匹配的片段。"));
+      return;
+    }
+    const items = [];
+    groupNames(list).forEach((group) => {
+      items.push(el("li", { class: "snip-group", text: group || "未分组" }));
+      list
+        .filter((s) => (s.group_name || "") === group)
+        .forEach((s) => items.push(itemNode(s)));
+    });
+    host.appendChild(el("ul", { class: "log-list" }, items));
+  }
+
+  /** 清空筛选：头部输入框与内部状态一起复位。 */
+  function resetQuery() {
+    query = "";
+    const node = $("snip-search");
+    if (node) node.value = "";
+  }
+
+  function listSection() {
+    return el("div", { class: "settings-section" }, [
+      el("div", { id: "snip-list" }),
       el("div", { class: "log-actions" }, [
         button("新建片段", startNew, "primary"),
-        button("刷新", () => refresh(), "ghost"),
-      ])
-    );
-    return section("片段库", snippets.length ? `共 ${snippets.length} 个片段。` : null, nodes);
+        button("关闭", closePanel, "ghost"),
+      ]),
+    ]);
   }
 
   function editorSection() {
@@ -247,17 +282,21 @@
   function renderBody() {
     const host = $("snip-body");
     if (!host) return;
-    const hint = $("snip-hint");
-    if (hint) hint.textContent = enabled ? `已保存 ${snippets.length} 个片段` : "";
+    const searchWrap = $("snip-search-wrap");
 
     host.textContent = "";
     if (!enabled) {
+      if (searchWrap) searchWrap.hidden = true;
       host.appendChild(
         note("命令片段已关闭。请在「设置 → 功能开关」中打开「命令片段」。")
       );
       return;
     }
     host.appendChild(view === "edit" ? editView() : listSection());
+    // 头部筛选框只在列表视图出现；editView 可能把 view 回落到 list，故此处再判定
+    const listMode = view === "list";
+    if (searchWrap) searchWrap.hidden = !listMode;
+    if (listMode) renderList();
   }
 
   // -------------------------------------------------------------------------
@@ -324,6 +363,7 @@
       values = {};
       preview = "";
       lastError = null;
+      resetQuery();
       renderBadge();
       if (isOpen()) renderBody();
       return;
@@ -375,7 +415,11 @@
 
   async function remove() {
     if (busy || !draft || !draft.id) return;
-    const confirmed = await ask(`删除片段「${draft.name || "未命名片段"}」？此操作不可撤销。`);
+    const confirmed = await ask(`删除片段「${draft.name || "未命名片段"}」？此操作不可撤销。`, {
+      title: "删除确认",
+      okText: "删除",
+      kind: "danger",
+    });
     if (!confirmed) return;
     busy = true;
     renderBody();
@@ -422,11 +466,18 @@
     const mask = $("modal-snippets");
     if (!mask || isOpen()) return;
     mask.hidden = false;
+    resetQuery();
     // 有未完成的草稿时直接回到编辑视图，避免重新打开后丢失未保存的内容
     view = draft ? "edit" : "list";
     renderBody();
     await refresh();
     if (draft) renderPreview();
+  }
+
+  /** 关闭面板（底部页脚已移除，关闭按钮放在列表操作行）。 */
+  function closePanel() {
+    const mask = $("modal-snippets");
+    if (mask) mask.hidden = true;
   }
 
   /** 由 app.js 在配置变化时调用（启动、保存设置、重置）。 */
@@ -440,6 +491,7 @@
       values = {};
       preview = "";
       lastError = null;
+      resetQuery();
       renderBadge();
       if (isOpen()) renderBody();
       return;
@@ -450,6 +502,21 @@
 
   const badgeNode = $("snip-status");
   if (badgeNode) badgeNode.addEventListener("click", open);
+
+  // 头部筛选框是静态骨架，监听只绑一次；输入时只重绘列表区
+  const searchNode = $("snip-search");
+  if (searchNode) {
+    searchNode.addEventListener("input", () => {
+      query = searchNode.value;
+      renderList();
+    });
+    searchNode.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        resetQuery();
+        renderList();
+      }
+    });
+  }
 
   PShell.snippets = { setConfig, open, refresh };
 })(window.PShell);

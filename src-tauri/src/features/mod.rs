@@ -9,5 +9,6 @@
 pub mod import_export;
 pub mod ime;
 pub mod port_forward;
+pub mod rdp;
 pub mod session_log;
 pub mod sftp;

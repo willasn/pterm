@@ -122,26 +122,36 @@ window.PShell = window.PShell || {};
       $("danger-cmd").textContent = options.command || "";
       $("danger-reason").textContent = options.reason || "";
       mask.hidden = false;
+      $("danger-cancel").focus();
       const done = (value) => {
         mask.hidden = true;
         $("danger-confirm").removeEventListener("click", onOk);
         $("danger-cancel").removeEventListener("click", onCancel);
-        document.removeEventListener("keydown", onKey);
+        document.removeEventListener("keydown", onKey, true);
+        mask.removeEventListener("mousedown", onMask);
         resolve(value);
       };
       const onOk = () => done(true);
       const onCancel = () => done(false);
+      // 捕获阶段拦下 Escape：弹窗在最上层，不应连带关掉它背后的弹窗
       const onKey = (e) => {
-        if (e.key === "Escape") done(false);
+        if (e.key !== "Escape") return;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        done(false);
+      };
+      const onMask = (e) => {
+        if (e.target === mask) done(false);
       };
       $("danger-confirm").addEventListener("click", onOk);
       $("danger-cancel").addEventListener("click", onCancel);
-      document.addEventListener("keydown", onKey);
+      document.addEventListener("keydown", onKey, true);
+      mask.addEventListener("mousedown", onMask);
     });
   }
 
-  /** 二次确认。优先用原生对话框，退回 WebView 的 confirm，都失败时按「取消」处理。 */
-  async function ask(message) {
+  /** 原生确认框兜底：仅当应用内弹窗节点缺失（异常场景）时才用。 */
+  async function nativeAsk(message) {
     const dialog = window.__TAURI__ && window.__TAURI__.dialog;
     if (dialog && typeof dialog.ask === "function") {
       try {
@@ -155,6 +165,137 @@ window.PShell = window.PShell || {};
     } catch (_) {
       return false;
     }
+  }
+
+  /**
+   * 二次确认（应用内统一弹窗，风格与界面一致）。
+   *
+   * options 可选项：
+   *   title      标题，默认「确认操作」
+   *   okText     确认按钮文案，默认「确定」
+   *   cancelText 取消按钮文案，默认「取消」
+   *   kind       "warn" | "danger" | "info"，决定图标配色；danger 时确认按钮变实心红
+   */
+  function ask(message, options) {
+    const opts = options || {};
+    const mask = $("modal-confirm");
+    // 节点缺失时不阻塞调用方，退回系统原生确认
+    if (!mask) return nativeAsk(message);
+
+    const tr = (key, fallback) =>
+      PShell.i18n && PShell.i18n.t ? PShell.i18n.t(key, fallback) : fallback;
+    const kind = opts.kind || "warn";
+    const icon = $("confirm-icon");
+    const okBtn = $("confirm-ok");
+    const cancelBtn = $("confirm-cancel");
+
+    if (icon) icon.className = "dialog-icon " + kind;
+    $("confirm-title").textContent = opts.title || tr("dialog.title", "确认操作");
+    $("confirm-message").textContent = message || "";
+    okBtn.textContent = opts.okText || tr("common.ok", "确定");
+    cancelBtn.textContent = opts.cancelText || tr("common.cancel", "取消");
+    okBtn.className = kind === "danger" ? "btn danger-solid" : "btn primary";
+
+    mask.hidden = false;
+    // 危险操作默认聚焦「取消」，避免误按回车直接执行
+    (kind === "danger" ? cancelBtn : okBtn).focus();
+
+    return new Promise((resolve) => {
+      const done = (value) => {
+        mask.hidden = true;
+        okBtn.removeEventListener("click", onOk);
+        cancelBtn.removeEventListener("click", onCancel);
+        document.removeEventListener("keydown", onKey, true);
+        mask.removeEventListener("mousedown", onMask);
+        resolve(value);
+      };
+      const onOk = () => done(true);
+      const onCancel = () => done(false);
+      // 捕获阶段拦下 Escape：弹窗在最上层，不应连带关掉它背后的弹窗
+      const onKey = (e) => {
+        if (e.key !== "Escape") return;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        done(false);
+      };
+      const onMask = (e) => {
+        if (e.target === mask) done(false);
+      };
+      okBtn.addEventListener("click", onOk);
+      cancelBtn.addEventListener("click", onCancel);
+      document.addEventListener("keydown", onKey, true);
+      mask.addEventListener("mousedown", onMask);
+    });
+  }
+
+  /**
+   * 单行密码输入弹窗（快捷连接认证失败后补录密码用）。
+   *
+   * 返回用户输入的密码；取消（按钮 / Escape / 点击遮罩）返回 null。
+   * 输入为空时确认无效，避免把空串当成密码提交。
+   */
+  function promptPassword(message, options) {
+    const opts = options || {};
+    const mask = $("modal-password");
+    // 节点缺失时无法收集输入，按取消处理，交由调用方走原来的失败提示
+    if (!mask) return Promise.resolve(null);
+
+    const input = $("password-input");
+    const okBtn = $("password-ok");
+    const cancelBtn = $("password-cancel");
+
+    $("password-title").textContent = opts.title || "输入密码";
+    $("password-message").textContent = message || "";
+    $("password-label").textContent = opts.label || "密码";
+    okBtn.textContent = opts.okText || "连接";
+    cancelBtn.textContent = opts.cancelText || "取消";
+    input.value = opts.value || "";
+    input.placeholder = opts.placeholder || "";
+
+    mask.hidden = false;
+    input.focus();
+    input.select();
+
+    return new Promise((resolve) => {
+      const done = (value) => {
+        mask.hidden = true;
+        input.value = "";
+        okBtn.removeEventListener("click", onOk);
+        cancelBtn.removeEventListener("click", onCancel);
+        input.removeEventListener("keydown", onKey);
+        document.removeEventListener("keydown", onEscape, true);
+        mask.removeEventListener("mousedown", onMask);
+        resolve(value);
+      };
+      const onOk = () => {
+        if (!input.value) {
+          input.focus();
+          return;
+        }
+        done(input.value);
+      };
+      const onCancel = () => done(null);
+      const onKey = (e) => {
+        if (e.key !== "Enter") return;
+        e.preventDefault();
+        onOk();
+      };
+      // 捕获阶段拦下 Escape：弹窗在最上层，不应连带关掉它背后的弹窗
+      const onEscape = (e) => {
+        if (e.key !== "Escape") return;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        done(null);
+      };
+      const onMask = (e) => {
+        if (e.target === mask) done(null);
+      };
+      okBtn.addEventListener("click", onOk);
+      cancelBtn.addEventListener("click", onCancel);
+      input.addEventListener("keydown", onKey);
+      document.addEventListener("keydown", onEscape, true);
+      mask.addEventListener("mousedown", onMask);
+    });
   }
 
   PShell.util = {
@@ -171,6 +312,7 @@ window.PShell = window.PShell || {};
     errorText,
     confirmDialog,
     ask,
+    promptPassword,
   };
 
   // -------------------------------------------------------------------------

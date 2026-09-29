@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -26,6 +26,8 @@ const HANDSHAKE_TIMEOUT_MS: u32 = 20_000;
 const MAX_RECONNECT_DELAY_MS: u64 = 30_000;
 /// 复用同一会话 id 时，等待旧会话线程退出的最长时间
 const REUSE_WAIT: Duration = Duration::from_secs(5);
+/// 已结束会话保留的最终快照条数上限
+const ENDED_HISTORY: usize = 32;
 
 // ---------------------------------------------------------------------------
 // 传输层
@@ -149,6 +151,13 @@ pub struct SessionDeps {
 #[derive(Clone, Default)]
 pub struct SessionManager {
     sessions: Arc<Mutex<HashMap<String, Arc<SessionHandle>>>>,
+    /// 刚结束的会话保留的最终快照。
+    ///
+    /// 会话线程可能在后端握手很快时、`ssh_connect` 返回前就结束，此时前端尚未
+    /// 订阅，状态事件会整批丢失；前端订阅后靠 `list()` 对齐状态（见 ssh.js 的
+    /// resyncState）。没有这段历史，快速失败的会话会永远停在「连接中」，
+    /// 也无从判断失败原因（例如是否需要补录密码）。
+    ended: Arc<Mutex<VecDeque<SessionInfo>>>,
 }
 
 impl SessionManager {
@@ -178,6 +187,8 @@ impl SessionManager {
             let _ = old.send(SessionCommand::Close);
             self.wait_gone(&id, REUSE_WAIT);
         }
+        // 旧会话的结束快照不能留到新会话：同一个 id 只能有一个权威状态
+        self.ended.lock().retain(|item| item.id != id);
 
         let name = params
             .name
@@ -218,6 +229,7 @@ impl SessionManager {
             recent,
             cancel,
             sessions: self.sessions.clone(),
+            ended: self.ended.clone(),
             sink,
         };
         thread::Builder::new()
@@ -237,9 +249,27 @@ impl SessionManager {
             .ok_or_else(|| AppError::SessionNotFound(id.to_string()))
     }
 
-    /// 所有活跃会话快照。会话线程结束时会自行摘除表项，因此这里无需再做存活判定。
+    /// 会话快照：活跃会话 + 最近结束的一小段历史。
+    ///
+    /// 会话线程结束时会把自己从活跃表中摘掉，之后由 `ended` 保留其最终状态；
+    /// 前端订阅前就结束的会话只能靠这里对齐，因此不能只返回活跃项。
+    /// 同一 id 以活跃会话为准（重连复用 id 时两者都会存在）。
     pub fn list(&self) -> Vec<SessionInfo> {
-        self.sessions.lock().values().map(|h| h.snapshot()).collect()
+        let mut out: Vec<SessionInfo> = self
+            .sessions
+            .lock()
+            .values()
+            .map(|h| h.snapshot())
+            .collect();
+        let active: HashSet<String> = out.iter().map(|item| item.id.clone()).collect();
+        let ended = self.ended.lock();
+        out.extend(
+            ended
+                .iter()
+                .filter(|item| !active.contains(&item.id))
+                .cloned(),
+        );
+        out
     }
 
     pub fn write(&self, id: &str, data: Vec<u8>) -> AppResult<()> {
@@ -258,6 +288,8 @@ impl SessionManager {
 
     /// 用户主动关闭：置位取消标志，会话线程不再重连。
     pub fn close(&self, id: &str) -> AppResult<()> {
+        // 用户已经关掉这个标签，它的结束历史也一并清掉
+        self.ended.lock().retain(|item| item.id != id);
         let handle = self.require(id)?;
         handle.cancel.store(true, Ordering::Relaxed);
         let _ = handle.send(SessionCommand::Close);
@@ -304,6 +336,8 @@ struct RunContext {
     recent: Arc<Mutex<VecDeque<u8>>>,
     cancel: Arc<AtomicBool>,
     sessions: Arc<Mutex<HashMap<String, Arc<SessionHandle>>>>,
+    /// 结束快照的去处，与 `SessionManager::ended` 同一份
+    ended: Arc<Mutex<VecDeque<SessionInfo>>>,
     /// 本次会话的终端输出写入端（会话日志开启时存在）
     sink: Option<Arc<dyn OutputSink>>,
 }
@@ -355,8 +389,11 @@ impl RunContext {
                     // 认证被拒绝 / 参数错误属于不可重试错误，重连只会重复失败
                     if !retryable(&e) {
                         let msg = e.to_string();
+                        // 认证被拒时打个标记：前端可据此弹框让用户补录密码
+                        let auth_failed = matches!(e, AppError::Auth(_));
                         self.set_state(SessionState::Error {
                             message: msg.clone(),
+                            auth_failed,
                         });
                         channel::emit_closed(&self.deps.app, &self.id, &msg, false);
                         self.finish();
@@ -492,11 +529,20 @@ impl RunContext {
         self.cancel.load(Ordering::Relaxed)
     }
 
-    /// 线程退出前把自己从会话表中摘掉。仅当表内条目仍是本次运行时才移除，
-    /// 避免误删同 id 的新会话。
+    /// 线程退出前把自己从会话表中摘掉，并把最终状态留档（供前端对齐）。
+    /// 摘除仅当表内条目仍是本次运行时才执行，避免误删同 id 的新会话。
     fn finish(&self) {
         if let Some(logger) = &self.deps.logger {
             logger.close(&self.id);
+        }
+        let snapshot = self.info.lock().clone();
+        {
+            let mut ended = self.ended.lock();
+            ended.retain(|item| item.id != self.id);
+            ended.push_back(snapshot);
+            while ended.len() > ENDED_HISTORY {
+                ended.pop_front();
+            }
         }
         let mut map = self.sessions.lock();
         if let Some(current) = map.get(&self.id) {

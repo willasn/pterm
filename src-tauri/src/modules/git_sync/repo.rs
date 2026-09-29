@@ -64,6 +64,56 @@ pub fn clone(url: &str, path: &Path, credentials: Vec<auth::Credential>) -> AppR
 }
 
 // ---------------------------------------------------------------------------
+// 连接自检
+// ---------------------------------------------------------------------------
+
+/// 远端引用探测结果（等价于 `git ls-remote`）。
+#[derive(Debug, Clone, Default)]
+pub struct RemoteProbe {
+    /// 远端引用条目数
+    pub refs: usize,
+    /// 远端默认分支，如 `refs/heads/main`
+    pub default_branch: Option<String>,
+}
+
+/// 只连接远端并读取引用列表，用于「测试连接」：一次握手即可同时验证
+/// 地址可达、凭据（用户名 / 密码 / 令牌）有效。
+///
+/// 用一个临时裸仓库承载匿名远端，因此既不读写用户的同步仓库，也不产生提交；
+/// 结束后连同临时目录一起清理。
+pub fn probe_remote(url: &str, credentials: Vec<auth::Credential>) -> AppResult<RemoteProbe> {
+    let dir = std::env::temp_dir().join(format!("pshell-git-probe-{}", uuid::Uuid::new_v4()));
+    let outcome = probe_at(&dir, url, credentials);
+    let _ = std::fs::remove_dir_all(&dir);
+    outcome
+}
+
+fn probe_at(dir: &Path, url: &str, credentials: Vec<auth::Credential>) -> AppResult<RemoteProbe> {
+    let repo = Repository::init_bare(dir)
+        .map_err(|e| AppError::Git(format!("初始化探测仓库失败：{e}")))?;
+    let mut remote = repo
+        .remote_anonymous(url)
+        .map_err(|e| AppError::Git(format!("解析远端地址失败：{e}")))?;
+    let connection = remote
+        .connect_auth(git2::Direction::Fetch, Some(auth::callbacks(credentials)), None)
+        .map_err(|e| AppError::Git(format!("连接 {url} 失败：{e}")))?;
+    // 引用列表要等握手（含鉴权）完成后才拿得到，因此读到它就说明凭据通过了
+    let refs = connection
+        .list()
+        .map_err(|e| AppError::Git(format!("读取远端引用失败：{e}")))?
+        .len();
+    let default_branch = connection
+        .default_branch()
+        .ok()
+        .and_then(|buf| String::from_utf8(buf.to_vec()).ok())
+        .filter(|s| !s.trim().is_empty());
+    Ok(RemoteProbe {
+        refs,
+        default_branch,
+    })
+}
+
+// ---------------------------------------------------------------------------
 // 状态
 // ---------------------------------------------------------------------------
 
@@ -643,6 +693,25 @@ mod tests {
 
     fn oid(hex: char) -> Oid {
         Oid::from_str(&hex.to_string().repeat(40)).unwrap()
+    }
+
+    /// 连接探测应能连上远端并拿到引用列表（用本地裸仓库替代网络远端）。
+    #[test]
+    fn probe_remote_lists_refs() {
+        let dir = std::env::temp_dir().join(format!("pshell-git-probe-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let repo = Repository::init_bare(&dir).unwrap();
+        let sig = git2::Signature::now("t", "t@localhost").unwrap();
+        let tree_id = repo.index().unwrap().write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        repo.commit(Some("refs/heads/main"), &sig, &sig, "init", &tree, &[])
+            .unwrap();
+        drop(tree);
+
+        let probe = probe_remote(dir.to_str().unwrap(), Vec::new()).unwrap();
+        assert!(probe.refs >= 1, "至少应看到 refs/heads/main");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// 通配 refspec 下 FETCH_HEAD 含多个分支，必须只挑出与本地分支同名的那条。
