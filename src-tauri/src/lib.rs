@@ -18,6 +18,7 @@ use features::rdp::RdpModule;
 use features::session_log::{SessionLog, SessionLogModule};
 use features::sftp::{SftpManager, SftpModule};
 use modules::ai_assistant::{AiAssistantModule, AiService};
+use modules::auto_update::AutoUpdateModule;
 use modules::command_history::CommandHistoryModule;
 use modules::git_sync::{GitSync, GitSyncModule};
 use modules::global_search::GlobalSearchModule;
@@ -34,6 +35,9 @@ use utils::Paths;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        // 自动更新：从 tauri.conf.json 的 plugins.updater 配置的 GitHub Releases
+        // latest.json 检查更新（见 modules/auto_update）
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             let paths = Paths::resolve()?;
             let config = ConfigManager::load(paths.config_file())?;
@@ -85,6 +89,8 @@ pub fn run() {
             registry.register(Arc::new(QuickPanelModule::new()));
             // 系统托盘由模块生命周期构建 / 移除（modules/system_tray），这里注册即可
             registry.register(Arc::new(SystemTrayModule::new()));
+            // 自动更新无运行期状态，检查与安装都由命令驱动（modules/auto_update）
+            registry.register(Arc::new(AutoUpdateModule::new()));
             // AI 助手服务与模块共用同一实例：命令层与后台流式任务共用一个 HTTP 客户端
             let ai = AiService::new();
             registry.register(Arc::new(AiAssistantModule::new(ai.clone())));
@@ -216,6 +222,9 @@ pub fn run() {
             // 崩溃日志（可开关）
             utils::commands::crash_log_read,
             utils::commands::crash_log_export,
+            // 自动更新（可开关）
+            modules::auto_update::commands::auto_update_check,
+            modules::auto_update::commands::auto_update_install,
         ])
         .build(tauri::generate_context!())
         .expect("构建 Tauri 应用失败")

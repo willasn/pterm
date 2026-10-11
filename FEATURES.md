@@ -172,7 +172,7 @@ features:
   command_history: true
   quick_panel:     true
   system_tray:     false
-  auto_update:     false
+  auto_update:     true
   theme:           true
   shortcuts:       true
   crash_log:       true
@@ -185,7 +185,7 @@ features:
 | [x] | 命令历史 | `command_history` | 记录并检索历史执行的命令，支持去重与频率排序 | `src/features/history/`、`src-tauri/src/modules/command_history/` |
 | [x] | 快捷面板 | `quick_panel` | 全局快捷键唤起的命令面板（类 Spotlight） | `src/features/quick-panel/`、`src-tauri/src/modules/quick_panel/` |
 | [x] | 系统托盘 | `system_tray` | 托盘图标、菜单、最小化到托盘 | `src-tauri/src/lib.rs` + `src-tauri/src/modules/system_tray/` |
-| [ ] | 自动更新 | `auto_update` | 检查新版本并提示（Tauri updater） | `src-tauri/src/config/app_config.rs` |
+| [x] | 自动更新 | `auto_update` | 启动后自动从 GitHub Releases 检查新版本（结果按天缓存），设置「关于」页也可手动检查；发现新版右下角提示，确认后下载、校验签名并安装，装完重启应用（Tauri updater） | `src-tauri/src/modules/auto_update/`、`src/features/auto-update/` |
 | [x] | 主题 | `theme` | 内置亮/暗主题 + 自定义配色，终端配色独立配置 | `src/styles/theme.css`、`src-tauri/src/modules/theme/` |
 | [x] | 快捷键 | `shortcuts` | 全部操作可绑定快捷键；设置页每个动作固定一行，左侧只读描述，可逐条启用 / 禁用、改键或清空解绑，附冲突检测 | `src/features/shortcuts/`、`src/features/settings/`、`src-tauri/src/modules/shortcuts/` |
 | [x] | 崩溃日志 | `crash_log` | panic hook 捕获崩溃信息写本地日志，设置「关于」页可查看与导出 | `src-tauri/src/utils/mod.rs` + `src-tauri/src/utils/commands.rs` |

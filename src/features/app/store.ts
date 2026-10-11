@@ -1,5 +1,6 @@
 import { pt } from "../../lib/legacy";
 import { setEnabledFromConfig as setAiConfig } from "../ai/store";
+import { autoCheckOnStartup, setEnabledFromConfig as setAutoUpdateConfig } from "../auto-update/store";
 import {
   onQuickSubmit as connectionsQuickSubmit,
   openForm as connectionsOpenForm,
@@ -136,6 +137,7 @@ const CONFIG_CONSUMERS: ConfigConsumer[] = [
   ["shortcuts", setShortcutsConfig],
   ["ai", setAiConfig],
   ["split", setSplitConfig],
+  ["autoUpdate", setAutoUpdateConfig],
 ];
 
 /** 把一份完整配置作用到界面：主题、终端外观、侧栏。 */
@@ -201,6 +203,9 @@ async function boot(): Promise<void> {
     // 先拉连接列表，再让 setConfig 渲染，避免出现一次「还没有连接」的闪动
     await refreshConnections();
     terminal.updateEmptyState();
+
+    // 自动更新：开关开启时检查一次（结果按天缓存），有新版会在右下角提示
+    autoCheckOnStartup();
 
     // 把首次选择的语言落盘，之后启动直接生效；失败不阻断启动
     if (locale && locale !== previousLanguage) {

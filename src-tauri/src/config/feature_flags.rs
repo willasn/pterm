@@ -18,6 +18,7 @@ pub mod module_id {
     pub const SHORTCUTS: &str = "shortcuts";
     pub const QUICK_PANEL: &str = "quick_panel";
     pub const SYSTEM_TRAY: &str = "system_tray";
+    pub const AUTO_UPDATE: &str = "auto_update";
     pub const IME_SWITCH: &str = "ime_switch";
 }
 
@@ -272,7 +273,7 @@ impl Default for AuxiliaryFlags {
             command_history: true,
             quick_panel: true,
             system_tray: false,
-            auto_update: false,
+            auto_update: true,
             theme: true,
             shortcuts: true,
             crash_log: true,
@@ -315,6 +316,7 @@ impl FeatureFlags {
             module_id::SHORTCUTS => self.auxiliary.shortcuts,
             module_id::QUICK_PANEL => self.auxiliary.quick_panel,
             module_id::SYSTEM_TRAY => self.auxiliary.system_tray,
+            module_id::AUTO_UPDATE => self.auxiliary.auto_update,
             module_id::IME_SWITCH => self.connection.ime_auto_switch,
             // 未登记的标识视为可用，避免误伤核心功能
             _ => true,
@@ -460,6 +462,16 @@ mod tests {
 
         flags.auxiliary.system_tray = true;
         assert!(flags.module_enabled(module_id::SYSTEM_TRAY));
+    }
+
+    #[test]
+    fn auto_update_follows_its_flag() {
+        let mut flags = FeatureFlags::default();
+        flags.auxiliary.auto_update = false;
+        assert!(!flags.module_enabled(module_id::AUTO_UPDATE));
+
+        flags.auxiliary.auto_update = true;
+        assert!(flags.module_enabled(module_id::AUTO_UPDATE));
     }
 
     #[test]

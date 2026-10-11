@@ -144,6 +144,10 @@ export const ipc = {
   crashLogRead: (tailBytes: number) => call("crash_log_read", { tailBytes }),
   crashLogExport: (path: string) => call("crash_log_export", { path }),
 
+  // ---------- 自动更新（可开关） ----------
+  updateCheck: () => call("auto_update_check"),
+  updateInstall: () => call("auto_update_install"),
+
   // ---------- Git 同步（可开关） ----------
   gitStatus: () => call("git_sync_status"),
   gitInit: () => call("git_sync_init"),

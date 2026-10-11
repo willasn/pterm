@@ -4,7 +4,8 @@ version = "0.1.0"
 description = "跨平台 SSH 终端客户端"
 authors = ["pterm"]
 edition = "2021"
-rust-version = "1.89"
+# tauri-plugin-updater 的较新版本要求 Rust >= 1.90
+rust-version = "1.90"
 
 [lib]
 name = "pterm_lib"
@@ -16,6 +17,8 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-dialog = "2"
+# 自动更新（FEATURES.md §6）：从 GitHub Releases 的 latest.json 检查并安装更新
+tauri-plugin-updater = "2"
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

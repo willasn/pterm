@@ -688,6 +688,40 @@ textarea:disabled {
   border-color: var(--ok);
 }
 
+/* ---------- 更新提示条（右下角，见 features/auto-update） ---------- */
+/* 常驻提示，向上让出 toast 区域，避免与轻提示叠在同一个角落。 */
+.update-banner {
+  position: fixed;
+  right: var(--sp-16);
+  bottom: calc(var(--sp-16) + 56px);
+  z-index: 79;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-12);
+  max-width: 440px;
+  padding: var(--sp-12);
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow);
+}
+
+.update-banner-text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  font-size: var(--fs-sm);
+  min-width: 0;
+}
+
+.update-banner-actions {
+  display: flex;
+  gap: var(--sp-8);
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
 /* ---------- 右键菜单 ---------- */
 .ctx-menu {
   position: fixed;

@@ -1,4 +1,5 @@
 pub mod ai_assistant;
+pub mod auto_update;
 pub mod command_history;
 pub mod git_sync;
 pub mod global_search;

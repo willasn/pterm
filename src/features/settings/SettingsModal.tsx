@@ -3,6 +3,7 @@ import { Btn, Field, Note, Section } from "../../components/form";
 import { Portal } from "../../components/Portal";
 import { useT } from "../../hooks/useLocale";
 import { errorText, toast } from "../../lib/legacy";
+import { check as checkUpdate, install as installUpdate, progressPercent, useAutoUpdate } from "../auto-update/store";
 import { setLocale } from "../i18n/store";
 import { ask } from "../util/util";
 import {
@@ -1091,6 +1092,64 @@ function CrashLogSection() {
   );
 }
 
+/** 软件更新：当前版本 / 检查状态 / 手动检查与安装入口。 */
+function UpdateSection() {
+  const state = useAutoUpdate();
+  const draft = getDraft();
+  const info = (getInfo() || {}) as any;
+  if (!draft.features.auxiliary.auto_update) {
+    return (
+      <Section title="软件更新">
+        <Note>自动更新已关闭。打开后 pterm 会从 GitHub 检查新版本并提示安装。</Note>
+      </Section>
+    );
+  }
+  const percent = progressPercent(state);
+  const busy = state.status === "checking" || state.status === "downloading";
+  const statusText = (() => {
+    switch (state.status) {
+      case "checking":
+        return "正在检查…";
+      case "downloading":
+        return percent === null ? "正在下载…" : `正在下载 ${percent}%`;
+      case "available":
+        return `发现新版本 ${state.latest}`;
+      case "latest":
+        return "已是最新版本";
+      case "error":
+        return state.lastError || "检查失败";
+      default:
+        return "尚未检查";
+    }
+  })();
+  return (
+    <Section title="软件更新" desc="从 GitHub 检查新版本，下载安装完成后自动重启。">
+      <Field label="当前版本">
+        <span className="muted">{info.version || state.current || "—"}</span>
+      </Field>
+      <Field label="状态">
+        <span className="muted">{statusText}</span>
+      </Field>
+      <div className="log-actions">
+        <button
+          className="btn ghost"
+          type="button"
+          disabled={busy}
+          onClick={() => void checkUpdate({ manual: true })}
+        >
+          检查更新
+        </button>
+        {state.status === "available" || state.status === "error" ? (
+          <button className="btn primary" type="button" disabled={busy} onClick={() => void installUpdate()}>
+            立即更新
+          </button>
+        ) : null}
+      </div>
+      {state.notes ? <Note>{state.notes}</Note> : null}
+    </Section>
+  );
+}
+
 function AboutCategory() {
   const t = useT();
   const source = (getInfo() || {}) as any;
@@ -1126,6 +1185,7 @@ function AboutCategory() {
         )}
       </Section>
       <CrashLogSection />
+      <UpdateSection />
     </>
   );
 }

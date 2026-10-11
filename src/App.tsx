@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { AppShell } from "./app/AppShell";
 import { AiFeature } from "./features/ai";
 import { startApp } from "./features/app";
+import { AutoUpdateFeature } from "./features/auto-update";
 import { ConnectionsFeature } from "./features/connections";
 import { ContextMenuFeature } from "./features/context-menu";
 import { GitSyncFeature } from "./features/git-sync";
@@ -55,6 +56,7 @@ export default function App() {
       <SyncInputFeature />
       <ConnectionsFeature />
       <AiFeature />
+      <AutoUpdateFeature />
     </>
   );
 }
