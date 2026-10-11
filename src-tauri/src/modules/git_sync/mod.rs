@@ -32,7 +32,7 @@ use crate::error::{AppError, AppResult};
 use crate::modules::ModuleContext;
 use crate::utils::Paths;
 
-use repo::ConflictStrategy;
+use repo::ConflictPick;
 
 /// 网络操作（fetch / pull / push）超时。
 pub const NETWORK_TIMEOUT: Duration = Duration::from_secs(120);
@@ -223,6 +223,27 @@ pub struct GitTestView {
 // 操作
 // ---------------------------------------------------------------------------
 
+/// 冲突数据的处理方式（面向「连接 / 片段」这类可合并的数据域）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConflictChoice {
+    /// 以远端为准
+    #[default]
+    Remote,
+    /// 以本地为准
+    Local,
+    /// 两者保留（按 id 合并，同 id 时保留远端、本地另起新 id）
+    Both,
+}
+
+/// 冲突处理决策：按数据域分别指定。设置与保险库固定「以远端为准」，不出现在此。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct ResolveDecisions {
+    pub connections: ConflictChoice,
+    pub snippets: ConflictChoice,
+}
+
 /// 同步操作类型。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Op {
@@ -234,8 +255,36 @@ pub enum Op {
     Push,
     /// 只导出并提交（离线留痕，不触网）
     Commit,
-    /// 按策略解决冲突后导入（**不自动推送**，由用户确认后再推）
-    Resolve(ConflictStrategy),
+    /// 按用户对冲突的选择解决后导入并推送
+    Resolve(ResolveDecisions),
+}
+
+/// 一次同步的输入：操作 + 同步范围 + 是否包含敏感字段密文。
+#[derive(Debug, Clone, Copy)]
+pub struct SyncRequest {
+    pub op: Op,
+    pub scope: SyncScope,
+    pub include_secrets: bool,
+}
+
+impl SyncRequest {
+    /// 单一按钮的完整同步：全部业务数据（设置 / 连接 / 片段），按需带上敏感字段密文。
+    pub fn full(include_secrets: bool) -> Self {
+        Self {
+            op: Op::Sync,
+            scope: SyncScope::All,
+            include_secrets,
+        }
+    }
+
+    /// 由配置里的开关推导（供「仅拉取 / 仅推送 / 仅提交」这类内部入口使用）。
+    pub fn from_flags(op: Op, flags: &FeatureFlags) -> Self {
+        Self {
+            op,
+            scope: flags.sync.git_sync_scope,
+            include_secrets: flags.sync.git_sync_secrets,
+        }
+    }
 }
 
 impl Op {
@@ -266,7 +315,7 @@ impl Op {
 
     /// 是否推送远端
     fn pushes(&self) -> bool {
-        matches!(self, Op::Sync | Op::Push)
+        matches!(self, Op::Sync | Op::Push | Op::Resolve(_))
     }
 
     /// 是否把 payload 反向导入本地
@@ -283,10 +332,28 @@ fn scope_label(scope: SyncScope) -> &'static str {
     }
 }
 
-fn strategy_label(strategy: ConflictStrategy) -> &'static str {
-    match strategy {
-        ConflictStrategy::KeepLocal => "keep_local",
-        ConflictStrategy::KeepRemote => "keep_remote",
+/// 冲突文件是否需要用户人工决策（设置 / 保险库固定以远端为准，不在此列）。
+fn conflict_needs_decision(conflicts: &[String]) -> bool {
+    conflicts
+        .iter()
+        .any(|p| p == FILE_CONNECTIONS || p == FILE_SNIPPETS)
+}
+
+/// 数据域冲突选择 → 仓库层处理方式。
+fn pick_of(choice: ConflictChoice) -> ConflictPick {
+    match choice {
+        ConflictChoice::Remote => ConflictPick::Theirs,
+        ConflictChoice::Local => ConflictPick::Ours,
+        ConflictChoice::Both => ConflictPick::Union,
+    }
+}
+
+/// 冲突文件路径 → 处理方式。设置与保险库固定以远端为准，其余未知文件同样以远端为准。
+fn pick_for(path: &str, decisions: &ResolveDecisions) -> ConflictPick {
+    match path {
+        FILE_CONNECTIONS => pick_of(decisions.connections),
+        FILE_SNIPPETS => pick_of(decisions.snippets),
+        _ => ConflictPick::Theirs,
     }
 }
 
@@ -296,10 +363,10 @@ fn strategy_label(strategy: ConflictStrategy) -> &'static str {
 
 impl SyncContext {
     /// 执行一次同步。串行化 + 记录同步状态 + 导入后广播配置变更。
-    pub fn execute(&self, op: Op) -> AppResult<SyncOutcomeView> {
+    pub fn execute(&self, req: SyncRequest) -> AppResult<SyncOutcomeView> {
         let _guard = self.git.lock();
         let key = self.repo_path().display().to_string();
-        let result = self.execute_inner(op);
+        let result = self.execute_inner(req);
 
         match &result {
             Ok(view) => {
@@ -318,7 +385,7 @@ impl SyncContext {
 
         // 导入改动了本地配置，通知前端重新拉取
         if let Ok(view) = &result {
-            if view.imported > 0 && op.imports() {
+            if view.imported > 0 && req.op.imports() {
                 if let Err(e) = self.app.emit(EVENT_CONFIG_UPDATED, ()) {
                     log::warn!("广播配置更新事件失败：{e}");
                 }
@@ -327,9 +394,12 @@ impl SyncContext {
         result
     }
 
-    fn execute_inner(&self, op: Op) -> AppResult<SyncOutcomeView> {
+    fn execute_inner(&self, req: SyncRequest) -> AppResult<SyncOutcomeView> {
+        let op = req.op;
         let flags = self.flags();
-        let scope = flags.sync.git_sync_scope;
+        let scope = req.scope;
+        // 单按钮的「同步全部」也尊重保险库冲突时用户选择的「暂停同步 secrets.json」
+        let include_secrets = req.include_secrets && flags.sync.git_sync_secrets;
         let dir = self.repo_path();
         let remotes = self.effective_remotes();
         let (author, email) = (
@@ -356,7 +426,7 @@ impl SyncContext {
                 )));
             }
             log::warn!("Git 同步回退系统 CLI：{reason}");
-            return self.execute_cli(op, &dir, &remotes, scope, reason);
+            return self.execute_cli(req, &dir, &remotes, reason);
         }
 
         let branch = repo::current_branch(&repository);
@@ -367,21 +437,23 @@ impl SyncContext {
 
         // 全新客户端（本地仓库还没有任何提交）且配置了远端时，先拉取并导入远端内容。
         // 否则「先导出 + 本地提交、再拉取」会生成一条与远端无共同祖先的根提交，
-        // 合并时同一批 payload 在两边都是新增 → add/add 冲突；若用户又关掉冲突
-        // 提示，还会按「保留本地」自动解决，把远端已有数据覆盖成空。
+        // 合并时同一批 payload 在两边都是新增 → add/add 冲突，会把远端已有数据覆盖成空。
         let first_sync = op.pulls() && primary.is_some() && repo::is_unborn(&repository);
         if first_sync {
             let remote_name = primary.as_deref().unwrap_or("origin");
-            if !self.pull_remote(&repository, remote_name, &branch, scope, &mut view, &mut notes)? {
-                return Ok(view);
+            if !self.pull_remote(&repository, remote_name, &branch, &mut view)? {
+                if conflict_needs_decision(&view.conflicts) {
+                    return Ok(view);
+                }
+                self.auto_resolve_conflicts(&repository, scope, &mut view, &mut notes)?;
             }
             if op.imports() {
-                view.imported = self.read_payload(&dir, scope)?;
+                view.imported = self.read_payload(&dir, scope, include_secrets)?;
             }
         }
 
         if op.exports() {
-            self.write_payload(&dir, scope)?;
+            self.write_payload(&dir, scope, include_secrets)?;
         }
 
         if op.commits() {
@@ -398,28 +470,34 @@ impl SyncContext {
         if op.pulls() && !first_sync {
             match &primary {
                 Some(remote_name) => {
-                    if !self
-                        .pull_remote(&repository, remote_name, &branch, scope, &mut view, &mut notes)?
-                    {
-                        return Ok(view);
+                    if !self.pull_remote(&repository, remote_name, &branch, &mut view)? {
+                        // 设置 / 保险库冲突固定以远端为准，可自动解决后继续；
+                        // 连接 / 片段需要用户选择，暂停并把冲突交回界面。
+                        if conflict_needs_decision(&view.conflicts) {
+                            return Ok(view);
+                        }
+                        self.auto_resolve_conflicts(&repository, scope, &mut view, &mut notes)?;
                     }
                 }
                 None => notes.push("未配置远程地址，已跳过拉取与推送".into()),
             }
         }
 
-        if let Op::Resolve(strategy) = op {
-            let message = self.conflict_message(scope, 0);
-            let resolved =
-                repo::resolve_conflicts(&repository, strategy, &message, &author, &email)?;
-            notes.push(format!(
-                "已按「{}」解决 {resolved} 个冲突，请确认后手动推送",
-                strategy_label(strategy)
-            ));
+        if let Op::Resolve(decisions) = op {
+            let message = self.conflict_message(scope, view.conflicts.len());
+            let resolved = repo::resolve_conflicts_with(
+                &repository,
+                |path| pick_for(path, &decisions),
+                &message,
+                &author,
+                &email,
+            )?;
+            view.conflicts.clear();
+            notes.push(format!("已按你的选择解决 {resolved} 处冲突"));
         }
 
         if op.imports() && !first_sync {
-            view.imported = self.read_payload(&dir, scope)?;
+            view.imported = self.read_payload(&dir, scope, include_secrets)?;
         }
 
         if op.pushes() {
@@ -448,19 +526,16 @@ impl SyncContext {
         Ok(view)
     }
 
-    /// 拉取远端并处理冲突（普通同步与首次同步共用）。
+    /// 拉取远端（普通同步与首次同步共用）。
     ///
-    /// 返回 `Ok(false)` 表示检测到冲突且用户开着冲突提示，同步应暂停，
-    /// 调用方需直接返回当前 `view`；`Ok(true)` 表示可以继续后续步骤。
-    /// 关闭冲突提示时按「保留本地」自动解决，并把提示追加到 `notes`。
+    /// 返回 `Ok(false)` 表示产生冲突、同步应暂停，调用方需按冲突类型决定
+    /// 是交回界面让用户选择，还是自动「以远端为准」解决后继续。
     fn pull_remote(
         &self,
         repository: &Repository,
         remote_name: &str,
         branch: &str,
-        scope: SyncScope,
         view: &mut SyncOutcomeView,
-        notes: &mut Vec<String>,
     ) -> AppResult<bool> {
         let flags = self.flags();
         let (author, email) = (
@@ -474,37 +549,55 @@ impl SyncContext {
         if outcome.conflicts.is_empty() {
             return Ok(true);
         }
-
         view.conflicts = outcome.conflicts;
-        if flags.sync.git_conflict_prompt {
-            view.message = format!(
-                "检测到 {} 个文件冲突，同步已暂停，请选择保留策略",
-                view.conflicts.len()
-            );
-            return Ok(false);
-        }
-        // 关闭冲突提示时按「保留本地」自动解决，保证同步不中断
-        let merge_message = self.conflict_message(scope, view.conflicts.len());
-        let resolved = repo::resolve_conflicts(
+        view.message = format!(
+            "检测到 {} 处冲突，需要你确认处理方式",
+            view.conflicts.len()
+        );
+        Ok(false)
+    }
+
+    /// 设置 / 保险库等「固定以远端为准」的冲突自动解决，并继续后续步骤。
+    fn auto_resolve_conflicts(
+        &self,
+        repository: &Repository,
+        scope: SyncScope,
+        view: &mut SyncOutcomeView,
+        notes: &mut Vec<String>,
+    ) -> AppResult<()> {
+        let flags = self.flags();
+        let (author, email) = (
+            flags.sync.git_author_name.clone(),
+            flags.sync.git_author_email.clone(),
+        );
+        let decisions = ResolveDecisions::default();
+        let message = self.conflict_message(scope, view.conflicts.len());
+        let resolved = repo::resolve_conflicts_with(
             repository,
-            ConflictStrategy::KeepLocal,
-            &merge_message,
+            |path| pick_for(path, &decisions),
+            &message,
             &author,
             &email,
         )?;
-        notes.push(format!("已按「保留本地」自动解决 {resolved} 个冲突"));
-        Ok(true)
+        view.conflicts.clear();
+        view.message.clear();
+        if resolved > 0 {
+            notes.push(format!("已采用远端自动解决 {resolved} 处冲突"));
+        }
+        Ok(())
     }
 
     /// 系统 CLI 回退路径。仅在 libgit2 明确不支持当前仓库时进入。
     fn execute_cli(
         &self,
-        op: Op,
+        req: SyncRequest,
         dir: &Path,
         remotes: &[GitRemoteConfig],
-        scope: SyncScope,
         reason: String,
     ) -> AppResult<SyncOutcomeView> {
+        let op = req.op;
+        let scope = req.scope;
+        let include_secrets = req.include_secrets && self.flags().sync.git_sync_secrets;
         let flags = self.flags();
         let (author, email) = (
             flags.sync.git_author_name.clone(),
@@ -548,7 +641,7 @@ impl SyncContext {
         }
 
         if op.exports() {
-            self.write_payload(dir, scope)?;
+            self.write_payload(dir, scope, include_secrets)?;
         }
 
         if op.commits() {
@@ -585,51 +678,48 @@ impl SyncContext {
                                 pulled.error_detail()
                             )));
                         }
-                        view.conflicts = conflicts.clone();
-                        if flags.sync.git_conflict_prompt {
-                            view.message = format!(
-                                "检测到 {} 个文件冲突，同步已暂停，请选择保留策略",
-                                conflicts.len()
-                            );
-                            return Ok(view);
-                        }
-                        fallback::run(dir, &["checkout", "--ours", "--", "."], LOCAL_TIMEOUT)?;
-                        fallback::run(dir, &["add", "-A"], LOCAL_TIMEOUT)?;
-                        let mut args = identity.clone();
-                        args.extend(["commit".to_string(), "--no-edit".to_string()]);
-                        fallback::run(dir, &as_args(&args), LOCAL_TIMEOUT)?;
-                        notes.push(format!(
-                            "已按「保留本地」自动解决 {} 个冲突",
-                            conflicts.len()
-                        ));
+                        view.conflicts = conflicts;
+                        view.message = format!(
+                            "检测到 {} 处冲突，需要你确认处理方式",
+                            view.conflicts.len()
+                        );
+                        return Ok(view);
                     }
                 }
                 None => notes.push("未配置远程地址，已跳过拉取与推送".into()),
             }
         }
 
-        if let Op::Resolve(strategy) = op {
-            let flag = match strategy {
-                ConflictStrategy::KeepLocal => "--ours",
-                ConflictStrategy::KeepRemote => "--theirs",
-            };
+        if let Op::Resolve(decisions) = op {
             let conflicts = cli_conflicts(dir)?;
+            // CLI 回退路径逐文件选取版本。「两者保留」需要在进程内解析并合并 JSON，
+            // 系统 git 做不到，这里退回「以远端为准」并在结果里说明。
+            let mut union_note = false;
+            for path in &conflicts {
+                let pick = pick_for(path, &decisions);
+                let flag = match pick {
+                    ConflictPick::Ours => "--ours",
+                    ConflictPick::Theirs | ConflictPick::Union => "--theirs",
+                };
+                if pick == ConflictPick::Union {
+                    union_note = true;
+                }
+                fallback::run(dir, &["checkout", flag, "--", path], LOCAL_TIMEOUT)?;
+            }
             if !conflicts.is_empty() {
-                fallback::run(dir, &["checkout", flag, "--", "."], LOCAL_TIMEOUT)?;
                 fallback::run(dir, &["add", "-A"], LOCAL_TIMEOUT)?;
                 let mut args = identity.clone();
                 args.extend(["commit".to_string(), "--no-edit".to_string()]);
                 fallback::run(dir, &as_args(&args), LOCAL_TIMEOUT)?;
             }
-            notes.push(format!(
-                "已按「{}」解决 {} 个冲突，请确认后手动推送",
-                strategy_label(strategy),
-                conflicts.len()
-            ));
+            notes.push(format!("已按你的选择解决 {} 处冲突", conflicts.len()));
+            if union_note {
+                notes.push("系统 Git 回退模式下「两者保留」按远端处理".into());
+            }
         }
 
         if op.imports() {
-            view.imported = self.read_payload(dir, scope)?;
+            view.imported = self.read_payload(dir, scope, include_secrets)?;
         }
 
         if op.pushes() {
@@ -870,7 +960,7 @@ impl SyncContext {
     fn commit_message(&self, scope: SyncScope, count: usize) -> String {
         let flags = self.flags();
         if !flags.sync.git_commit_template || flags.sync.git_commit_template_text.trim().is_empty() {
-            return format!("pshell sync ({})", scope_label(scope));
+            return format!("pterm sync ({})", scope_label(scope));
         }
         let now = chrono::Local::now();
         flags
@@ -894,15 +984,15 @@ impl SyncContext {
 
     // -- payload 导出 -----------------------------------------------------
 
-    fn write_payload(&self, dir: &Path, scope: SyncScope) -> AppResult<()> {
+    fn write_payload(&self, dir: &Path, scope: SyncScope, include_secrets: bool) -> AppResult<()> {
         std::fs::create_dir_all(dir)?;
         if matches!(scope, SyncScope::Config | SyncScope::All) {
             self.export_config(dir)?;
             self.export_connections(dir)?;
-            if self.flags().sync.git_sync_secrets {
+            if include_secrets {
                 self.export_secrets(dir)?;
             } else {
-                log::info!("已按设置暂停同步 secrets.json，跳过导出");
+                log::info!("本次同步不含敏感字段密文，跳过导出 secrets.json");
             }
         }
         if matches!(scope, SyncScope::Snippets | SyncScope::All) {
@@ -950,15 +1040,15 @@ impl SyncContext {
 
     // -- payload 导入 -----------------------------------------------------
 
-    fn read_payload(&self, dir: &Path, scope: SyncScope) -> AppResult<usize> {
+    fn read_payload(&self, dir: &Path, scope: SyncScope, include_secrets: bool) -> AppResult<usize> {
         let mut imported = 0;
         if matches!(scope, SyncScope::Config | SyncScope::All) {
             imported += self.import_config(dir)?;
             imported += self.import_connections(dir)?;
-            if self.flags().sync.git_sync_secrets {
+            if include_secrets {
                 self.import_secrets(dir)?;
             } else {
-                log::info!("已按设置暂停同步 secrets.json，跳过导入");
+                log::info!("本次同步不含敏感字段密文，跳过导入 secrets.json");
             }
         }
         if matches!(scope, SyncScope::Snippets | SyncScope::All) {

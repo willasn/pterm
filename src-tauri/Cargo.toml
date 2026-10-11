@@ -1,13 +1,13 @@
 [package]
-name = "pshell"
+name = "pterm"
 version = "0.1.0"
 description = "跨平台 SSH 终端客户端"
-authors = ["pshell"]
+authors = ["pterm"]
 edition = "2021"
 rust-version = "1.89"
 
 [lib]
-name = "pshell_lib"
+name = "pterm_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
@@ -55,3 +55,12 @@ lto = true
 opt-level = "s"
 panic = "abort"
 strip = true
+
+# dev 构建不产完整调试信息，避免 target/debug 膨胀到十几 G。
+# 自己的代码只保留行号（panic 回溯仍能给出 file:line，够排障用），
+# 依赖（含 vendored openssl / libgit2 / sqlite）一律不产调试信息。
+[profile.dev]
+debug = 1
+
+[profile.dev.package."*"]
+debug = false

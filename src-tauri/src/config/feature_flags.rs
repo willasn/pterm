@@ -202,8 +202,8 @@ impl Default for SyncFlags {
             git_commit_template_text: "sync({scope}): {count} 项变更 @ {date} {time}".into(),
             git_multi_repo: false,
             git_remotes: vec![GitRemoteConfig::default()],
-            git_author_name: "pshell".into(),
-            git_author_email: "pshell@localhost".into(),
+            git_author_name: "pterm".into(),
+            git_author_email: "pterm@localhost".into(),
             git_cli_fallback: true,
         }
     }

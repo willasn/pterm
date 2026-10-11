@@ -3,7 +3,7 @@
 .tabbar {
   display: flex;
   align-items: stretch;
-  height: 34px;
+  height: 36px;
   flex: none;
   background: var(--bg-alt);
   border-bottom: 1px solid var(--border);
@@ -43,7 +43,7 @@
   width: 38px;
   height: 100%;
   border-radius: 0;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 600;
   flex: none;
 }
@@ -66,7 +66,7 @@
   width: 32px;
   height: 100%;
   border-radius: 0;
-  font-size: 14px;
+  font-size: var(--fs-lg);
   flex: none;
 }
 
@@ -80,15 +80,17 @@
   color: var(--accent);
 }
 
+/* 标签：不做竖分隔线，靠「选中态 = 终端底色 + 底部强调线」区分，
+   和侧栏一样只在 hover / 选中时给背景，静态时保持干净。 */
 .tab {
   display: flex;
   align-items: center;
-  gap: 7px;
-  padding: 0 8px 0 12px;
+  gap: var(--sp-8);
+  padding: 0 var(--sp-8) 0 var(--sp-12);
   min-width: 110px;
   max-width: 220px;
   flex: none;
-  border-right: 1px solid var(--border);
+  font-size: var(--fs-sm);
   cursor: pointer;
   user-select: none;
   white-space: nowrap;
@@ -103,7 +105,7 @@
   box-shadow: inset 0 -2px 0 var(--accent);
 }
 
-/* 同步组：同组标签共用一条同色轮廓，不同组颜色不同（--tab-sync-color 由 tabs.js 注入） */
+/* 同步组：同组标签共用一条同色轮廓，不同组颜色不同（--tab-sync-color 由 tabs 模块注入） */
 .tab[data-sync="1"] {
   box-shadow: inset 0 0 0 1px var(--tab-sync-color), inset 0 2px 0 var(--tab-sync-color);
 }
@@ -136,7 +138,7 @@
 .tab .dot {
   width: 7px;
   height: 7px;
-  border-radius: 50%;
+  border-radius: var(--radius-full);
   flex: none;
   background: var(--text-dim);
 }
@@ -148,16 +150,25 @@
   text-overflow: ellipsis;
 }
 
+/* 关闭按钮与侧栏的「编辑」同样处理：静止时隐去，hover / 选中才显形，
+   避免每个标签都挂一个 ✕ 把标题栏挤得很吵。 */
 .tab .close {
   width: 18px;
   height: 18px;
   border: none;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   background: transparent;
   color: var(--text-dim);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   line-height: 1;
   flex: none;
+  opacity: 0;
+}
+
+.tab:hover .close,
+.tab.active .close,
+.tab .close:focus-visible {
+  opacity: 1;
 }
 
 .tab .close:hover {
@@ -168,27 +179,27 @@
 /* 分屏会话数徽标：仅组内多于一个会话时出现 */
 .tab .count {
   flex: none;
-  min-width: 15px;
-  padding: 0 4px;
-  border-radius: 8px;
+  min-width: 16px;
+  padding: 0 var(--sp-4);
+  border-radius: var(--radius-full);
   background: var(--bg-hover);
   color: var(--text-dim);
-  font-size: 10px;
-  line-height: 15px;
+  font-size: var(--fs-xs);
+  line-height: 16px;
   text-align: center;
 }
 
 /* 同步组序号徽标：颜色与标签轮廓一致，用于区分不同组 */
 .tab .sync-badge {
   flex: none;
-  min-width: 15px;
-  height: 15px;
-  padding: 0 4px;
-  border-radius: 8px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 var(--sp-4);
+  border-radius: var(--radius-full);
   color: #10141a;
-  font-size: 10px;
+  font-size: var(--fs-xs);
   font-weight: 600;
-  line-height: 15px;
+  line-height: 16px;
   text-align: center;
 }
 
@@ -235,12 +246,13 @@
 }
 
 .tab-add {
-  width: 34px;
+  width: 36px;
   flex: none;
   border: none;
+  border-radius: var(--radius);
   background: transparent;
   color: var(--text-dim);
-  font-size: 15px;
+  font-size: var(--fs-lg);
 }
 
 .tab-add:hover {
@@ -275,7 +287,6 @@
   flex: 1 1 0;
   min-width: 0;
   min-height: 0;
-  padding: 6px 4px 4px 8px;
 }
 
 /* 分屏分隔线：只在真正分屏时出现，避免单 pane 也多一条边 */
@@ -291,8 +302,8 @@
 .split-list {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  margin-top: 8px;
+  gap: var(--sp-4);
+  margin-top: var(--sp-8);
   max-height: 46vh;
   overflow-y: auto;
 }
@@ -300,9 +311,9 @@
 .split-item {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 8px;
-  border-radius: var(--radius-sm);
+  gap: var(--sp-8);
+  padding: var(--sp-8);
+  border-radius: var(--radius);
   cursor: pointer;
   user-select: none;
 }
@@ -322,11 +333,14 @@
 .split-item .sub {
   flex: none;
   color: var(--text-dim);
-  font-size: 11px;
+  font-size: var(--fs-xs);
 }
 
+/* 终端内边距必须加在 .xterm 上：FitAddon 只从终端元素自身扣掉 padding，
+   加在 .pane 上会因 border-box 被算进可用高度而不生效。 */
 .pane .xterm {
   height: 100%;
+  padding: var(--sp-8) var(--sp-4) var(--sp-16) var(--sp-8);
 }
 
 .pane .xterm-viewport {
@@ -336,18 +350,18 @@
 /* 断线 / 错误遮罩，覆盖在终端之上但不吞掉键盘焦点 */
 .pane-banner {
   position: absolute;
-  left: 12px;
-  right: 12px;
-  bottom: 12px;
+  left: var(--sp-12);
+  right: var(--sp-12);
+  bottom: var(--sp-12);
   display: none;
   align-items: center;
-  gap: 10px;
-  padding: 8px 12px;
-  border-radius: var(--radius-sm);
+  gap: var(--sp-12);
+  padding: var(--sp-8) var(--sp-12);
+  border-radius: var(--radius);
   background: var(--bg-elev);
   border: 1px solid var(--warn);
   box-shadow: var(--shadow);
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 
 .pane-banner.show {
@@ -366,17 +380,17 @@
    平时半透明，避免干扰终端内容；hover 才完全显形。 */
 .pane-ime {
   position: absolute;
-  top: 8px;
-  right: 8px;
+  top: var(--sp-8);
+  right: var(--sp-8);
   z-index: 4;
-  padding: 2px 8px;
+  padding: 0 var(--sp-8);
   border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-full);
   background: var(--bg-elev);
   color: var(--text-dim);
   font: inherit;
-  font-size: 11px;
-  line-height: 1.6;
+  font-size: var(--fs-xs);
+  line-height: 1.8;
   cursor: pointer;
   opacity: 0.5;
   user-select: none;
@@ -406,43 +420,43 @@
 .sync-picker {
   width: 320px;
   max-width: calc(100vw - 32px);
-  padding: 14px;
+  padding: var(--sp-16);
   border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border-radius: var(--radius-card);
   background: var(--bg-elev);
   box-shadow: var(--shadow);
 }
 
 .sync-picker-head {
   color: var(--text);
-  font-size: 14px;
+  font-size: var(--fs-lg);
   font-weight: 600;
 }
 
 .sync-picker-desc {
-  margin: 6px 0 12px;
+  margin: var(--sp-8) 0 var(--sp-12);
   color: var(--text-dim);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   line-height: 1.5;
 }
 
 .sync-picker-list {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--sp-4);
 }
 
 .sync-picker-row {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
+  gap: var(--sp-8);
+  padding: var(--sp-8) var(--sp-12);
   border: 1px solid transparent;
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius);
   background: transparent;
   color: var(--text);
   font: inherit;
-  font-size: 13px;
+  font-size: var(--fs-md);
   text-align: left;
   cursor: pointer;
 }
@@ -452,9 +466,9 @@
 }
 
 .sync-picker-row.create {
-  margin-top: 4px;
+  margin-top: var(--sp-4);
   border-top: 1px solid var(--border);
-  border-radius: 0 0 var(--radius-sm) var(--radius-sm);
+  border-radius: 0 0 var(--radius) var(--radius);
 }
 
 .sync-picker-row .name {

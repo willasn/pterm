@@ -1,4 +1,4 @@
-/* pshell 基础样式：布局、侧栏、标签、弹窗、提示。主题变量见 theme.css */
+/* pterm 基础样式：布局、侧栏、标签、弹窗、提示。主题变量见 theme.css */
 * {
   box-sizing: border-box;
 }
@@ -12,7 +12,7 @@ body {
 
 body {
   font-family: var(--font-ui);
-  font-size: 13px;
+  font-size: var(--fs-md);
   color: var(--text);
   background: var(--bg);
   -webkit-font-smoothing: antialiased;
@@ -20,7 +20,7 @@ body {
 
 .muted {
   color: var(--text-dim);
-  font-size: 11px;
+  font-size: var(--fs-xs);
 }
 
 .spacer {
@@ -51,6 +51,10 @@ body {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  /* 侧栏是网格项，默认 min-height:auto 会被内容撑高，导致网格行超出窗口高度，
+     此时 conn-list 拿不到受限高度，flex:1 + overflow-y:auto 都不会触发滚动。
+     必须归零，让侧栏高度受网格行（100vh）约束 */
+  min-height: 0;
   background: var(--bg-alt);
   border-right: 1px solid var(--border);
 }
@@ -77,19 +81,19 @@ body {
 .sidebar-head {
   display: flex;
   align-items: center;
-  height: 42px;
-  padding: 0 8px 0 14px;
+  height: 44px;
+  padding: 0 var(--sp-8) 0 var(--sp-16);
   border-bottom: 1px solid var(--border);
 }
 
 .sidebar-head-actions {
   margin-left: auto;
   display: flex;
-  gap: 2px;
+  gap: var(--sp-4);
 }
 
 .quick-connect {
-  padding: 8px;
+  padding: var(--sp-8);
   border-bottom: 1px solid var(--border);
 }
 
@@ -99,60 +103,87 @@ body {
 
 .conn-list {
   flex: 1;
+  /* flex 子项默认 min-height:auto，会被内容撑到自然高度导致溢出侧栏被裁掉；
+     必须显式归零，overflow-y 才真正生效、连接过多时可滚动 */
+  min-height: 0;
   overflow-y: auto;
-  padding: 6px 6px 12px;
+  padding: var(--sp-8) var(--sp-8) var(--sp-16);
 }
 
+/* 分组标题：只做层级提示，不做大写/字距处理——分组名是用户填的中文，
+   强行 uppercase + 大字距会让它比连接名更抢眼，反而不像标题。 */
 .conn-group-title {
-  padding: 10px 8px 4px;
-  font-size: 11px;
+  display: flex;
+  align-items: center;
+  padding: var(--sp-8) var(--sp-8) var(--sp-4);
+  font-size: var(--fs-xs);
+  font-weight: 500;
   color: var(--text-dim);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
 }
 
+/* 连接项：名称 + 主机两行，主机行用等宽字体，扫一眼就能区分「哪台机器」。
+   .conn-text 用两列网格，让协议徽标贴在名称行右端，主机行横跨整行。 */
 .conn-item {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 8px;
-  border-radius: var(--radius-sm);
+  gap: var(--sp-8);
+  padding: var(--sp-8);
+  border: 1px solid transparent;
+  border-radius: var(--radius);
   cursor: pointer;
   user-select: none;
 }
 
 .conn-item:hover {
   background: var(--bg-hover);
+  border-color: var(--border);
 }
 
 .conn-item .dot {
   width: 7px;
   height: 7px;
-  border-radius: 50%;
+  border-radius: var(--radius-full);
   background: var(--text-dim);
   flex: none;
 }
 
-.conn-item .label {
+.conn-item .conn-text {
   flex: 1;
   min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: var(--sp-4);
+}
+
+.conn-item .label {
+  grid-column: 1;
+  min-width: 0;
+  font-size: var(--fs-md);
+  font-weight: 500;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .conn-item .sub {
+  grid-column: 1 / -1;
+  min-width: 0;
   color: var(--text-dim);
-  font-size: 11px;
-  flex: none;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* 协议徽标：RDP 连接在名称后标注，避免与 SSH 混淆 */
 .conn-item .proto {
+  grid-column: 2;
   flex: none;
-  font-size: 10px;
-  line-height: 1;
-  padding: 2px 5px;
+  font-size: var(--fs-xs);
+  line-height: 1.5;
+  padding: 0 var(--sp-4);
   border-radius: var(--radius-sm);
   border: 1px solid var(--border);
   color: var(--text-dim);
@@ -161,19 +192,59 @@ body {
 
 .conn-item .edit {
   opacity: 0;
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 
 .conn-item:hover .edit {
   opacity: 0.7;
 }
 
+/* 侧栏底部功能入口：各模块的徽标竖向堆叠。
+   窗口过矮或侧栏过窄时自动收成顶部那个「功能」按钮（.compact），
+   也可手动点击该按钮收起 / 展开；逻辑见 app.js 的 initSidebarFoot。 */
 .sidebar-foot {
-  display: flex;
-  gap: 12px;
-  justify-content: space-between;
-  padding: 8px 12px 16px;
+  /* 侧栏高度被网格行限制后，禁止底栏被压缩，保证功能入口始终完整可见 */
+  flex-shrink: 0;
+  padding: var(--sp-8) var(--sp-12) var(--sp-12);
   border-top: 1px solid var(--border);
+}
+
+.foot-badges {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+
+.sidebar-foot.compact .foot-badges {
+  display: none;
+}
+
+.foot-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-8);
+  width: 100%;
+  padding: var(--sp-4) 0;
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: var(--fs-xs);
+  text-align: left;
+  cursor: pointer;
+}
+
+.foot-toggle[hidden] {
+  display: none;
+}
+
+.foot-toggle:hover {
+  color: var(--text);
+}
+
+.foot-toggle-arrow {
+  font-size: var(--fs-xs);
+  line-height: 1;
 }
 
 /* 主区：左侧终端栈 + 右侧 AI 停靠面板（面板关闭时只剩终端栈） */
@@ -218,8 +289,8 @@ body {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 6px;
-  padding: 24px;
+  gap: var(--sp-8);
+  padding: var(--sp-24);
   text-align: center;
 }
 
@@ -228,28 +299,36 @@ body {
   display: none;
 }
 
+/* 品牌标记：与首次启动引导的 .onboarding-mark 同一形态，两处开屏观感一致 */
 .empty-state h1 {
-  font-size: 22px;
-  letter-spacing: 0.1em;
-  margin: 0 0 4px;
+  margin: 0;
+  padding: var(--sp-8) var(--sp-12);
+  border-radius: var(--radius-card);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xl);
+  font-weight: 600;
+  letter-spacing: 0.04em;
 }
 
 .empty-state p {
   margin: 0;
   max-width: 460px;
+  font-size: var(--fs-md);
   color: var(--text-dim);
 }
 
 /* ---------- 控件 ---------- */
 button {
   font-family: inherit;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   cursor: pointer;
 }
 
 .btn {
-  padding: 6px 13px;
-  border-radius: var(--radius-sm);
+  padding: var(--sp-4) var(--sp-12);
+  border-radius: var(--radius);
   border: 1px solid var(--border);
   background: var(--bg-elev);
   color: var(--text);
@@ -296,16 +375,16 @@ button {
 }
 
 .icon-btn {
-  width: 26px;
-  height: 26px;
+  width: 28px;
+  height: 28px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   border: none;
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius);
   background: transparent;
   color: var(--text-dim);
-  font-size: 14px;
+  font-size: var(--fs-lg);
   line-height: 1;
 }
 
@@ -320,9 +399,9 @@ input[type="number"],
 select,
 textarea {
   font-family: inherit;
-  font-size: 12px;
-  padding: 6px 8px;
-  border-radius: var(--radius-sm);
+  font-size: var(--fs-sm);
+  padding: var(--sp-4) var(--sp-8);
+  border-radius: var(--radius);
   border: 1px solid var(--border);
   background: var(--bg);
   color: var(--text);
@@ -350,7 +429,7 @@ input[type="checkbox"] {
 .input-row {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--sp-8);
 }
 
 .input-row input {
@@ -389,9 +468,9 @@ textarea:disabled {
   width: 520px;
   max-width: calc(100vw - 40px);
   max-height: calc(100vh - 80px);
-  background: var(--bg-alt);
+  background: var(--bg-elev);
   border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border-radius: var(--radius-card);
   box-shadow: var(--shadow);
 }
 
@@ -406,13 +485,13 @@ textarea:disabled {
 .modal-head {
   display: flex;
   align-items: center;
-  padding: 12px 14px;
+  padding: var(--sp-12) var(--sp-16);
   border-bottom: 1px solid var(--border);
 }
 
 .modal-head h2 {
   margin: 0;
-  font-size: 14px;
+  font-size: var(--fs-lg);
   font-weight: 600;
 }
 
@@ -427,31 +506,31 @@ textarea:disabled {
 /* 全局搜索：搜索框与标题同行，占据剩余宽度 */
 .modal-head .search-input {
   flex: 1;
-  margin: 0 10px 0 14px;
+  margin: 0 var(--sp-8) 0 var(--sp-16);
 }
 
 .modal-body {
   flex: 1;
   overflow-y: auto;
-  padding: 14px;
+  padding: var(--sp-16);
 }
 
 .modal-foot {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 10px 14px;
+  gap: var(--sp-8);
+  padding: var(--sp-12) var(--sp-16);
   border-top: 1px solid var(--border);
 }
 
 .danger-cmd {
-  margin: 8px 0;
-  padding: 10px;
-  border-radius: var(--radius-sm);
+  margin: var(--sp-8) 0;
+  padding: var(--sp-12);
+  border-radius: var(--radius);
   background: var(--bg);
   border: 1px solid var(--danger);
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   white-space: pre-wrap;
   word-break: break-all;
   color: var(--text);
@@ -466,8 +545,8 @@ textarea:disabled {
 /* 由 util.js 的 ask() 与 confirmDialog() 共用，视觉上比系统原生弹窗更贴近应用风格。 */
 .modal.dialog {
   width: 420px;
-  padding: 18px 18px 14px;
-  gap: 14px;
+  padding: var(--sp-20) var(--sp-20) var(--sp-16);
+  gap: var(--sp-16);
   overflow: hidden;
   animation: dialog-pop 0.18s cubic-bezier(0.2, 0.8, 0.3, 1);
 }
@@ -486,7 +565,7 @@ textarea:disabled {
 .dialog-head {
   display: flex;
   align-items: flex-start;
-  gap: 12px;
+  gap: var(--sp-12);
 }
 
 .dialog-icon {
@@ -496,8 +575,9 @@ textarea:disabled {
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: 10px;
-  background: rgba(76, 141, 255, 0.14);
+  border-radius: var(--radius);
+  /* 跟随强调色，用户换色后图标底色不会仍停留在默认蓝 */
+  background: var(--accent-soft);
   color: var(--accent);
 }
 
@@ -523,7 +603,7 @@ textarea:disabled {
 
 .dialog-title {
   margin: 0;
-  font-size: 14px;
+  font-size: var(--fs-lg);
   font-weight: 600;
   line-height: 36px;
 }
@@ -533,8 +613,8 @@ textarea:disabled {
 }
 
 .dialog-message {
-  margin: 2px 0 0;
-  font-size: 12px;
+  margin: var(--sp-4) 0 0;
+  font-size: var(--fs-sm);
   line-height: 1.6;
   color: var(--text-dim);
   word-break: break-word;
@@ -544,7 +624,7 @@ textarea:disabled {
   display: flex;
   flex-direction: column;
   flex: 1 1 auto;
-  gap: 8px;
+  gap: var(--sp-8);
   min-height: 0;
   overflow-y: auto;
 }
@@ -552,7 +632,24 @@ textarea:disabled {
 .dialog-foot {
   display: flex;
   justify-content: flex-end;
-  gap: 8px;
+  gap: var(--sp-8);
+}
+
+/* 选项弹窗（util.js 的 choose()）：每个方案一行，左对齐并带一句说明 */
+.choose-option {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  width: 100%;
+  text-align: left;
+  white-space: normal;
+}
+
+.choose-option .choose-option-desc {
+  font-size: var(--fs-sm);
+  color: var(--text-dim);
+  font-weight: 400;
 }
 
 /* 危险命令块：左侧红色标记，替代整框描边，视觉更轻 */
@@ -564,18 +661,18 @@ textarea:disabled {
 /* ---------- 提示条 ---------- */
 .toast-host {
   position: fixed;
-  right: 16px;
-  bottom: 16px;
+  right: var(--sp-16);
+  bottom: var(--sp-16);
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--sp-8);
   z-index: 80;
   pointer-events: none;
 }
 
 .toast {
-  padding: 8px 12px;
-  border-radius: var(--radius-sm);
+  padding: var(--sp-8) var(--sp-12);
+  border-radius: var(--radius);
   background: var(--bg-elev);
   border: 1px solid var(--border);
   box-shadow: var(--shadow);
@@ -596,20 +693,20 @@ textarea:disabled {
   position: fixed;
   z-index: 100;
   min-width: 168px;
-  padding: 4px;
+  padding: var(--sp-4);
   background: var(--bg-elev);
   border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-card);
   box-shadow: var(--shadow);
-  font-size: 13px;
+  font-size: var(--fs-md);
   user-select: none;
 }
 
 .ctx-item {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
+  gap: var(--sp-8);
+  padding: var(--sp-4) var(--sp-12);
   border-radius: var(--radius-sm);
   color: var(--text);
   cursor: pointer;
@@ -642,7 +739,7 @@ textarea:disabled {
 
 .ctx-sep {
   height: 1px;
-  margin: 4px 6px;
+  margin: var(--sp-4) var(--sp-8);
   background: var(--border);
 }
 
@@ -654,7 +751,7 @@ textarea:disabled {
 
 ::-webkit-scrollbar-thumb {
   background: var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-full);
   border: 3px solid transparent;
   background-clip: content-box;
 }
@@ -671,6 +768,7 @@ textarea:disabled {
    而应用真正生效的默认强调色是品牌绿，会出现「引导蓝、进应用变绿」的跳变。 */
 .onboarding {
   --accent: #4ade80;
+  --accent-soft: rgba(74, 222, 128, 0.14);
   --accent-text: #0d1117;
 
   position: fixed;
@@ -693,14 +791,14 @@ textarea:disabled {
 .onboarding-card {
   width: 460px;
   max-width: calc(100vw - 40px);
-  padding: 32px 32px 26px;
+  padding: var(--sp-24) var(--sp-24) var(--sp-20);
   display: flex;
   flex-direction: column;
   align-items: center;
   text-align: center;
-  background: var(--bg-alt);
+  background: var(--bg-elev);
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: var(--radius-card);
   box-shadow: var(--shadow);
 }
 
@@ -711,48 +809,49 @@ textarea:disabled {
 }
 
 .onboarding-mark {
-  padding: 7px 9px;
-  margin-bottom: 12px;
-  border-radius: 10px;
+  padding: var(--sp-8) var(--sp-8);
+  margin-bottom: var(--sp-12);
+  border-radius: var(--radius-card);
   background: var(--accent);
   color: #0d1117;
   font-family: var(--font-mono);
-  font-size: 15px;
+  font-size: var(--fs-xl);
   font-weight: 700;
   line-height: 1;
 }
 
 .onboarding-title {
   margin: 0;
-  font-size: 30px;
-  font-weight: 700;
+  font-size: 28px;
+  font-weight: 600;
   letter-spacing: 0.06em;
 }
 
 .onboarding-tagline {
-  margin: 5px 0 0;
-  font-size: 12px;
+  margin: var(--sp-4) 0 0;
+  font-size: var(--fs-sm);
   color: var(--text-dim);
 }
 
 .onboarding-question {
-  margin: 26px 0 12px;
-  font-size: 13px;
+  margin: var(--sp-24) 0 var(--sp-12);
+  font-size: var(--fs-md);
 }
 
 .onboarding-langs {
   display: flex;
-  gap: 10px;
+  gap: var(--sp-12);
   width: 100%;
 }
 
+/* 选中态与主界面的「强调色浅底 + 描边」一致，避免引导页自成一派 */
 .onboarding-lang {
   flex: 1;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 3px;
-  padding: 14px 10px;
+  gap: var(--sp-4);
+  padding: var(--sp-16) var(--sp-12);
   border-radius: var(--radius);
   border: 1px solid var(--border);
   background: var(--bg);
@@ -765,18 +864,18 @@ textarea:disabled {
 
 .onboarding-lang.selected {
   border-color: var(--accent);
-  background: var(--bg-elev);
+  background: var(--accent-soft);
   box-shadow: inset 0 0 0 1px var(--accent);
 }
 
 .onboarding-lang-name {
-  font-size: 14px;
+  font-size: var(--fs-lg);
   font-weight: 600;
 }
 
 .onboarding-lang-code {
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--fs-xs);
   color: var(--text-dim);
 }
 
@@ -785,13 +884,13 @@ textarea:disabled {
 }
 
 .onboarding-note {
-  margin: 16px 0 20px;
-  font-size: 11px;
+  margin: var(--sp-16) 0 var(--sp-20);
+  font-size: var(--fs-xs);
   color: var(--text-dim);
 }
 
 .onboarding-start {
   width: 100%;
-  padding: 9px 14px;
-  font-size: 13px;
+  padding: var(--sp-8) var(--sp-16);
+  font-size: var(--fs-md);
 }

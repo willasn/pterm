@@ -22,10 +22,10 @@ impl Paths {
     pub fn resolve() -> AppResult<Self> {
         let base = dirs::config_dir()
             .ok_or_else(|| crate::error::AppError::Config("无法定位系统配置目录".into()))?
-            .join("pshell");
+            .join("pterm");
         let data = dirs::data_dir()
             .ok_or_else(|| crate::error::AppError::Config("无法定位系统数据目录".into()))?
-            .join("pshell");
+            .join("pterm");
 
         let paths = Paths {
             config_dir: base.clone(),
@@ -49,14 +49,14 @@ impl Paths {
     }
 
     pub fn database_file(&self) -> PathBuf {
-        self.data_dir.join("pshell.db")
+        self.data_dir.join("pterm.db")
     }
 }
 
 /// 初始化日志。`crash_log` 开关关闭时不写崩溃文件，但 panic 依旧打印到 stderr。
 pub fn init_logging(enable_crash_log: bool, crash_log_path: PathBuf) {
     let _ = env_logger::Builder::from_env(
-        env_logger::Env::default().default_filter_or("pshell_lib=info,warn"),
+        env_logger::Env::default().default_filter_or("pterm_lib=info,warn"),
     )
     .try_init();
 

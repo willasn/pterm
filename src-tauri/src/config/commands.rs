@@ -21,7 +21,7 @@ pub struct AppInfo {
 #[tauri::command]
 pub fn app_info(state: State<'_, AppState>) -> AppResult<AppInfo> {
     Ok(AppInfo {
-        name: "pshell".into(),
+        name: "pterm".into(),
         version: env!("CARGO_PKG_VERSION").into(),
         config_file: state.paths.config_file().display().to_string(),
         database_file: state.paths.database_file().display().to_string(),

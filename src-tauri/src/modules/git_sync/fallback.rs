@@ -45,7 +45,7 @@ pub fn available() -> bool {
 pub fn unsupported_reason(repo: &Repository) -> Option<String> {
     use git2::RepositoryState as S;
     match repo.state() {
-        // 干净的仓库和普通的合并冲突是 pshell 自己处理的，不需要回退
+        // 干净的仓库和普通的合并冲突是 pterm 自己处理的，不需要回退
         S::Clean | S::Merge => {}
         S::Rebase | S::RebaseInteractive | S::RebaseMerge => {
             return Some("仓库处于变基中，libgit2 的变基支持不完整".into())

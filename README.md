@@ -1,9 +1,10 @@
-# pshell
+# pterm
 
 跨平台（Windows / macOS）**SSH 终端客户端**。核心只做 SSH，其余功能全部是可插拔模块，可在设置中单独开关。
 
-- 技术栈：Tauri 2.x（Rust + 系统 WebView）+ 原生 HTML/CSS/JS + xterm.js
-- 无 Electron、无 Node 运行时依赖
+- 技术栈：Tauri 2.x（Rust + 系统 WebView）+ Vite + React + TypeScript + xterm.js
+- 无 Electron；Node.js 仅用于前端构建，不是运行时依赖
+- 前端为 React 渲染：外壳（`src/app/`）与各功能组件 / ES 模块（`src/features/`）均已是 React / TypeScript，跨模块协作以直接 import 为主、少数反向依赖经 `window.PTerm` 桥接（见下方「前端迁移状态」）
 - 无云同步：Git 是唯一同步方式，只对接用户自己的远程仓库
 - 不内置任何 AI API Key，全部由用户配置
 
@@ -24,9 +25,15 @@
 ## 目录结构
 
 ```
-pshell/
+pterm/
 ├── FEATURES.md                  # 功能索引（唯一事实来源）
 ├── README.md
+├── .github/workflows/ci.yml     # CI：安装依赖 + 测试 + 类型检查 + 构建
+├── .github/workflows/release.yml # Release：打 v* 标签时打包 macOS / Windows 并发布
+├── tests/                       # 前端单元测试（node --test，纯函数）
+├── package.json                 # 前端工程（Vite + React + TS）与脚本
+├── vite.config.ts               # Vite 配置（root = src，产物输出 ../dist）
+├── tsconfig.json
 ├── src-tauri/                   # Rust 后端
 │   ├── Cargo.toml
 │   ├── tauri.conf.json
@@ -50,8 +57,8 @@ pshell/
 │       │   ├── command_history/ # 命令历史（可开关）
 │       │   ├── quick_panel/     # 快捷面板（可开关）
 │       │   ├── system_tray/     # 系统托盘（可开关）
-│       │   ├── theme/           # 主题（可开关，配色在前端 theme.css）
-│       │   └── shortcuts/       # 快捷键（可开关，派发在前端 shortcuts.js）
+│       │   ├── theme/           # 主题（可开关，配色在前端 src/styles/theme.css）
+│       │   └── shortcuts/       # 快捷键（可开关，派发在前端 src/features/shortcuts/）
 │       ├── features/            # 用户可配置的功能点
 │       │   ├── sftp/
 │       │   ├── port_forward/
@@ -63,30 +70,80 @@ pshell/
 │       │   ├── vault.rs         # 主密码加密的敏感字段保险库（secrets.json）
 │       │   └── app_config.rs
 │       └── utils/
-└── src/                         # Web 前端（无构建步骤）
-    ├── index.html
-    ├── js/
-    │   ├── terminal.js          # xterm.js 封装
-    │   ├── ssh.js               # SSH 会话调用
-    │   ├── tabs.js              # 多标签与分屏布局
-    │   ├── sync_input.js        # 同步输入（全局 / 同步组广播）
-    │   ├── git_sync.js          # Git 同步 UI
-    │   ├── ai.js              # AI 助手 UI
-    │   ├── shortcuts.js         # 快捷键绑定与冲突检测
-    │   ├── vault.js             # 主密码保险库门禁（设置 / 解锁）
-    │   └── settings.js          # 设置面板
+└── src/                         # Web 前端（Vite + React + TS）
+    ├── index.html               # Vite 入口（#root + vendor 脚本 + main.tsx）
+    ├── main.tsx                 # React 入口：加载样式并挂载 App
+    ├── App.tsx                  # 应用入口：渲染外壳，挂载后启动应用引导（features/app）
+    ├── app/                     # 应用外壳（原 skeleton.html 转为 JSX 组件）
+    │   ├── AppShell.tsx         # 外壳组合：.app + 弹窗 + 轻提示宿主
+    │   ├── Sidebar.tsx          # 侧栏：直嵌连接列表与功能徽标、拖拽条
+    │   ├── MainStack.tsx        # 主区：标签栏、panes、空状态、直嵌 AI 面板
+    │   └── Dialogs.tsx          # 四个应用内弹窗与 #toast-host
+    ├── types/
+    │   └── global.d.ts          # xterm（Terminal / FitAddon）全局声明
+    ├── components/
+    │   ├── Portal.tsx           # 将弹窗内容挂载到 body
+    │   └── form.tsx             # 与既有 util.form 对齐的基础元素
+    ├── features/
+    │   ├── app/                 # 应用引导与外壳（已迁移：store + startApp，无 UI）
+    │   ├── snippets/            # 命令片段（已迁移：store + 组件）
+    │   ├── search/              # 全局搜索（已迁移：store + matcher + 组件）
+    │   ├── history/             # 命令历史（已迁移：store + 组件）
+    │   ├── quick-panel/         # 快捷面板（已迁移：store + 组件）
+    │   ├── session-log/         # 会话日志（已迁移：store + 组件）
+    │   ├── port-forward/        # 端口转发（已迁移：store + 组件）
+    │   ├── import-export/       # 配置导入导出（已迁移：store + 组件）
+    │   ├── rdp/                 # 远程桌面入口（已迁移：api，无 UI）
+    │   ├── sftp/                # SFTP 文件（已迁移：store + 组件，含传输队列）
+    │   ├── settings/            # 设置面板（已迁移：constants + store + 组件）
+    │   ├── shortcuts/           # 快捷键（已迁移：api，无 UI）
+    │   ├── git-sync/            # Git 同步（已迁移：store + 组件）
+    │   ├── vault/               # 主密码保险库门禁（已迁移：store + 组件）
+    │   ├── onboarding/          # 首次启动引导（已迁移：store + 组件）
+    │   ├── split/               # 分屏（已迁移：store + 组件）
+    │   ├── sync-input/          # 同步输入（已迁移：store + 组件）
+    │   ├── connections/         # 连接管理（已迁移：store + 组件）
+    │   ├── ai/                  # AI 助手（已迁移：store + markdown + 组件）
+    │   ├── context-menu/        # 通用右键菜单（已迁移：store + 组件，按需弹出）
+    │   ├── danger/              # 危险命令检测（已迁移：rules + tracker，无 UI）
+    │   ├── i18n/                # 多语言（已迁移：store，无 UI，直接 import）
+    │   ├── ipc/                 # Tauri command/事件封装（已迁移：api，无 UI，直接 import）
+    │   ├── ssh/                 # SSH 会话编排（已迁移：api，无 UI，直接 import）
+    │   ├── tabs/                # 多标签与分屏布局（已迁移：store + 依赖注入，无 UI）
+    │   ├── terminal/            # xterm.js 终端渲染（已迁移：api + 依赖注入，无 UI）
+    │   └── util/                # 通用工具与弹窗（已迁移：util，无 UI，直接 import）
+    ├── hooks/
+    │   └── useLocale.ts         # 语言订阅与翻译函数
+    ├── lib/
+    │   └── legacy.ts            # 过渡入口：少数仍需 window.PTerm 的取值 + 配置辅助函数
+    ├── public/                  # 静态资源（原样拷贝进 dist）
+    │   ├── vendor/              # xterm.js 等 vendor 资源
+    │   └── locales/             # 语言包（en-US.json）
     └── styles/
         ├── theme.css            # 亮/暗调色板与尺寸变量
-        └── base.css             # 布局、侧栏、标签、弹窗
+        ├── base.css             # 布局、侧栏、标签、弹窗
+        ├── terminal.css         # 终端区样式
+        ├── settings.css         # 设置面板样式
+        └── react-shell.css      # React 外壳宿主样式
 ```
 
 ## 环境要求
 
 - Rust（stable）与 `cargo`
 - Tauri CLI：`cargo install tauri-cli --version "^2"`（或使用 `cargo tauri`）
+- Node.js 18+ 与 npm（仅前端构建需要，运行时不需要 Node）
 - macOS 需 Xcode Command Line Tools；Windows 需 WebView2（Win11 自带）
 
-前端为原生 HTML/CSS/JS，**无需 Node.js**。xterm.js 以 vendor 资源形式随仓库提供，运行时通过 Tauri 的资源协议加载。
+前端由 Vite 构建、React 渲染、TypeScript 编写。xterm.js 以 vendor 资源形式随仓库提供（`src/public/vendor`），运行时经 Tauri 资源协议加载。`src-tauri/tauri.conf.json` 已配置 `beforeDevCommand` / `beforeBuildCommand`，`cargo tauri dev|build` 会自动拉起 Vite。
+
+## 前端迁移状态
+
+前端已从「原生 HTML/CSS/JS」迁移到「Vite + React + TypeScript」：原 `src/js/*.js` 全部改写为 `src/features/` 下的 ES 模块 / React 组件，原静态骨架 `skeleton.html` 也转为 `src/app/` 下的 React 组件，`src/legacy/` 已移除。
+
+- **外壳**：`src/main.tsx` 挂载 React，`src/App.tsx` 渲染 `AppShell`（`src/app/`，即原 `skeleton.html` 的 JSX 版），挂载完成后调用 `features/app` 的 `startApp()` 拉取配置、装配主题并绑定全局交互。
+- **形态**：有界面的功能为 `store`（状态与行为）+ React 组件订阅渲染；纯基础设施（util / ipc / ssh / terminal / tabs / app 等）为 `api` 或 `store`，不渲染界面。跨模块调用以直接 import 为主；`terminal`、`tabs`、`connections` 对会反向依赖它们的模块（如 sftp / port-forward / split / sync-input）改用启动期依赖注入（`wireDependencies`），避免 ESM 环。仅 `window.PTerm` 上保留 git-sync / search（反向依赖 app）与 settings / quick-panel 的少量面板入口桥接。
+- **外壳 DOM**：`AppShell` 直接渲染侧栏连接列表、功能徽标、分屏按钮及 AI 停靠面板；`#panes` / `#tab-list` / `#sidebar` 等容器仍由命令式模块按 id 操作。弹窗继续通过 `Portal` 挂到 body。
+- **构建链**：Vite `root` 指向 `src/`，产物输出到 `dist/`；Tauri 的 `frontendDist` 相应指向 `../dist`。
 
 ## 构建与运行
 
@@ -97,11 +154,25 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 # 安装 Tauri CLI
 cargo install tauri-cli --version "^2"
 
-# 开发模式（热重载 Rust 后端）
-cargo tauri dev
+# 安装前端依赖
+npm install
+
+# 开发模式（Vite 热更新 + 热重载 Rust 后端）
+cargo tauri dev          # 或 npm run tauri dev
+
+# 只调试前端（在浏览器打开；无 Tauri 宿主时后端能力不可用）
+npm run dev
+
+# 类型检查 / 构建前端产物到 dist/
+npm run typecheck
+npm run build
+
+# 单元测试（node --test）/ 轻量检查（同 typecheck）
+npm test
+npm run lint
 
 # 构建发行包（.app / .dmg / .msi / .exe）
-cargo tauri build
+cargo tauri build        # 或 npm run tauri build
 ```
 
 ## 配置

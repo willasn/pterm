@@ -84,22 +84,20 @@ fn tail(text: &str, max_chars: usize) -> String {
 
 /// 从模型回复里解析动作。
 ///
-/// 容忍三种常见偏差：整体被 ```json 包裹、JSON 前后夹带解释文字、
-/// 以及「边想边说」产生多个 JSON 对象（从后往前试，取最后一个合法动作）。
-/// 解析不出合法动作时返回错误，并把原文带上——盲目猜一个命令去执行风险太高。
+/// 先按标准 JSON 解析（容忍 ```json 包裹、夹带解释文字、以及「边想边说」产生多个
+/// JSON 对象——从后往前试，取最后一个合法动作）。
+///
+/// 标准解析失败时再走一次宽松提取：模型常把多行结论直接塞进字符串里（值里出现裸换行），
+/// 或写出未转义的引号，这些都会让严格 JSON 解析（以及按引号配对切分的候选提取）失效。
+/// 逐字段宽松提取能救回这类「差一点就合法」的回复。
+///
+/// 两条路都拿不到合法动作时返回错误，并把原文带上——盲目猜一个命令去执行风险太高。
 pub fn parse_action(raw: &str) -> AppResult<AgentAction> {
     let text = strip_code_fence(raw);
-    let candidates = json_candidates(text);
-    if candidates.is_empty() {
-        return Err(AppError::Ai(format!(
-            "Agent 未返回合法动作，请重试或改用 Ask 模式。模型原文：{}",
-            tail(raw, 500)
-        )));
-    }
 
     let mut json_error: Option<String> = None;
     // 从后往前试：模型「边想边说」时，正式动作通常排在最后。
-    for candidate in candidates.into_iter().rev() {
+    for candidate in json_candidates(text).into_iter().rev() {
         match serde_json::from_str::<serde_json::Value>(candidate) {
             Ok(value) => match action_from_value(&value)? {
                 Some(action) => return Ok(action),
@@ -108,6 +106,10 @@ pub fn parse_action(raw: &str) -> AppResult<AgentAction> {
             },
             Err(e) => json_error = Some(e.to_string()),
         }
+    }
+
+    if let Some(action) = tolerant_action(text) {
+        return Ok(action);
     }
 
     Err(match json_error {
@@ -120,6 +122,100 @@ pub fn parse_action(raw: &str) -> AppResult<AgentAction> {
             tail(raw, 500)
         )),
     })
+}
+
+/// 宽松提取动作：不要求字符串是合法 JSON，按提示词约定的形状逐字段取值。
+///
+/// `action` 取值不含引号，取到其后第一个引号即可；约定里 `run` 的 `command`、
+/// `done` 的 `summary` 都是对象里最后一个字段，因此取「开引号 → 对象内最后一个引号」，
+/// 即使值里混入了未转义的引号或裸换行也不会像严格解析那样整条失败。
+fn tolerant_action(text: &str) -> Option<AgentAction> {
+    let start = text.find('{')?;
+    let end = text.rfind('}')?;
+    if end <= start {
+        return None;
+    }
+    let body = &text[start + 1..end];
+
+    match first_string_field(body, "action")?.trim().to_lowercase().as_str() {
+        ACTION_RUN => {
+            let command = last_string_field(body, "command")?.trim().to_string();
+            if command.is_empty() {
+                return None;
+            }
+            Some(AgentAction {
+                action: ACTION_RUN.into(),
+                command: Some(command),
+                summary: None,
+            })
+        }
+        ACTION_DONE => {
+            let summary = last_string_field(body, "summary")
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "任务结束".to_string());
+            Some(AgentAction {
+                action: ACTION_DONE.into(),
+                command: None,
+                summary: Some(summary),
+            })
+        }
+        _ => None,
+    }
+}
+
+/// 取某个键的字符串值，值到其后第一个引号为止（适用于不含引号的值，如 `action`）。
+fn first_string_field(body: &str, key: &str) -> Option<String> {
+    let (open, rest) = field_value_start(body, key)?;
+    let close = open + rest.find('"')?;
+    Some(unescape_loose(&body[open..close]))
+}
+
+/// 取某个键的字符串值，值到对象内最后一个引号为止（适用于排在最后的 `command` / `summary`）。
+fn last_string_field(body: &str, key: &str) -> Option<String> {
+    let (open, _) = field_value_start(body, key)?;
+    let close = body.rfind('"')?;
+    if close < open {
+        return None;
+    }
+    Some(unescape_loose(&body[open..close]))
+}
+
+/// 定位键值对里字符串值的起点：返回「开引号之后」的字节下标，以及从该处到末尾的切片。
+fn field_value_start<'a>(body: &'a str, key: &str) -> Option<(usize, &'a str)> {
+    let key_pat = format!("\"{key}\"");
+    let key_pos = body.find(&key_pat)?;
+    let after = &body[key_pos + key_pat.len()..];
+    let colon = after.find(':')?;
+    let rest = after[colon + 1..].trim_start().strip_prefix('"')?;
+    Some((body.len() - rest.len(), rest))
+}
+
+/// 还原 JSON 字符串的转义。宽松场景下值里也可能混有未转义的引号与裸换行，
+/// 未转义部分按字面保留，只处理常见的反斜杠转义序列。
+fn unescape_loose(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('n') => out.push('\n'),
+            Some('r') => out.push('\r'),
+            Some('t') => out.push('\t'),
+            Some('"') => out.push('"'),
+            Some('\\') => out.push('\\'),
+            Some('/') => out.push('/'),
+            Some(other) => {
+                out.push('\\');
+                out.push(other);
+            }
+            None => out.push('\\'),
+        }
+    }
+    out
 }
 
 /// 把已解析的 JSON 值转成动作；不是动作对象（缺 `action` 字段）时返回 `None`。
@@ -272,6 +368,34 @@ mod tests {
     #[test]
     fn rejects_run_without_command() {
         assert!(parse_action(r#"{"action":"run"}"#).is_err());
+    }
+
+    /// 模型把多行结论直接塞进字符串（值里是裸换行）时，严格 JSON 会失败，
+    /// 宽松提取应能救回，且换行原样保留。
+    #[test]
+    fn recovers_done_with_raw_newlines() {
+        let raw = "{\"action\":\"done\",\"summary\":\"已获取：\n- CPU：4 核\n- 内存：3.8GiB\"}";
+        let action = parse_action(raw).expect("裸换行应能宽松提取");
+        assert_eq!(action.action, ACTION_DONE);
+        assert!(action.summary.as_deref().unwrap_or("").contains("\n- CPU：4 核"));
+    }
+
+    /// 字符串里出现未转义引号（奇偶都可能）会破坏严格解析与候选切分，
+    /// 宽松提取应按形状取出完整值。
+    #[test]
+    fn recovers_done_with_unescaped_quotes() {
+        let raw = r#"{"action":"done","summary":"运行 "uptime" 的输出正常"}"#;
+        let action = parse_action(raw).expect("未转义引号应能宽松提取");
+        assert_eq!(action.action, ACTION_DONE);
+        assert_eq!(action.summary.as_deref(), Some(r#"运行 "uptime" 的输出正常"#));
+    }
+
+    #[test]
+    fn recovers_run_with_unescaped_quotes() {
+        let raw = r#"{"action":"run","command":"echo "hi""}"#;
+        let action = parse_action(raw).expect("命令里的引号应能宽松提取");
+        assert_eq!(action.action, ACTION_RUN);
+        assert_eq!(action.command.as_deref(), Some(r#"echo "hi""#));
     }
 
     #[test]

@@ -1,50 +1,78 @@
-/* pshell 主题：内置亮 / 暗调色板与尺寸变量。
+/* pterm 主题：内置亮 / 暗调色板与尺寸变量。
  *
  * 由 app.js 的 applyTheme() 依据 config.theme 写入 body[data-theme]，
  * 自定义强调色通过内联 --accent 覆盖（模块关闭时回落到深色默认值）。
  * --term-bg / --term-fg 是终端的专用配色，可被 config.terminal.background/foreground
- * 单独覆盖（见 terminal.js 的 xtermTheme()），因此终端配色与界面配色互相独立。 */
+ * 单独覆盖（见 src/features/terminal/api.ts 的 xtermTheme()），因此终端配色与界面配色互相独立。
+ *
+ * 本文件是全应用唯一的尺寸与配色来源，其余样式表只引用变量、不写死数值：
+ *   - 表面分三层：--bg（终端/最深）< --bg-alt（侧栏、AI 面板、标签栏）< --bg-elev（弹窗、菜单、提示）
+ *   - 圆角只用 --radius-sm / --radius / --radius-card / --radius-full
+ *   - 间距只用 --sp-4 ~ --sp-24（4 的整数倍）
+ *   - 字号只用 --fs-xs ~ --fs-xl
+ * 新增控件时按用途取最近的刻度，避免出现 5px、7px、10px 这类零散值。 */
 
 :root {
   --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
     "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
   --font-mono: "SF Mono", Menlo, Consolas, "DejaVu Sans Mono", monospace;
+
+  /* 圆角 */
+  --radius-sm: 6px;
   --radius: 8px;
-  --radius-sm: 5px;
+  --radius-card: 12px;
+  --radius-full: 999px;
+
+  /* 间距刻度 */
+  --sp-4: 4px;
+  --sp-8: 8px;
+  --sp-12: 12px;
+  --sp-16: 16px;
+  --sp-20: 20px;
+  --sp-24: 24px;
+
+  /* 字号刻度 */
+  --fs-xs: 11px;
+  --fs-sm: 12px;
+  --fs-md: 13px;
+  --fs-lg: 14px;
+  --fs-xl: 16px;
 }
 
 body[data-theme="dark"] {
-  --bg: #16181d;
-  --bg-alt: #1c1f26;
-  --bg-elev: #22262f;
-  --bg-hover: #2a2f3a;
-  --border: #2e333d;
-  --text: #dfe3ea;
-  --text-dim: #8b93a3;
+  --bg: #17181b;
+  --bg-alt: #1e1f23;
+  --bg-elev: #26272c;
+  --bg-hover: #2c2e34;
+  --border: #2f3138;
+  --text: #e5e6e9;
+  --text-dim: #9a9ca4;
   --accent: #4c8dff;
+  --accent-soft: rgba(76, 141, 255, 0.16);
   --accent-text: #ffffff;
   --danger: #e5534b;
   --warn: #d29922;
   --ok: #3fb950;
-  --term-bg: #16181d;
-  --term-fg: #dfe3ea;
+  --term-bg: #17181b;
+  --term-fg: #e5e6e9;
   --shadow: 0 12px 36px rgba(0, 0, 0, 0.5);
 }
 
 body[data-theme="light"] {
-  --bg: #f6f7f9;
-  --bg-alt: #ffffff;
+  --bg: #ffffff;
+  --bg-alt: #f6f7f9;
   --bg-elev: #ffffff;
-  --bg-hover: #eceff3;
-  --border: #d8dde5;
-  --text: #1f2329;
-  --text-dim: #6b7280;
+  --bg-hover: #eceef2;
+  --border: #dcdfe6;
+  --text: #1b1d21;
+  --text-dim: #5f6470;
   --accent: #2f6feb;
+  --accent-soft: rgba(47, 111, 235, 0.1);
   --accent-text: #ffffff;
   --danger: #cf222e;
   --warn: #9a6700;
   --ok: #1a7f37;
   --term-bg: #ffffff;
-  --term-fg: #1f2329;
+  --term-fg: #1b1d21;
   --shadow: 0 12px 36px rgba(20, 25, 35, 0.18);
 }

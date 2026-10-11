@@ -82,7 +82,7 @@ pub struct RemoteProbe {
 /// 用一个临时裸仓库承载匿名远端，因此既不读写用户的同步仓库，也不产生提交；
 /// 结束后连同临时目录一起清理。
 pub fn probe_remote(url: &str, credentials: Vec<auth::Credential>) -> AppResult<RemoteProbe> {
-    let dir = std::env::temp_dir().join(format!("pshell-git-probe-{}", uuid::Uuid::new_v4()));
+    let dir = std::env::temp_dir().join(format!("pterm-git-probe-{}", uuid::Uuid::new_v4()));
     let outcome = probe_at(&dir, url, credentials);
     let _ = std::fs::remove_dir_all(&dir);
     outcome
@@ -230,9 +230,9 @@ pub fn change_count(repo: &Repository) -> AppResult<usize> {
 }
 
 fn signature(name: &str, email: &str) -> AppResult<Signature<'static>> {
-    let name = if name.trim().is_empty() { "pshell" } else { name };
+    let name = if name.trim().is_empty() { "pterm" } else { name };
     let email = if email.trim().is_empty() {
-        "pshell@localhost"
+        "pterm@localhost"
     } else {
         email
     };
@@ -463,11 +463,11 @@ fn adopt(repo: &Repository, target: &git2::AnnotatedCommit, branch: &str) -> App
     match repo.find_reference(&refname) {
         Ok(mut reference) => {
             reference
-                .set_target(target.id(), "pshell: fast-forward")
+                .set_target(target.id(), "pterm: fast-forward")
                 .map_err(|e| AppError::Git(format!("更新分支失败：{e}")))?;
         }
         Err(_) => {
-            repo.reference(&refname, target.id(), true, "pshell: 创建分支")
+            repo.reference(&refname, target.id(), true, "pterm: 创建分支")
                 .map_err(|e| AppError::Git(format!("创建分支失败：{e}")))?;
         }
     }
@@ -504,55 +504,106 @@ pub fn collect_conflicts(repo: &Repository) -> AppResult<Vec<String>> {
     Ok(out)
 }
 
-/// 冲突保留策略。
+/// 单个冲突文件的解决方式。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ConflictStrategy {
+pub enum ConflictPick {
     /// 保留本地版本
-    KeepLocal,
+    Ours,
     /// 保留远端版本
-    KeepRemote,
+    Theirs,
+    /// 保留双方：按 JSON 数组按 `id` 合并，同 id 时保留远端、本地那份另起新 id 一并保留
+    Union,
 }
 
-/// 按策略解决全部冲突并生成合并提交。返回解决的文件数。
-pub fn resolve_conflicts(
+/// 冲突两侧的索引条目（oid + 文件模式）。
+type SideEntry = Option<(Oid, u32)>;
+
+/// 按文件逐个决定解决方式并生成合并提交。返回解决的文件数。
+///
+/// `picker` 收到冲突文件路径（相对仓库根，如 `connections.json`），返回该文件的处理方式；
+/// 未登记的路径由调用方决定。非 `Union` 时直接取对应版本的 blob，`Union` 则解析两侧
+/// JSON 数组合并后写入新 blob。
+pub fn resolve_conflicts_with<F>(
     repo: &Repository,
-    strategy: ConflictStrategy,
+    picker: F,
     message: &str,
     name: &str,
     email: &str,
-) -> AppResult<usize> {
+) -> AppResult<usize>
+where
+    F: Fn(&str) -> ConflictPick,
+{
     let mut index = repo.index()?;
-    // `IndexEntry` 未实现 `Clone`，因此把选中的条目从 `IndexConflict` 中直接移出
-    let mut chosen: Vec<git2::IndexEntry> = Vec::new();
+    // `IndexEntry` 未实现 `Clone`，这里只保留计算所需的路径 / oid / 模式
+    let mut items: Vec<(String, SideEntry, SideEntry, SideEntry)> = Vec::new();
     {
         let conflicts = index
             .conflicts()
             .map_err(|e| AppError::Git(format!("读取冲突失败：{e}")))?;
         for conflict in conflicts {
-            let mut conflict = conflict.map_err(|e| AppError::Git(format!("读取冲突失败：{e}")))?;
-            let picked = match strategy {
-                ConflictStrategy::KeepLocal => conflict.our.take().or(conflict.ancestor.take()),
-                ConflictStrategy::KeepRemote => conflict.their.take().or(conflict.ancestor.take()),
-            };
-            if let Some(mut entry) = picked {
-                // 清除 stage 位（GIT_INDEX_ENTRY_STAGEMASK = 0x3000），使其成为 stage-0 条目
-                entry.flags &= !0x3000;
-                chosen.push(entry);
-            }
+            let conflict = conflict.map_err(|e| AppError::Git(format!("读取冲突失败：{e}")))?;
+            let entry_side = |e: Option<&git2::IndexEntry>| e.map(|e| (e.id, e.mode));
+            let path = conflict
+                .our
+                .as_ref()
+                .or(conflict.their.as_ref())
+                .or(conflict.ancestor.as_ref())
+                .map(|e| String::from_utf8_lossy(&e.path).into_owned());
+            let Some(path) = path else { continue };
+            items.push((
+                path,
+                entry_side(conflict.our.as_ref()),
+                entry_side(conflict.their.as_ref()),
+                entry_side(conflict.ancestor.as_ref()),
+            ));
         }
     }
-    if chosen.is_empty() {
+    if items.is_empty() {
         return Ok(0);
     }
 
-    // 先清掉三路索引条目，再写入选定的 stage-0 条目
-    for entry in &chosen {
-        let path = String::from_utf8_lossy(&entry.path).into_owned();
-        let _ = index.remove_path(Path::new(&path));
+    let mut chosen: Vec<(String, Oid, u32)> = Vec::new();
+    for (path, ours, theirs, ancestor) in &items {
+        match picker(path) {
+            ConflictPick::Ours => {
+                if let Some((oid, mode)) = ours.or(*ancestor) {
+                    chosen.push((path.clone(), oid, mode));
+                }
+            }
+            ConflictPick::Theirs => {
+                if let Some((oid, mode)) = theirs.or(*ancestor) {
+                    chosen.push((path.clone(), oid, mode));
+                }
+            }
+            ConflictPick::Union => {
+                let oid = merge_union_blob(repo, ours.map(|s| s.0), theirs.map(|s| s.0))?;
+                let mode = ours.or(*theirs).or(*ancestor).map(|s| s.1).unwrap_or(0o100644);
+                chosen.push((path.clone(), oid, mode));
+            }
+        }
     }
-    for entry in &chosen {
+
+    // 先清掉三路索引条目，再写入 stage-0 条目
+    for (path, _, _, _) in &items {
+        let _ = index.remove_path(Path::new(path));
+    }
+    for (path, oid, mode) in &chosen {
+        let entry = git2::IndexEntry {
+            ctime: git2::IndexTime::new(0, 0),
+            mtime: git2::IndexTime::new(0, 0),
+            dev: 0,
+            ino: 0,
+            mode: *mode,
+            uid: 0,
+            gid: 0,
+            file_size: 0,
+            id: *oid,
+            flags: 0,
+            flags_extended: 0,
+            path: path.as_bytes().to_vec(),
+        };
         index
-            .add(entry)
+            .add(&entry)
             .map_err(|e| AppError::Git(format!("写入冲突解决结果失败：{e}")))?;
     }
     index
@@ -598,6 +649,65 @@ fn merge_head_ids(repo: &Repository) -> Vec<Oid> {
         return Vec::new();
     };
     text.lines().filter_map(|l| l.trim().parse().ok()).collect()
+}
+
+/// 读取 blob 内容。oid 缺失或读取失败时返回空。
+fn blob_content(repo: &Repository, oid: Option<Oid>) -> Vec<u8> {
+    oid.and_then(|oid| repo.find_blob(oid).ok())
+        .map(|blob| blob.content().to_vec())
+        .unwrap_or_default()
+}
+
+/// 把冲突两侧的 JSON 数组合并成一个新 blob。
+fn merge_union_blob(repo: &Repository, ours: Option<Oid>, theirs: Option<Oid>) -> AppResult<Oid> {
+    let ours = blob_content(repo, ours);
+    let theirs = blob_content(repo, theirs);
+    let merged = union_json_arrays(&ours, &theirs);
+    repo.blob(&merged)
+        .map_err(|e| AppError::Git(format!("写入合并结果失败：{e}")))
+}
+
+/// 合并两个 JSON 数组（连接 / 片段等 payload）。
+///
+/// 远端条目在前、保留其 `id`；本地条目逐个并入，遇到与远端相同的 `id` 时
+/// 说明同一条记录两边都改过，「两者保留」下给本地那份另起一个新 `id` 并一并保留
+/// （因此可能出现重名条目）。任一侧不是可解析的 JSON 数组时退回远端内容。
+pub fn union_json_arrays(ours: &[u8], theirs: &[u8]) -> Vec<u8> {
+    use std::collections::HashSet;
+
+    let local: serde_json::Value = serde_json::from_slice(ours).unwrap_or(serde_json::Value::Null);
+    let remote: serde_json::Value =
+        serde_json::from_slice(theirs).unwrap_or(serde_json::Value::Null);
+    let (serde_json::Value::Array(local), serde_json::Value::Array(remote)) = (local, remote) else {
+        return if theirs.is_empty() { ours.to_vec() } else { theirs.to_vec() };
+    };
+
+    let id_of = |v: &serde_json::Value| -> Option<String> {
+        v.get("id").and_then(|x| x.as_str()).map(str::to_string)
+    };
+
+    let mut out = remote.clone();
+    let mut seen: HashSet<String> = remote.iter().filter_map(id_of).collect();
+    for item in local {
+        match id_of(&item) {
+            Some(id) if seen.contains(&id) => {
+                let mut copy = item;
+                let new_id = uuid::Uuid::new_v4().to_string();
+                if let serde_json::Value::Object(map) = &mut copy {
+                    map.insert("id".to_string(), serde_json::Value::String(new_id.clone()));
+                }
+                seen.insert(new_id);
+                out.push(copy);
+            }
+            Some(id) => {
+                seen.insert(id);
+                out.push(item);
+            }
+            None => out.push(item),
+        }
+    }
+    serde_json::to_vec_pretty(&serde_json::Value::Array(out))
+        .unwrap_or_else(|_| theirs.to_vec())
 }
 
 // ---------------------------------------------------------------------------
@@ -684,7 +794,7 @@ mod tests {
 
     /// 建一个临时空仓库。返回仓库与目录，测试结束由调用方清理。
     fn temp_repo(tag: &str) -> (Repository, PathBuf) {
-        let dir = std::env::temp_dir().join(format!("pshell-git-{tag}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("pterm-git-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let repo = Repository::init(&dir).unwrap();
@@ -698,7 +808,7 @@ mod tests {
     /// 连接探测应能连上远端并拿到引用列表（用本地裸仓库替代网络远端）。
     #[test]
     fn probe_remote_lists_refs() {
-        let dir = std::env::temp_dir().join(format!("pshell-git-probe-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("pterm-git-probe-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let repo = Repository::init_bare(&dir).unwrap();
         let sig = git2::Signature::now("t", "t@localhost").unwrap();

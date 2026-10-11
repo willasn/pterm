@@ -6,13 +6,15 @@
 
 use tauri::{AppHandle, State};
 
-use crate::config::feature_flags::module_id;
+use crate::config::feature_flags::{module_id, SyncScope};
 use crate::config::store::secrets;
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;
 
-use super::repo::ConflictStrategy;
-use super::{normalize_remote_name, GitStatusView, GitTestInput, GitTestView, Op, SyncOutcomeView};
+use super::{
+    normalize_remote_name, GitStatusView, GitTestInput, GitTestView, Op, ResolveDecisions,
+    SyncOutcomeView, SyncRequest,
+};
 
 /// 把阻塞的同步任务放到后台线程执行。
 async fn blocking<T, F>(job: F) -> AppResult<T>
@@ -57,11 +59,19 @@ pub async fn git_sync_clone(
 }
 
 /// 完整同步：导出 → 提交 → 拉取 → 导入 → 推送。
+///
+/// `include_secrets` 为 `false` 时不同步连接密码 / API Key 所在的密文保险库，
+/// 只同步设置、连接条目与命令片段。
 #[tauri::command]
-pub async fn git_sync_now(app: AppHandle, state: State<'_, AppState>) -> AppResult<SyncOutcomeView> {
+pub async fn git_sync_now(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    include_secrets: Option<bool>,
+) -> AppResult<SyncOutcomeView> {
     state.require_module(module_id::GIT_SYNC)?;
     let sync = state.sync_context(app);
-    blocking(move || sync.execute(Op::Sync)).await
+    let req = SyncRequest::full(include_secrets.unwrap_or(true));
+    blocking(move || sync.execute(req)).await
 }
 
 /// 只拉取远端并导入，不产生本地提交。
@@ -69,7 +79,8 @@ pub async fn git_sync_now(app: AppHandle, state: State<'_, AppState>) -> AppResu
 pub async fn git_sync_pull(app: AppHandle, state: State<'_, AppState>) -> AppResult<SyncOutcomeView> {
     state.require_module(module_id::GIT_SYNC)?;
     let sync = state.sync_context(app);
-    blocking(move || sync.execute(Op::Pull)).await
+    let req = SyncRequest::from_flags(Op::Pull, &state.flags());
+    blocking(move || sync.execute(req)).await
 }
 
 /// 只推送本地已有提交。
@@ -77,7 +88,8 @@ pub async fn git_sync_pull(app: AppHandle, state: State<'_, AppState>) -> AppRes
 pub async fn git_sync_push(app: AppHandle, state: State<'_, AppState>) -> AppResult<SyncOutcomeView> {
     state.require_module(module_id::GIT_SYNC)?;
     let sync = state.sync_context(app);
-    blocking(move || sync.execute(Op::Push)).await
+    let req = SyncRequest::from_flags(Op::Push, &state.flags());
+    blocking(move || sync.execute(req)).await
 }
 
 /// 只导出并提交（离线留痕，不触网）。
@@ -88,7 +100,8 @@ pub async fn git_sync_commit(
 ) -> AppResult<SyncOutcomeView> {
     state.require_module(module_id::GIT_SYNC)?;
     let sync = state.sync_context(app);
-    blocking(move || sync.execute(Op::Commit)).await
+    let req = SyncRequest::from_flags(Op::Commit, &state.flags());
+    blocking(move || sync.execute(req)).await
 }
 
 /// 工作区相对 HEAD 的 unified diff，供差异面板显示。
@@ -99,27 +112,39 @@ pub async fn git_sync_diff(app: AppHandle, state: State<'_, AppState>) -> AppRes
     blocking(move || sync.diff()).await
 }
 
-/// 按策略解决冲突。`strategy` 取 `keep_local` / `keep_remote`。
+/// 按用户对冲突的选择解决，随后导入并推送。
 ///
-/// 解决后不自动推送：冲突解决的结果交用户确认，再走一次推送。
+/// `connections` / `snippets` 取 `remote` / `local` / `both`；设置与密文保险库
+/// 固定「以远端为准」，由后端自动处理，不需要界面传入。
 #[tauri::command]
 pub async fn git_sync_resolve(
     app: AppHandle,
     state: State<'_, AppState>,
-    strategy: String,
+    connections: Option<String>,
+    snippets: Option<String>,
 ) -> AppResult<SyncOutcomeView> {
     state.require_module(module_id::GIT_SYNC)?;
-    let strategy = match strategy.trim() {
-        "keep_local" => ConflictStrategy::KeepLocal,
-        "keep_remote" => ConflictStrategy::KeepRemote,
-        other => {
-            return Err(AppError::Git(format!(
-                "未知的冲突处理策略：{other}（可选 keep_local / keep_remote）"
-            )))
+    let to_choice = |value: Option<String>, field: &str| -> AppResult<super::ConflictChoice> {
+        match value.as_deref().map(str::trim) {
+            None | Some("") | Some("remote") => Ok(super::ConflictChoice::Remote),
+            Some("local") => Ok(super::ConflictChoice::Local),
+            Some("both") => Ok(super::ConflictChoice::Both),
+            Some(other) => Err(AppError::Git(format!(
+                "未知的冲突处理方式：{other}（{field} 可选 remote / local / both）"
+            ))),
         }
     };
+    let decisions = ResolveDecisions {
+        connections: to_choice(connections, "connections")?,
+        snippets: to_choice(snippets, "snippets")?,
+    };
     let sync = state.sync_context(app);
-    blocking(move || sync.execute(Op::Resolve(strategy))).await
+    let req = SyncRequest {
+        op: Op::Resolve(decisions),
+        scope: SyncScope::All,
+        include_secrets: true,
+    };
+    blocking(move || sync.execute(req)).await
 }
 
 /// 已保存密码 / 访问令牌的远端名称列表。**不返回密码本身**。

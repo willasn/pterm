@@ -16,7 +16,7 @@ use crate::error::{AppError, AppResult};
 use crate::modules::ModuleContext;
 
 /// 托盘资源 id。创建与移除都用它定位，保证同一时刻最多一个托盘。
-const TRAY_ID: &str = "pshell-tray";
+const TRAY_ID: &str = "pterm-tray";
 
 /// 系统托盘模块。
 ///
@@ -70,7 +70,7 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     // 左键单击默认弹出菜单（show_menu_on_left_click 为 true），这里改用单击恢复窗口，
     // 让右键弹出菜单，符合「驻留后台 + 一键呼出」的直觉。
     let mut builder = TrayIconBuilder::with_id(TRAY_ID)
-        .tooltip("pshell")
+        .tooltip("pterm")
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_tray_icon_event(|tray, event| {

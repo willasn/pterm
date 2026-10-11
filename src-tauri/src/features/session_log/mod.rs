@@ -366,7 +366,7 @@ mod tests {
 
     #[test]
     fn resolve_rejects_path_traversal() {
-        let dir = std::env::temp_dir().join("pshell-session-log-test");
+        let dir = std::env::temp_dir().join("pterm-session-log-test");
         let service = SessionLog::new(dir);
         assert!(service.resolve("../config.yaml").is_err());
         assert!(service.resolve("a/b.log").is_err());

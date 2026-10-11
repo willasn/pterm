@@ -20,6 +20,8 @@
   "common.sidebarCollapse": "Collapse Sidebar",
   "common.sidebarExpand": "Expand Sidebar",
   "common.sidebarResize": "Drag to Resize",
+  "common.footToggle": "Features",
+  "common.footToggleHint": "Show / hide feature entries",
 
   "modal.connection": "New Connection",
   "modal.connectionEdit": "Edit Connection",
@@ -37,6 +39,7 @@
   "modal.danger": "Dangerous Command",
 
   "dialog.title": "Confirm Action",
+  "dialog.choose": "Choose an Option",
 
   "empty.title": "A cross-platform SSH terminal client. The core does SSH only; every other feature is an optional module you can toggle in Settings.",
   "empty.hint": "Select a connection from the left, or click ＋ to create one.",

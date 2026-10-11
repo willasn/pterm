@@ -4,7 +4,7 @@
 //! 既不在 SQLite 也不在导出文件里；导出结构里根本没有这些字段。
 //!
 //! 导入支持两种来源：
-//! - pshell 自身导出的 JSON（按 `format` 字段识别）；
+//! - pterm 自身导出的 JSON（按 `format` 字段识别）；
 //! - OpenSSH 客户端配置 `~/.ssh/config`（解析 Host / HostName / Port / User /
 //!   IdentityFile / ProxyJump，含通配符的块会跳过）。
 //!
@@ -27,7 +27,7 @@ use crate::modules::ModuleContext;
 pub mod commands;
 
 /// 导出文件的标识与版本，用于导入时校验来源。
-const FORMAT_TAG: &str = "pshell-connections";
+const FORMAT_TAG: &str = "pterm-connections";
 const FORMAT_VERSION: u32 = 1;
 
 // ---------------------------------------------------------------------------
@@ -86,7 +86,7 @@ pub struct ExportFile {
 #[serde(rename_all = "snake_case")]
 pub enum ImportFormat {
     Auto,
-    Pshell,
+    Pterm,
     SshConfig,
 }
 
@@ -99,7 +99,7 @@ pub struct ExportReport {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ImportReport {
-    /// 实际使用的格式：pshell | ssh_config
+    /// 实际使用的格式：pterm | ssh_config
     pub format: String,
     pub imported: usize,
     pub skipped: usize,
@@ -166,12 +166,12 @@ pub fn write_export(path: &Path, file: &ExportFile) -> AppResult<usize> {
 // 导入
 // ---------------------------------------------------------------------------
 
-/// 按内容识别实际格式。`Auto` 时：以 `{` 开头视为 pshell JSON，否则按 ssh config。
+/// 按内容识别实际格式。`Auto` 时：以 `{` 开头视为 pterm JSON，否则按 ssh config。
 pub fn resolve_format(format: ImportFormat, text: &str) -> ImportFormat {
     match format {
         ImportFormat::Auto => {
             if text.trim_start().starts_with('{') {
-                ImportFormat::Pshell
+                ImportFormat::Pterm
             } else {
                 ImportFormat::SshConfig
             }
@@ -182,20 +182,20 @@ pub fn resolve_format(format: ImportFormat, text: &str) -> ImportFormat {
 
 pub fn format_name(format: ImportFormat) -> String {
     match format {
-        ImportFormat::Pshell => "pshell".to_string(),
+        ImportFormat::Pterm => "pterm".to_string(),
         ImportFormat::SshConfig => "ssh_config".to_string(),
         ImportFormat::Auto => "auto".to_string(),
     }
 }
 
-/// 解析 pshell 导出的 JSON。
-pub fn parse_pshell(text: &str) -> AppResult<(Vec<ExportedConnection>, Vec<String>)> {
+/// 解析 pterm 导出的 JSON。
+pub fn parse_pterm(text: &str) -> AppResult<(Vec<ExportedConnection>, Vec<String>)> {
     let file: ExportFile = serde_json::from_str(text)
         .map_err(|e| AppError::Config(format!("导出文件格式不正确：{e}")))?;
     let mut warnings = Vec::new();
     if file.format != FORMAT_TAG {
         warnings.push(format!(
-            "文件标识为「{}」，预期「{FORMAT_TAG}」，仍按 pshell 格式解析。",
+            "文件标识为「{}」，预期「{FORMAT_TAG}」，仍按 pterm 格式解析。",
             file.format
         ));
     }
@@ -206,7 +206,7 @@ pub fn parse_pshell(text: &str) -> AppResult<(Vec<ExportedConnection>, Vec<Strin
         ));
     }
     if file.credentials_included {
-        warnings.push("文件声明包含凭据，但 pshell 不导入任何凭据，请在导入后重新填写。".to_string());
+        warnings.push("文件声明包含凭据，但 pterm 不导入任何凭据，请在导入后重新填写。".to_string());
     }
     Ok((file.connections, warnings))
 }
@@ -602,16 +602,16 @@ mod tests {
     #[test]
     fn resolve_format_detects_json_by_leading_brace() {
         assert_eq!(
-            resolve_format(ImportFormat::Auto, "  {\"format\":\"pshell-connections\"}"),
-            ImportFormat::Pshell
+            resolve_format(ImportFormat::Auto, "  {\"format\":\"pterm-connections\"}"),
+            ImportFormat::Pterm
         );
         assert_eq!(
             resolve_format(ImportFormat::Auto, "Host web\n  HostName 1.2.3.4"),
             ImportFormat::SshConfig
         );
         assert_eq!(
-            resolve_format(ImportFormat::Pshell, "Host web"),
-            ImportFormat::Pshell
+            resolve_format(ImportFormat::Pterm, "Host web"),
+            ImportFormat::Pterm
         );
     }
 
@@ -666,7 +666,7 @@ Host web prod=web
 
     #[test]
     fn import_assigns_new_ids_and_skips_duplicates() {
-        let dir = std::env::temp_dir().join(format!("pshell-ie-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("pterm-ie-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let store = Store::open(&dir.join("test.db")).unwrap();
         store.upsert_connection(&stored("生产", "10.0.0.1")).unwrap();
@@ -713,9 +713,9 @@ Host web prod=web
     }
 
     #[test]
-    fn parse_pshell_warns_on_unknown_tag() {
+    fn parse_pterm_warns_on_unknown_tag() {
         let text = r#"{"format":"other","version":9,"exported_at":"t","credentials_included":true,"connections":[]}"#;
-        let (conns, warnings) = parse_pshell(text).unwrap();
+        let (conns, warnings) = parse_pterm(text).unwrap();
         assert!(conns.is_empty());
         assert_eq!(warnings.len(), 3);
     }

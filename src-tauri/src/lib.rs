@@ -48,7 +48,7 @@ pub fn run() {
             }
             let crash_log = config.flags().auxiliary.crash_log;
             utils::init_logging(crash_log, paths.crash_log.clone());
-            log::info!("pshell 启动，配置目录 {}", paths.config_dir.display());
+            log::info!("pterm 启动，配置目录 {}", paths.config_dir.display());
 
             let store = Arc::new(Store::open(&paths.database_file())?);
             let config = Arc::new(config);
@@ -224,7 +224,7 @@ pub fn run() {
                 let state = app.state::<AppState>();
                 state.sessions.close_all();
                 state.modules.dispose_all();
-                log::info!("pshell 已退出");
+                log::info!("pterm 已退出");
             }
         });
 }

@@ -2870,7 +2870,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "pshell"
+name = "pterm"
 version = "0.1.0"
 dependencies = [
  "aes-gcm",

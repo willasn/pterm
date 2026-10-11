@@ -233,7 +233,7 @@ impl SessionManager {
             sink,
         };
         thread::Builder::new()
-            .name("pshell-session".into())
+            .name("pterm-session".into())
             .spawn(move || run.run(rx))
             .map_err(|e| AppError::Ssh(format!("无法启动会话线程：{e}")))?;
 

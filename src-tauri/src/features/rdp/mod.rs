@@ -5,7 +5,7 @@
 //! - Windows：调用系统自带的 `mstsc.exe`。若保险库中存有密码，先用 `cmdkey`
 //!   把凭据写进 Windows 凭据管理器，实现免密登录。
 //! - macOS：系统没有自带客户端，改用微软官方「Windows App」（原 Microsoft
-//!   Remote Desktop）。pshell 只负责**保存会话**——生成 `.rdp` 文件后交给它打开，
+//!   Remote Desktop）。pterm 只负责**保存会话**——生成 `.rdp` 文件后交给它打开，
 //!   认证与凭据由该客户端自行管理；未安装时前端引导用户去 Mac App Store 安装。
 //!
 //! 协议协商、画面解码、输入回注由客户端完成，这里只做探测与拉起。

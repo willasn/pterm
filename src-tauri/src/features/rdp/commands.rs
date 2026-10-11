@@ -300,7 +300,7 @@ fn build_rdp_file(input: &RdpOpenInput, has_password: bool) -> String {
 /// 在 macOS 上把连接交给微软官方「Windows App」打开。
 ///
 /// 系统没有自带 RDP 客户端，因此依赖用户自行安装微软的「Windows App」（原
-/// Microsoft Remote Desktop）。pshell 只负责**保存会话**：把连接写成 `.rdp`
+/// Microsoft Remote Desktop）。pterm 只负责**保存会话**：把连接写成 `.rdp`
 /// 文件后交给该客户端打开，认证与凭据由它自己管理，所以这里不需要密码。
 #[cfg(target_os = "macos")]
 fn launch(input: &RdpOpenInput, rdp_dir: &Path) -> AppResult<RdpLaunchResult> {
@@ -430,7 +430,7 @@ mod tests {
     /// 同一连接复用同一个 .rdp 文件（内容覆盖），文件名取自连接 id。
     #[test]
     fn write_rdp_file_reuses_stable_name_per_connection() {
-        let dir = std::env::temp_dir().join(format!("pshell-rdp-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("pterm-rdp-{}", uuid::Uuid::new_v4()));
         let mut inp = input();
         inp.connection_id = Some("conn-123".into());
 

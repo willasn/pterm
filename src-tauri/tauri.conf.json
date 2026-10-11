@@ -1,17 +1,20 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "pshell",
+  "productName": "pterm",
   "version": "0.1.0",
-  "identifier": "com.pshell.desktop",
+  "identifier": "com.pterm.desktop",
   "build": {
-    "frontendDist": "../src"
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build",
+    "devUrl": "http://localhost:1420",
+    "frontendDist": "../dist"
   },
   "app": {
     "withGlobalTauri": true,
     "windows": [
       {
         "label": "main",
-        "title": "pshell",
+        "title": "pterm",
         "width": 1200,
         "height": 780,
         "minWidth": 880,
@@ -22,7 +25,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: asset: http://asset.localhost; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost"
+      "csp": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: asset: http://asset.localhost; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost ws://localhost:1420 http://localhost:1420"
     },
     "trayIcon": null
   },
@@ -32,8 +35,8 @@
     "icon": ["icons/icon.png", "icons/icon.icns", "icons/icon.ico"],
     "category": "DeveloperTool",
     "shortDescription": "跨平台 SSH 终端客户端",
-    "longDescription": "pshell 是一个跨平台 SSH 终端客户端。核心只做 SSH，Git 同步、AI 助手、SFTP、端口转发等全部为可插拔模块，可在设置中单独开关。",
-    "copyright": "pshell",
+    "longDescription": "pterm 是一个跨平台 SSH 终端客户端。核心只做 SSH，Git 同步、AI 助手、SFTP、端口转发等全部为可插拔模块，可在设置中单独开关。",
+    "copyright": "pterm",
     "macOS": {
       "minimumSystemVersion": "10.15",
       "dmg": {

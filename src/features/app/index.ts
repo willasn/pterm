@@ -1,0 +1,1 @@
+export { startApp } from "./store";

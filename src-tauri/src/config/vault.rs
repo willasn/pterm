@@ -39,7 +39,7 @@ const SALT_LEN: usize = 16;
 const NONCE_LEN: usize = 12;
 const KEY_LEN: usize = 32;
 /// 校验主密码用的固定明文：能把它解出来即说明密钥正确。
-const VERIFIER_PLAIN: &[u8] = b"pshell-vault-v1";
+const VERIFIER_PLAIN: &[u8] = b"pterm-vault-v1";
 
 /// 保险库对外状态，供界面决定「设置主密码 / 解锁 / 已就绪 / 处理冲突」。
 #[derive(Debug, Clone, Serialize)]
@@ -644,7 +644,7 @@ mod tests {
     use super::*;
 
     fn temp_path(tag: &str) -> PathBuf {
-        std::env::temp_dir().join(format!("pshell-vault-{tag}-{}.json", uuid::Uuid::new_v4()))
+        std::env::temp_dir().join(format!("pterm-vault-{tag}-{}.json", uuid::Uuid::new_v4()))
     }
 
     #[test]

@@ -10,7 +10,7 @@ use crate::error::{AppError, AppResult};
 use crate::state::AppState;
 
 use super::{
-    export_file, format_name, home_dir_text, import_into, normalize_path, parse_pshell,
+    export_file, format_name, home_dir_text, import_into, normalize_path, parse_pterm,
     parse_ssh_config, resolve_format, ssh_config_path, write_export, ExportReport,
     ImportExportDefaults, ImportFormat, ImportReport,
 };
@@ -46,7 +46,7 @@ pub async fn connection_export(
     .await
 }
 
-/// 从文件导入连接。支持 pshell 导出文件与 `~/.ssh/config`，`format` 默认自动识别。
+/// 从文件导入连接。支持 pterm 导出文件与 `~/.ssh/config`，`format` 默认自动识别。
 /// 导入一律新建连接，不覆盖已有配置，也不导入任何凭据。
 #[tauri::command]
 pub async fn connection_import(
@@ -62,7 +62,7 @@ pub async fn connection_import(
             let text = std::fs::read_to_string(&target)?;
             let resolved = resolve_format(format.unwrap_or(ImportFormat::Auto), &text);
             let (candidates, warnings) = match resolved {
-                ImportFormat::Pshell => parse_pshell(&text)?,
+                ImportFormat::Pterm => parse_pterm(&text)?,
                 _ => parse_ssh_config(&text),
             };
             if candidates.is_empty() {
