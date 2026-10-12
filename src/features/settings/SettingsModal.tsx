@@ -1176,6 +1176,20 @@ function UpdateSection() {
   );
 }
 
+/** 联系人 / 反馈邮箱（关于页展示，点击复制）。 */
+const CONTACT_EMAIL = "zely@panpan.space";
+
+function copyContactEmail(): void {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard
+      .writeText(CONTACT_EMAIL)
+      .then(() => toast("已复制联系邮箱", "ok"))
+      .catch(() => toast("复制失败", "error"));
+  } else {
+    toast("当前环境不支持剪贴板", "error");
+  }
+}
+
 function AboutCategory() {
   const source = (getInfo() || {}) as any;
   const rows: [string, string][] = [
@@ -1192,6 +1206,11 @@ function AboutCategory() {
             <span className="muted">{pair[1]}</span>
           </Field>
         ))}
+        <Field label="联系邮箱" hint="反馈与联系，点击复制">
+          <button className="btn ghost" type="button" onClick={copyContactEmail}>
+            {CONTACT_EMAIL}
+          </button>
+        </Field>
       </Section>
       <CrashLogSection />
       <UpdateSection />
