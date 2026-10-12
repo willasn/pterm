@@ -41,10 +41,10 @@ export const SCOPE_OPTIONS: Option[] = [
 
 /** 功能开关的分组顺序与标题，与 feature_flags.rs / FEATURES.md 的章节对应。 */
 export const FLAG_GROUPS = [
-  { key: "connection", title: "连接与传输（§3）" },
-  { key: "sync", title: "同步 / Git（§4）" },
-  { key: "ai", title: "AI 助手（§5）" },
-  { key: "auxiliary", title: "辅助功能（§6）" },
+  { key: "connection", title: "连接与传输" },
+  { key: "sync", title: "同步 / Git" },
+  { key: "ai", title: "AI 助手" },
+  { key: "auxiliary", title: "辅助功能" },
 ];
 
 /** 开关的中文说明。键为 flatten() 给出的路径；未登记的路径会退回显示原始路径。 */
@@ -91,18 +91,35 @@ export const FLAG_META: Record<string, { label: string; hint?: string }> = {
   "auxiliary.command_history": { label: "命令历史" },
   "auxiliary.quick_panel": { label: "快捷面板" },
   "auxiliary.system_tray": { label: "系统托盘" },
-  "auxiliary.auto_update": { label: "自动更新" },
+  "auxiliary.auto_update": {
+    label: "自动更新",
+    hint: "启动后自动检查新版本并弹提示；关闭后仍可在「关于」页手动检查",
+  },
   "auxiliary.theme": { label: "主题", hint: "关闭后外观设置不生效" },
   "auxiliary.shortcuts": { label: "快捷键", hint: "关闭后不响应自定义组合键" },
   "auxiliary.crash_log": { label: "崩溃日志" },
 };
 
 /**
- * 不在「功能开关」里展示的 Git 内部开关：使用者只关心业务开关，
- * Git 细节（提交模板 / 多仓库 / CLI 回退 / 冲突提示 / 徽标）全部隐藏，
- * 由「设置 → Git 同步」页与后端默认行为接管。
+ * 不在「功能开关」里展示的开关。
+ *
+ * - Git 内部细节（提交模板 / 多仓库 / CLI 回退 / 冲突提示 / 徽标）由「设置 → Git 同步」页
+ *   与后端默认行为接管。
+ * - 已在专属设置页配置：断线自动重连（设置 → 连接）、快捷键总开关（设置 → 快捷键）。
+ * - 必开项（多标签 / 分屏 / 连接分组 / 配置导入导出 / 快捷连接 / 同步输入 / 远程桌面 /
+ *   Git 同步 / 流式响应 / 命令片段 / 全局搜索 / 命令历史 / 主题 / 崩溃日志）恒为开启，
+ *   后端会强制拉回 true。
  */
 export const HIDDEN_FLAGS = new Set([
+  "connection.tabs",
+  "connection.split_view",
+  "connection.connection_group",
+  "connection.import_export",
+  "connection.quick_connect",
+  "connection.sync_input",
+  "connection.rdp",
+  "connection.auto_reconnect",
+  "sync.git_sync",
   "sync.git_sync_scope",
   "sync.git_sync_secrets",
   "sync.git_conflict_prompt",
@@ -110,6 +127,13 @@ export const HIDDEN_FLAGS = new Set([
   "sync.git_commit_template",
   "sync.git_multi_repo",
   "sync.git_cli_fallback",
+  "ai.ai_streaming",
+  "auxiliary.snippets",
+  "auxiliary.global_search",
+  "auxiliary.command_history",
+  "auxiliary.theme",
+  "auxiliary.shortcuts",
+  "auxiliary.crash_log",
 ]);
 
 /** 开关路径 → 模块标识。有此项的开关会在行尾显示模块运行状态徽标。 */
@@ -129,22 +153,4 @@ export const FLAG_MODULE: Record<string, string> = {
   "connection.session_log": "session_log",
   "connection.import_export": "import_export",
   "connection.rdp": "rdp",
-};
-
-export const MODULE_LABELS: Record<string, string> = {
-  git_sync: "Git 同步",
-  ai_assistant: "AI 助手",
-  snippets: "命令片段",
-  global_search: "全局搜索",
-  command_history: "命令历史",
-  theme: "主题",
-  shortcuts: "快捷键",
-  quick_panel: "快捷面板",
-  system_tray: "系统托盘",
-  auto_update: "自动更新",
-  sftp: "SFTP",
-  port_forward: "端口转发",
-  session_log: "会话日志",
-  import_export: "配置导入导出",
-  rdp: "远程桌面",
 };

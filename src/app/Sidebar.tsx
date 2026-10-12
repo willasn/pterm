@@ -57,15 +57,16 @@ export function Sidebar() {
           data-i18n-title="common.footToggleHint"
           hidden
         >
-          <span className="foot-toggle-arrow" aria-hidden="true">
-            ▾
-          </span>
           <span className="foot-toggle-label" data-i18n="common.footToggle">
             功能
           </span>
           <span className="foot-toggle-count" id="foot-toggle-count" />
+          <span className="foot-toggle-arrow" aria-hidden="true">
+            ▾
+          </span>
         </button>
-        <div className="foot-badges" id="foot-badges">
+        {/* 功能入口样式变体：foot-badges--tiles = 无图标、居中、带底色的分块样式（去掉该类即回到上一版） */}
+        <div className="foot-badges foot-badges--tiles" id="foot-badges">
           <GitSyncBadge />
           <SessionLogBadge />
           <SftpBadge />

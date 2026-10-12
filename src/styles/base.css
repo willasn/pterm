@@ -199,38 +199,45 @@ body {
   opacity: 0.7;
 }
 
-/* 侧栏底部功能入口：各模块的徽标竖向堆叠。
+/* 侧栏底部功能入口：各模块的徽标竖向堆叠成「功能」面板。
    窗口过矮或侧栏过窄时自动收成顶部那个「功能」按钮（.compact），
-   也可手动点击该按钮收起 / 展开；逻辑见 app.js 的 initSidebarFoot。 */
+   也可手动点击该按钮收起 / 展开；逻辑见 features/app 的 initSidebarFoot。 */
 .sidebar-foot {
   /* 侧栏高度被网格行限制后，禁止底栏被压缩，保证功能入口始终完整可见 */
   flex-shrink: 0;
-  padding: var(--sp-8) var(--sp-12) var(--sp-12);
+  padding: var(--sp-8);
   border-top: 1px solid var(--border);
+  background: var(--bg-alt);
 }
 
 .foot-badges {
   display: flex;
   flex-direction: column;
   gap: var(--sp-4);
+  margin-top: var(--sp-4);
 }
 
 .sidebar-foot.compact .foot-badges {
   display: none;
 }
 
+/* 「功能」栏目标题：同时是徽标区的收放开关，内容（标题 / 数量 / 箭头）整体居中 */
 .foot-toggle {
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: var(--sp-8);
   width: 100%;
-  padding: var(--sp-4) 0;
+  padding: var(--sp-4) var(--sp-8);
   border: none;
+  border-radius: var(--radius-sm);
   background: transparent;
   color: var(--text-dim);
   font: inherit;
   font-size: var(--fs-xs);
-  text-align: left;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-align: center;
   cursor: pointer;
 }
 
@@ -239,12 +246,33 @@ body {
 }
 
 .foot-toggle:hover {
+  background: var(--bg-hover);
   color: var(--text);
 }
 
 .foot-toggle-arrow {
+  flex: none;
   font-size: var(--fs-xs);
   line-height: 1;
+  opacity: 0.7;
+}
+
+/* 收起时提示被隐藏了几个入口，展开时不显示 */
+.foot-toggle-count {
+  min-width: 18px;
+  padding: 0 var(--sp-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  background: var(--bg-elev);
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  line-height: 16px;
+  text-align: center;
+}
+
+.foot-toggle-count:empty {
+  display: none;
 }
 
 /* 主区：左侧终端栈 + 右侧 AI 停靠面板（面板关闭时只剩终端栈） */
@@ -317,6 +345,110 @@ body {
   max-width: 460px;
   font-size: var(--fs-md);
   color: var(--text-dim);
+}
+
+/* 空状态卡通吉祥物：终端窗口造型 + 眨眼表情，全用 HTML/CSS 绘制，不引入图片 */
+.empty-art {
+  width: 168px;
+  height: 132px;
+  animation: empty-figure-float 4.5s ease-in-out infinite;
+}
+
+.empty-art-window {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+  border: 2px solid var(--accent);
+  border-radius: var(--radius-card);
+  background: var(--bg-elev);
+  box-shadow: var(--shadow);
+}
+
+.empty-art-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  height: 30px;
+  padding: 0 var(--sp-12);
+  border-bottom: 1px solid var(--border);
+  background: var(--accent-soft);
+}
+
+.empty-art-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: var(--radius-full);
+  background: var(--accent);
+  opacity: 0.5;
+}
+
+.empty-art-dot:nth-child(1) {
+  background: var(--danger);
+  opacity: 0.85;
+}
+
+.empty-art-dot:nth-child(2) {
+  background: var(--warn);
+  opacity: 0.85;
+}
+
+.empty-art-dot:nth-child(3) {
+  background: var(--ok);
+  opacity: 0.85;
+}
+
+.empty-art-face {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-12);
+}
+
+.empty-art-eyes {
+  display: flex;
+  gap: var(--sp-24);
+}
+
+.empty-art-eye {
+  width: 14px;
+  height: 14px;
+  border-radius: var(--radius-full);
+  background: var(--accent);
+  transform-origin: center;
+  animation: empty-figure-blink 4.5s ease-in-out infinite;
+}
+
+/* 用下半圈边框做出上扬的弧线，即卡通笑脸 */
+.empty-art-smile {
+  width: 34px;
+  height: 17px;
+  border: 3px solid var(--accent);
+  border-top: 0;
+  border-radius: 0 0 34px 34px;
+}
+
+@keyframes empty-figure-float {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-6px);
+  }
+}
+
+@keyframes empty-figure-blink {
+  0%,
+  90%,
+  100% {
+    transform: scaleY(1);
+  }
+  95% {
+    transform: scaleY(0.1);
+  }
 }
 
 /* ---------- 控件 ---------- */

@@ -41,8 +41,6 @@
   "dialog.title": "Confirm Action",
   "dialog.choose": "Choose an Option",
 
-  "empty.title": "A cross-platform SSH terminal client. The core does SSH only; every other feature is an optional module you can toggle in Settings.",
-  "empty.hint": "Select a connection from the left, or click ＋ to create one.",
   "danger.desc": "The following command will run on the remote host and its effects cannot be undone:",
 
   "onboarding.tagline": "Cross-platform SSH terminal client",
@@ -79,10 +77,10 @@
   "settings.language": "Language",
   "settings.language.hint": "Takes effect immediately.",
 
-  "flags.group.connection": "Connection & Transfer (§3)",
-  "flags.group.sync": "Sync / Git (§4)",
-  "flags.group.ai": "AI Assistant (§5)",
-  "flags.group.auxiliary": "Auxiliary (§6)",
+  "flags.group.connection": "Connection & Transfer",
+  "flags.group.sync": "Sync / Git",
+  "flags.group.ai": "AI Assistant",
+  "flags.group.auxiliary": "Auxiliary",
 
   "flags.connection.tabs": "Tabs",
   "flags.connection.split_view": "Split View",
@@ -118,20 +116,5 @@
   "flags.auxiliary.auto_update": "Auto Update",
   "flags.auxiliary.theme": "Theme",
   "flags.auxiliary.shortcuts": "Shortcuts",
-  "flags.auxiliary.crash_log": "Crash Log",
-
-  "module.git_sync": "Git Sync",
-  "module.ai_assistant": "AI Assistant",
-  "module.snippets": "Snippets",
-  "module.global_search": "Global Search",
-  "module.command_history": "Command History",
-  "module.theme": "Theme",
-  "module.shortcuts": "Shortcuts",
-  "module.quick_panel": "Quick Panel",
-  "module.system_tray": "System Tray",
-  "module.sftp": "SFTP",
-  "module.port_forward": "Port Forward",
-  "module.session_log": "Session Log",
-  "module.import_export": "Import / Export",
-  "module.rdp": "Remote Desktop"
+  "flags.auxiliary.crash_log": "Crash Log"
 }

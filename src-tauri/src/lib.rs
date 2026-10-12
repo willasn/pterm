@@ -34,6 +34,16 @@ use utils::Paths;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // 单实例：再次启动时只聚焦已有窗口后退出，避免两个进程同时打开同一个
+        // SQLite 数据库——同一 WAL 库被两个进程打开时，后来者会退化为只读连接，
+        // 再写入就报「数据库错误：attempt to write a readonly database」。
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_dialog::init())
         // 自动更新：从 tauri.conf.json 的 plugins.updater 配置的 GitHub Releases
         // latest.json 检查更新（见 modules/auto_update）

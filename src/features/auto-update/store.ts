@@ -142,7 +142,8 @@ export function autoCheckOnStartup(): void {
 
 /** 检查更新。`manual` 为 true 时用轻提示告知「已是最新」或检查失败。 */
 export async function check(options: { manual?: boolean } = {}): Promise<void> {
-  if (!state.enabled) return;
+  // 自动检查只在开关开启时进行；手动检查（设置页按钮）始终允许。
+  if (!state.enabled && !options.manual) return;
   if (state.status === "checking" || state.status === "downloading") return;
   setState({ status: "checking", lastError: null });
   try {

@@ -477,11 +477,7 @@ impl RunContext {
             sess.set_keepalive(true, keepalive);
         }
 
-        let term = self
-            .params
-            .term_type
-            .clone()
-            .unwrap_or_else(|| self.deps.config.snapshot().terminal.term_type.clone());
+        let term = "xterm-256color";
 
         let end = {
             self.set_state(SessionState::Authenticated {
@@ -492,7 +488,7 @@ impl RunContext {
                 &self.deps.app,
                 &self.id,
                 &sess,
-                &term,
+                term,
                 self.params.cols,
                 self.params.rows,
                 rx,

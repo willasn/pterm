@@ -35,12 +35,23 @@ export function MainStack() {
         <div className="panes" id="panes" />
         <div className="empty-state" id="empty-state">
           <h1>pterm</h1>
-          <p data-i18n="empty.title">
-            跨平台 SSH 终端客户端。核心只做 SSH，其他功能都是可在设置中单独开关的模块。
-          </p>
-          <p className="muted" data-i18n="empty.hint">
-            从左侧选择一个连接，或点击 ＋ 新建连接。
-          </p>
+          {/* 卡通终端吉祥物：纯 HTML/CSS 绘制，眨眼 + 轻微浮动动画 */}
+          <div className="empty-art" aria-hidden="true">
+            <div className="empty-art-window">
+              <div className="empty-art-bar">
+                <span className="empty-art-dot" />
+                <span className="empty-art-dot" />
+                <span className="empty-art-dot" />
+              </div>
+              <div className="empty-art-face">
+                <div className="empty-art-eyes">
+                  <span className="empty-art-eye" />
+                  <span className="empty-art-eye" />
+                </div>
+                <span className="empty-art-smile" />
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 

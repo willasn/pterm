@@ -64,6 +64,15 @@ function needsDecision(conflicts: string[] | undefined): boolean {
   return conflicts.indexOf("connections.json") >= 0 || conflicts.indexOf("snippets.json") >= 0;
 }
 
+/** 把后端 RFC3339 的上次同步时间格式化成徽标用的紧凑文案（如 10-12 14:23）。 */
+function formatSyncTime(raw?: string | null): string {
+  if (!raw) return "";
+  const at = new Date(raw);
+  if (Number.isNaN(at.getTime())) return "";
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${pad(at.getMonth() + 1)}-${pad(at.getDate())} ${pad(at.getHours())}:${pad(at.getMinutes())}`;
+}
+
 /** 侧栏徽标文案（只讲业务状态，不暴露 Git 细节）。 */
 export function badgeText(): string {
   const { status, pendingConflicts } = state;
@@ -72,7 +81,10 @@ export function badgeText(): string {
   if (!(status.remotes || []).length) return "未配置远端";
   const pending =
     (status.ahead || 0) + (status.behind || 0) + (status.dirty || 0) + (status.untracked || 0);
-  return pending ? "待同步 " + pending + " 项" : "已同步";
+  if (pending) return "待同步 " + pending + " 项";
+  // 已同步时在末尾附上上次同步时间
+  const at = formatSyncTime(status.last_sync_at);
+  return at ? `已同步 · ${at}` : "已同步";
 }
 
 // ---------------------------------------------------------------------------

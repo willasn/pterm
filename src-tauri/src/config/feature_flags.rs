@@ -106,7 +106,7 @@ impl Default for ConnectionFlags {
             auto_reconnect_base_delay_ms: 1000,
             connection_group: true,
             import_export: true,
-            rdp: false,
+            rdp: true,
             quick_connect: true,
             sync_input: true,
             ime_auto_switch: true,
@@ -193,7 +193,7 @@ pub struct SyncFlags {
 impl Default for SyncFlags {
     fn default() -> Self {
         Self {
-            git_sync: false,
+            git_sync: true,
             git_repo_path: None,
             git_sync_scope: SyncScope::Config,
             git_sync_secrets: true,
@@ -321,6 +321,41 @@ impl FeatureFlags {
             // 未登记的标识视为可用，避免误伤核心功能
             _ => true,
         }
+    }
+
+    /// 「必开项」：这些开关不在设置界面展示（前端 `HIDDEN_FLAGS`），且恒为开启——
+    /// 配置文件里写成 false 也会在加载 / 重置时被强制回写为 true。
+    ///
+    /// 目前包含：多标签、分屏、连接分组、配置导入导出、快捷连接、同步输入、远程桌面
+    /// （`connection.*`），Git 同步（`sync.git_sync`），流式响应（`ai.ai_streaming`），
+    /// 命令片段 / 全局搜索 / 命令历史 / 主题 / 崩溃日志（`auxiliary.*`）。
+    /// 返回值表示是否发生了改动，供调用方决定要不要回写文件。
+    pub fn enforce_mandatory(&mut self) -> bool {
+        // 全部是不相交的字段，可以同时可变借用
+        let flags = [
+            &mut self.connection.tabs,
+            &mut self.connection.split_view,
+            &mut self.connection.connection_group,
+            &mut self.connection.import_export,
+            &mut self.connection.quick_connect,
+            &mut self.connection.sync_input,
+            &mut self.connection.rdp,
+            &mut self.sync.git_sync,
+            &mut self.ai.ai_streaming,
+            &mut self.auxiliary.snippets,
+            &mut self.auxiliary.global_search,
+            &mut self.auxiliary.command_history,
+            &mut self.auxiliary.theme,
+            &mut self.auxiliary.crash_log,
+        ];
+        let mut changed = false;
+        for flag in flags {
+            if !*flag {
+                *flag = true;
+                changed = true;
+            }
+        }
+        changed
     }
 
     /// 返回所有已注册的开关及其路径与当前值，供设置界面渲染。

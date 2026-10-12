@@ -69,8 +69,6 @@ pub struct ConnectParams {
     pub cols: u32,
     /// 初始终端行数
     pub rows: u32,
-    /// 覆盖配置中的 TERM 类型
-    pub term_type: Option<String>,
     /// 复用前端已有的标签 id，重连时保持同一个会话标识
     pub session_id: Option<String>,
 }
@@ -87,7 +85,6 @@ impl Default for ConnectParams {
             jump: None,
             cols: 80,
             rows: 24,
-            term_type: None,
             session_id: None,
         }
     }

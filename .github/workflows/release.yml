@@ -80,7 +80,15 @@ jobs:
             - macOS (Apple Silicon)：`pterm_*.dmg`
             - Windows：`pterm_*.msi` 或 `pterm_*-setup.exe`
 
-            > 未做代码签名：macOS 首次打开请右键「打开」放行；Windows 若出现 SmartScreen 提示请选择「仍要运行」。
+            > 安装包未做代码签名，首次打开可能被系统拦截，请按以下方式放行：
+
+            **macOS**：若提示「无法验证开发者」，请右键点击应用 → 选择「打开」，或执行：
+
+            ```
+            xattr -cr /Applications/pterm.app
+            ```
+
+            **Windows**：若弹出 SmartScreen 提示，请点「更多信息」→「仍要运行」。
           releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}

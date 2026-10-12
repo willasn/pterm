@@ -14,7 +14,6 @@ import {
   FLAG_MODULE,
   HIDDEN_FLAGS,
   LANGUAGES,
-  MODULE_LABELS,
   SCOPE_OPTIONS,
   THEME_MODES,
 } from "./constants";
@@ -346,7 +345,6 @@ function TerminalCategory() {
         hint="按键立即上屏，远端回显到达后再对齐；关闭后字符只在远端回显到达时出现"
         path="terminal.local_echo"
       />
-      <TextField label="TERM" hint="传给远端的终端类型" path="terminal.term_type" />
       <TextField label="背景色" hint="CSS 颜色值，留空则跟随主题" path="terminal.background" placeholder="#16181d" />
       <TextField label="前景色" hint="CSS 颜色值，留空则跟随主题" path="terminal.foreground" placeholder="#dfe3ea" />
       <NumberField label="心跳间隔" hint="秒；由 SSH 核心用于保活" path="terminal.keepalive_secs" fallback={30} attrs={{ min: 0 }} />
@@ -403,7 +401,6 @@ function FlagsCategory() {
   const modules = getModules();
   return (
     <div className="settings-section">
-      <p className="inline-note">开关与 FEATURES.md 一一对应。新增功能必须先在 feature_flags.rs 注册，再登记文档。</p>
       {FLAG_GROUPS.map((group) => {
         const entries = list.filter(
           (entry) => entry.path.indexOf(group.key + ".") === 0 && !HIDDEN_FLAGS.has(entry.path)
@@ -706,10 +703,7 @@ function ModelRow({ model, index }: { model: AiModelConfig; index: number }) {
 function ModelsSection() {
   const models = getAiModels();
   return (
-    <Section
-      title="自定义模型"
-      desc="每个模型独立配置协议、API 地址、API Key 与生成参数，可混合不同供应商（OpenAI、DeepSeek、Anthropic、自建网关等）。协议决定请求地址后缀与请求 / 响应格式，下方会实时给出「实际请求地址」。每个模型单独「测试连通性 → 保存」，新增模型必须先测试通过才能保存；Key 只写入加密保险库；生成参数留空即使用默认值。"
-    >
+    <Section title="自定义模型">
       <div className="ai-model-list">
         {models.length ? (
           models.map((model, index) => <ModelRow key={model.id} model={model} index={index} />)
@@ -910,7 +904,7 @@ function GitCategory() {
       ) : null}
       <Section title="仓库" desc="pterm 用 Git 仓库在多台设备之间同步配置，不做任何云同步。">
         <RepoPathField />
-        <Field label="同步范围" hint="决定同步哪些内容；连接密码与 API Key 属于敏感信息，可单独排除">
+        <Field label="同步范围">
           <select
             defaultValue={sync.git_sync_secrets === false ? "all_no_secrets" : "all"}
             onChange={(event) => {
@@ -926,7 +920,7 @@ function GitCategory() {
           </select>
         </Field>
       </Section>
-      <Section title="远程仓库" desc="填写你的 Git 仓库地址；留空则只在本地提交留痕，不推送。">
+      <Section title="远程仓库">
         <TextField
           label="远程地址"
           hint="SSH 或 HTTPS 地址"
@@ -938,6 +932,19 @@ function GitCategory() {
           hint="留空则推送与本地同名的分支"
           path="features.sync.git_remotes.0.branch"
           placeholder="main"
+        />
+      </Section>
+      <Section title="提交身份">
+        <TextField
+          label="提交用户名"
+          hint="Git 提交的作者名"
+          path="features.sync.git_author_name"
+          placeholder="your-name"
+        />
+        <TextField
+          label="提交邮箱"
+          path="features.sync.git_author_email"
+          placeholder="you@example.com"
         />
       </Section>
       <Section
@@ -975,6 +982,11 @@ function ShortcutEditor() {
       title="键盘快捷键"
       desc="组合键写法如 CmdOrCtrl+T（macOS 上是 ⌘，其他平台是 Ctrl），多个修饰键用 + 连接；也可直接写 Cmd / Ctrl / Shift / Alt。"
     >
+      <ToggleField
+        label="启用快捷键"
+        hint="总开关；关闭后不响应任何自定义组合键，按键原样交给终端"
+        path="features.auxiliary.shortcuts"
+      />
       <div className="list-editor">
         {rows.map((row, index) => (
           <div
@@ -1068,8 +1080,7 @@ function CrashLogSection() {
     );
   }
   return (
-    <Section title="崩溃日志" desc="关闭时后端命令会被门控拒绝。">
-      <Note>panic hook 捕获的崩溃信息写入本地日志。反馈问题时导出该文件即可。</Note>
+    <Section title="崩溃日志">
       <div className="log-actions">
         <button className="btn ghost" type="button" disabled={busy} onClick={() => void viewCrashLog()}>
           查看
@@ -1095,17 +1106,10 @@ function CrashLogSection() {
 /** 软件更新：当前版本 / 检查状态 / 手动检查与安装入口。 */
 function UpdateSection() {
   const state = useAutoUpdate();
-  const draft = getDraft();
   const info = (getInfo() || {}) as any;
-  if (!draft.features.auxiliary.auto_update) {
-    return (
-      <Section title="软件更新">
-        <Note>自动更新已关闭。打开后 pterm 会从 GitHub 检查新版本并提示安装。</Note>
-      </Section>
-    );
-  }
   const percent = progressPercent(state);
   const busy = state.status === "checking" || state.status === "downloading";
+  const version = info.version || state.current || "—";
   const statusText = (() => {
     switch (state.status) {
       case "checking":
@@ -1122,67 +1126,72 @@ function UpdateSection() {
         return "尚未检查";
     }
   })();
+  const statusKind =
+    state.status === "error"
+      ? " is-error"
+      : state.status === "available"
+        ? " is-available"
+        : state.status === "latest"
+          ? " is-ok"
+          : "";
   return (
-    <Section title="软件更新" desc="从 GitHub 检查新版本，下载安装完成后自动重启。">
-      <Field label="当前版本">
-        <span className="muted">{info.version || state.current || "—"}</span>
-      </Field>
-      <Field label="状态">
-        <span className="muted">{statusText}</span>
-      </Field>
-      <div className="log-actions">
-        <button
-          className="btn ghost"
-          type="button"
-          disabled={busy}
-          onClick={() => void checkUpdate({ manual: true })}
-        >
-          检查更新
-        </button>
-        {state.status === "available" || state.status === "error" ? (
-          <button className="btn primary" type="button" disabled={busy} onClick={() => void installUpdate()}>
-            立即更新
-          </button>
+    <Section title="软件更新">
+      <div className="update-card">
+        <div className="update-row">
+          <div className="update-meta">
+            <div className="update-version">
+              <span className="update-version-label">当前版本</span>
+              <span className="update-version-value">{version}</span>
+            </div>
+            <span className={"update-status" + statusKind}>{statusText}</span>
+          </div>
+          <div className="update-actions">
+            <button
+              className="btn ghost"
+              type="button"
+              disabled={busy}
+              onClick={() => void checkUpdate({ manual: true })}
+            >
+              {state.status === "checking" ? "检查中…" : "检查更新"}
+            </button>
+            {state.status === "available" || state.status === "error" ? (
+              <button
+                className="btn primary"
+                type="button"
+                disabled={busy}
+                onClick={() => void installUpdate()}
+              >
+                立即更新
+              </button>
+            ) : null}
+          </div>
+        </div>
+        {state.status === "downloading" ? (
+          <div className="update-progress">
+            <span style={{ width: `${percent ?? 0}%` }} />
+          </div>
         ) : null}
       </div>
-      {state.notes ? <Note>{state.notes}</Note> : null}
     </Section>
   );
 }
 
 function AboutCategory() {
-  const t = useT();
   const source = (getInfo() || {}) as any;
-  const modules = getModules();
   const rows: [string, string][] = [
-    ["应用", source.name || "pterm"],
-    ["版本", source.version || "—"],
+    ["应用版本", `${source.name || "pterm"} ${source.version || "—"}`],
     ["配置文件", source.config_file || "—"],
     ["数据库", source.database_file || "—"],
     ["日志目录", source.log_dir || "—"],
   ];
   return (
     <>
-      <Section title="应用信息" desc="配置为纯文本 YAML，可直接编辑。">
+      <Section title="应用信息">
         {rows.map((pair) => (
           <Field label={pair[0]} key={pair[0]}>
             <span className="muted">{pair[1]}</span>
           </Field>
         ))}
-      </Section>
-      <Section title="模块状态" desc="可选模块在 Rust 侧统一实现 init / dispose / is_enabled。">
-        {modules.length ? (
-          modules.map((status) => (
-            <Field key={status.id} label={t("module." + status.id, MODULE_LABELS[status.id] || status.id)}>
-              <span>
-                <ModuleBadge status={status} />
-                {status.note ? <span className="muted">{" " + status.note}</span> : null}
-              </span>
-            </Field>
-          ))
-        ) : (
-          <Note>尚未注册任何可插拔模块实现（ModuleRegistry 为空）。</Note>
-        )}
       </Section>
       <CrashLogSection />
       <UpdateSection />
@@ -1216,7 +1225,7 @@ function CategoryBody() {
   }
 }
 
-/** 设置面板（配置驱动的表单 + 功能开关一览 + 模块状态）。 */
+/** 设置面板（配置驱动的表单 + 功能开关一览，开关行尾附模块运行状态徽标）。 */
 export function SettingsModal() {
   const t = useT();
   const version = useSettingsVersion();
@@ -1224,7 +1233,6 @@ export function SettingsModal() {
   const bodyRef = useRef<HTMLDivElement | null>(null);
   const activeCat = getActiveCat();
   const formKey = getFormKey();
-  const info = getInfo();
 
   useEffect(() => {
     if (!getOpen()) return;
@@ -1277,9 +1285,6 @@ export function SettingsModal() {
             </div>
           </div>
           <footer className="modal-foot">
-            <span className="muted" id="settings-hint">
-              {"配置文件：" + (info && info.config_file ? info.config_file : "—")}
-            </span>
             <span className="spacer" />
             <button className="btn ghost" id="settings-reset" onClick={() => void reset()}>
               {t("common.reset", "恢复默认")}

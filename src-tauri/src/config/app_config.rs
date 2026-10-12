@@ -22,7 +22,6 @@ pub struct TerminalConfig {
     pub copy_on_select: bool,
     /// 终端内右击是否弹出「复制 / 粘贴」菜单
     pub right_click_menu: bool,
-    pub term_type: String,
     pub keepalive_secs: u32,
     /// 终端背景色。留空则跟随主题的 --term-bg
     pub background: String,
@@ -45,7 +44,6 @@ impl Default for TerminalConfig {
             bell: false,
             copy_on_select: true,
             right_click_menu: true,
-            term_type: "xterm-256color".into(),
             keepalive_secs: 30,
             background: String::new(),
             foreground: String::new(),
@@ -294,7 +292,7 @@ pub struct AppConfig {
 impl AppConfig {
     /// 生成一份带完整默认值的配置（首次启动时落盘，便于用户直接编辑）。
     pub fn with_defaults() -> Self {
-        Self {
+        let mut cfg = Self {
             version: 1,
             features: FeatureFlags::default(),
             terminal: TerminalConfig::default(),
@@ -302,7 +300,10 @@ impl AppConfig {
             theme: ThemeConfig::default(),
             shortcuts: default_shortcuts(),
             language: "zh-CN".into(),
-        }
+        };
+        // 「必开项」恒为开启，默认值里可能被写成关闭的一并修正
+        cfg.features.enforce_mandatory();
+        cfg
     }
 
     pub fn load(path: &Path) -> AppResult<Self> {
@@ -348,6 +349,8 @@ impl AppConfig {
             changed = true;
         }
         changed |= self.migrate_ai();
+        // 「必开项」恒为开启：配置文件里若被改成关闭，加载时强制拉回并回写
+        changed |= self.features.enforce_mandatory();
         changed
     }
 

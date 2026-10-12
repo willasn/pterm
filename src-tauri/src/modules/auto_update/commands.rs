@@ -1,16 +1,17 @@
 //! 自动更新对外命令。
 //!
 //! 更新检查与安装都放在 Rust 侧：前端不直接访问底层，且 WebView 的 CSP 不放行
-//! 外部 origin。两条命令都先经 [`AppState::require_module`] 门控，模块关闭时
-//! 直接返回 `ModuleDisabled`。
+//! 外部 origin。
+//!
+//! 这两条命令**不受 `auto_update` 开关门控**：该开关只控制前端「启动后自动检查 +
+//! 自动弹提示条」的行为，用户始终可以主动手动检查。关掉自动更新不应连带剥夺
+//! 手动检查更新的能力（FEATURES.md §6）。
 
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter};
 use tauri_plugin_updater::UpdaterExt;
 
-use crate::config::feature_flags::module_id;
 use crate::error::{AppError, AppResult};
-use crate::state::AppState;
 
 /// 下载进度事件名，前端经 `ipc.listen` 订阅。命名沿用「模块:事件」约定。
 pub const UPDATE_PROGRESS_EVENT: &str = "update:progress";
@@ -42,8 +43,7 @@ fn update_error(e: tauri_plugin_updater::Error) -> AppError {
 
 /// 检查是否有新版本。只查询、不下载。
 #[tauri::command]
-pub async fn auto_update_check(app: AppHandle, state: State<'_, AppState>) -> AppResult<UpdateInfo> {
-    state.require_module(module_id::AUTO_UPDATE)?;
+pub async fn auto_update_check(app: AppHandle) -> AppResult<UpdateInfo> {
     let current = app.package_info().version.to_string();
     let update = app
         .updater()
@@ -74,8 +74,7 @@ pub async fn auto_update_check(app: AppHandle, state: State<'_, AppState>) -> Ap
 /// 这里重新 `check()` 一次而不是复用上次检查的结果：检查本身很轻，而缓存
 /// 待安装句柄需要额外的托管状态，收益不值这个复杂度。
 #[tauri::command]
-pub async fn auto_update_install(app: AppHandle, state: State<'_, AppState>) -> AppResult<()> {
-    state.require_module(module_id::AUTO_UPDATE)?;
+pub async fn auto_update_install(app: AppHandle) -> AppResult<()> {
     let update = app
         .updater()
         .map_err(update_error)?

@@ -960,23 +960,147 @@
    Git 同步面板（FEATURES.md §4）
    --------------------------------------------------------------------------- */
 
-/* 侧栏底部的功能徽标：在 .foot-badges 里各占一行，长文本省略号收尾 */
+/* 侧栏底部的功能徽标：在 .foot-badges 里各占一行，图标 + 状态文本的圆角入口 */
 .git-status {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-8);
   width: 100%;
-  text-align: left;
-  padding: 0;
-  border: none;
+  padding: var(--sp-4) var(--sp-8);
+  border: 1px solid transparent;
+  border-radius: var(--radius);
   background: transparent;
   color: var(--text-dim);
   font-size: var(--fs-xs);
   font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+}
+
+.git-status:hover {
+  background: var(--bg-hover);
+  border-color: var(--border);
+  color: var(--text);
+}
+
+.git-status:active {
+  background: var(--accent-soft);
+  border-color: transparent;
+}
+
+.git-status-icon {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  opacity: 0.85;
+}
+
+.git-status:hover .git-status-icon {
+  opacity: 1;
+}
+
+.git-status-text {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.git-status:hover {
-  color: var(--text);
+/* 功能入口变体（.foot-badges--tiles）：无图标、文字居中、每项带各自的底色分块。
+   上面默认的一套样式原样保留，去掉 .foot-badges--tiles 即回到上一版。
+   每个功能点用 --chip-h（色相）区分底色，同一套色相在亮 / 暗主题下各取明暗。
+   底色用同色相的柔和斜向渐变（左上略深 → 右下更透），比纯色更轻盈。 */
+.foot-badges--tiles .git-status {
+  /* 缺省色相：未单独指定的徽标回落到强调蓝 */
+  --chip-h: 216;
+  justify-content: center;
+  text-align: center;
+  padding: var(--sp-8);
+  background: linear-gradient(
+    135deg,
+    hsl(var(--chip-h) 70% 62% / 0.22),
+    hsl(var(--chip-h) 62% 48% / 0.08)
+  );
+  border-color: hsl(var(--chip-h) 65% 55% / 0.28);
+  color: hsl(var(--chip-h) 72% 78%);
+}
+
+.foot-badges--tiles .git-status:hover {
+  background: linear-gradient(
+    135deg,
+    hsl(var(--chip-h) 72% 64% / 0.32),
+    hsl(var(--chip-h) 64% 50% / 0.14)
+  );
+  border-color: hsl(var(--chip-h) 65% 58% / 0.5);
+  color: hsl(var(--chip-h) 78% 86%);
+}
+
+.foot-badges--tiles .git-status:active {
+  background: linear-gradient(
+    135deg,
+    hsl(var(--chip-h) 72% 60% / 0.38),
+    hsl(var(--chip-h) 64% 48% / 0.2)
+  );
+  border-color: transparent;
+}
+
+/* 变体下不再显示图标，只保留居中的文字 */
+.foot-badges--tiles .git-status-icon {
+  display: none;
+}
+
+/* 各功能点的色相：尽量拉开，保证并排时底色可区分 */
+.foot-badges--tiles #git-status {
+  --chip-h: 216; /* Git 同步：蓝 */
+}
+.foot-badges--tiles #log-status {
+  --chip-h: 140; /* 会话日志：绿 */
+}
+.foot-badges--tiles #sftp-status {
+  --chip-h: 182; /* SFTP 文件：青 */
+}
+.foot-badges--tiles #pf-status {
+  --chip-h: 272; /* 端口转发：紫 */
+}
+.foot-badges--tiles #ie-status {
+  --chip-h: 26; /* 配置导入导出：橙 */
+}
+.foot-badges--tiles #snip-status {
+  --chip-h: 336; /* 命令片段：粉 */
+}
+.foot-badges--tiles #hist-status {
+  --chip-h: 48; /* 命令历史：黄 */
+}
+
+/* 亮色主题下加深底色与文字，保证对比度（同样用柔和渐变） */
+body[data-theme="light"] .foot-badges--tiles .git-status {
+  background: linear-gradient(
+    135deg,
+    hsl(var(--chip-h) 74% 56% / 0.18),
+    hsl(var(--chip-h) 68% 64% / 0.05)
+  );
+  border-color: hsl(var(--chip-h) 70% 45% / 0.24);
+  color: hsl(var(--chip-h) 62% 34%);
+}
+
+body[data-theme="light"] .foot-badges--tiles .git-status:hover {
+  background: linear-gradient(
+    135deg,
+    hsl(var(--chip-h) 74% 54% / 0.26),
+    hsl(var(--chip-h) 68% 62% / 0.1)
+  );
+  border-color: hsl(var(--chip-h) 70% 45% / 0.45);
+  color: hsl(var(--chip-h) 68% 28%);
+}
+
+body[data-theme="light"] .foot-badges--tiles .git-status:active {
+  background: linear-gradient(
+    135deg,
+    hsl(var(--chip-h) 74% 52% / 0.34),
+    hsl(var(--chip-h) 68% 60% / 0.16)
+  );
+  border-color: transparent;
 }
 
 .git-actions {
@@ -1771,4 +1895,91 @@
 .ie-act:disabled {
   opacity: 0.5;
   cursor: default;
+}
+
+/* ---------------------------------------------------------------------------
+   软件更新卡片（设置 → 关于）
+   --------------------------------------------------------------------------- */
+
+.update-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-8);
+  padding: var(--sp-12) var(--sp-16);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  background: var(--bg-alt);
+}
+
+/* 「当前版本 + 状态」在左、「检查更新 / 立即更新」在右，同一行对齐 */
+.update-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-16);
+  flex-wrap: wrap;
+}
+
+.update-meta {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  min-width: 0;
+}
+
+.update-version {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-8);
+}
+
+.update-version-label {
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+}
+
+.update-version-value {
+  font-size: var(--fs-xl);
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.update-status {
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+}
+
+.update-status.is-ok {
+  color: var(--ok);
+}
+
+.update-status.is-available {
+  color: var(--accent);
+  font-weight: 500;
+}
+
+.update-status.is-error {
+  color: var(--danger);
+}
+
+.update-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-8);
+  flex-shrink: 0;
+}
+
+/* 下载进度条：仅在下载中出现 */
+.update-progress {
+  height: 4px;
+  border-radius: var(--radius-full);
+  background: var(--border);
+  overflow: hidden;
+}
+
+.update-progress > span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.2s ease;
 }

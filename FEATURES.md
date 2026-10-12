@@ -71,19 +71,22 @@ pub trait PluggableModule {
 
 ```yaml
 features:
-  tabs:            true
-  split_view:      false
+  tabs:            true    # 必开项
+  split_view:      true    # 必开项
   sftp:            true
   port_forward:    false
   jump_host:       true
   session_log:     false
-  auto_reconnect:  true
-  connection_group:true
-  import_export:   true
-  rdp:             false
-  quick_connect:   true
-  sync_input:      true
+  auto_reconnect:  true    # 开关在「设置 → 连接」
+  connection_group:true    # 必开项
+  import_export:   true    # 必开项
+  rdp:             true    # 必开项
+  quick_connect:   true    # 必开项
+  sync_input:      true    # 必开项
 ```
+
+> 标「必开项」的开关恒为开启、界面不暴露，配置里写成 false 也会被强制拉回
+> （见 `FeatureFlags::enforce_mandatory` 与前端 `HIDDEN_FLAGS`）。
 
 | 状态 | 功能 | FLAG | 说明 | 代码位置 |
 | --- | --- | --- | --- | --- |
@@ -111,7 +114,7 @@ features:
 
 ```yaml
 features:
-  git_sync:            false
+  git_sync:            true    # 必开项，界面不暴露开关
   git_sync_scope:      "config"   # 界面恒为 all；兼容 config | snippets | all
   git_conflict_prompt: true
   git_status_badge:    true
@@ -140,7 +143,7 @@ features:
 ```yaml
 features:
   ai_assistant:        false
-  ai_streaming:        true
+  ai_streaming:        true    # 必开项，界面不暴露开关
   ai_danger_warning:   true
   ai_context_inject:   true
 ```
@@ -167,15 +170,15 @@ features:
 
 ```yaml
 features:
-  snippets:        true
-  global_search:   true
-  command_history: true
+  snippets:        true    # 必开项
+  global_search:   true    # 必开项
+  command_history: true    # 必开项
   quick_panel:     true
   system_tray:     false
   auto_update:     true
-  theme:           true
-  shortcuts:       true
-  crash_log:       true
+  theme:           true    # 必开项
+  shortcuts:       true    # 总开关在「设置 → 快捷键」
+  crash_log:       true    # 必开项
 ```
 
 | 状态 | 功能 | FLAG | 说明 | 代码位置 |
@@ -185,7 +188,7 @@ features:
 | [x] | 命令历史 | `command_history` | 记录并检索历史执行的命令，支持去重与频率排序 | `src/features/history/`、`src-tauri/src/modules/command_history/` |
 | [x] | 快捷面板 | `quick_panel` | 全局快捷键唤起的命令面板（类 Spotlight） | `src/features/quick-panel/`、`src-tauri/src/modules/quick_panel/` |
 | [x] | 系统托盘 | `system_tray` | 托盘图标、菜单、最小化到托盘 | `src-tauri/src/lib.rs` + `src-tauri/src/modules/system_tray/` |
-| [x] | 自动更新 | `auto_update` | 启动后自动从 GitHub Releases 检查新版本（结果按天缓存），设置「关于」页也可手动检查；发现新版右下角提示，确认后下载、校验签名并安装，装完重启应用（Tauri updater） | `src-tauri/src/modules/auto_update/`、`src/features/auto-update/` |
+| [x] | 自动更新 | `auto_update` | 开关控制启动后自动从 GitHub Releases 检查新版本（结果按天缓存）并在发现新版时右下角提示；设置「关于 → 软件更新」页的「检查更新」按钮始终可用，关闭开关也能主动手动检查。确认后下载、校验签名并安装，装完重启应用（Tauri updater） | `src-tauri/src/modules/auto_update/`、`src/features/auto-update/` |
 | [x] | 主题 | `theme` | 内置亮/暗主题 + 自定义配色，终端配色独立配置 | `src/styles/theme.css`、`src-tauri/src/modules/theme/` |
 | [x] | 快捷键 | `shortcuts` | 全部操作可绑定快捷键；设置页每个动作固定一行，左侧只读描述，可逐条启用 / 禁用、改键或清空解绑，附冲突检测 | `src/features/shortcuts/`、`src/features/settings/`、`src-tauri/src/modules/shortcuts/` |
 | [x] | 崩溃日志 | `crash_log` | panic hook 捕获崩溃信息写本地日志，设置「关于」页可查看与导出 | `src-tauri/src/utils/mod.rs` + `src-tauri/src/utils/commands.rs` |

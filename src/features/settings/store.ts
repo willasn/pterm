@@ -236,9 +236,37 @@ function applyToApp(): void {
   refreshConnections().catch(() => {});
 }
 
+/**
+ * Git 同步启用时列出尚未填写的必填项（在 normalize 之后调用）。
+ *
+ * 「使用 Git 同步，所有选项必填」：只要开关打开，远程地址、目标分支、用户名与提交身份
+ * 都不能为空，缺任一项即拒绝保存并提示，避免出现「半配置」状态。
+ * 仓库路径允许留空——留空即使用应用数据目录下的默认 sync 目录。
+ */
+function missingGitFields(): string[] {
+  const sync = draft.features.sync;
+  if (!sync.git_sync) return [];
+  const remote = (sync.git_remotes || [])[0] || {};
+  const fields: [string, unknown][] = [
+    ["远程地址", remote.url],
+    ["目标分支", remote.branch],
+    ["远端用户名", remote.username],
+    ["提交用户名", sync.git_author_name],
+    ["提交邮箱", sync.git_author_email],
+  ];
+  return fields
+    .filter(([, value]) => !String(value == null ? "" : value).trim())
+    .map(([label]) => label);
+}
+
 export async function save(): Promise<void> {
   if (!draft) return;
   normalize();
+  const missing = missingGitFields();
+  if (missing.length) {
+    toast("Git 同步已启用，请先填写：" + missing.join("、"), "warn");
+    return;
+  }
   try {
     const moduleList = await ipc.saveConfig(draft);
     modules = moduleList || modules;

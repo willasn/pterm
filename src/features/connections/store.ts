@@ -254,7 +254,6 @@ function jumpSpec(record: any): any {
 /** StoredConnection -> ConnectParams。密码一律由后端按 connection_id 从保险库读取。 */
 export function paramsFor(conn: any): any {
   const current = active();
-  const terminal = (config && config.terminal) || {};
   return {
     connection_id: conn.id || null,
     name: conn.name || null,
@@ -265,7 +264,6 @@ export function paramsFor(conn: any): any {
     jump: connFlags().jump_host && conn.jump ? jumpSpec(conn.jump) : null,
     cols: current ? current.term.cols : 80,
     rows: current ? current.term.rows : 24,
-    term_type: terminal.term_type || null,
     session_id: null,
   };
 }
@@ -295,7 +293,6 @@ export async function connectTo(conn: any): Promise<void> {
  * 在同一标签内改用密码认证重试。取消或非认证类失败则保留终端里的错误提示。
  */
 async function connectQuick(parsed: { username: string; host: string; port: number }): Promise<void> {
-  const terminal = (config && config.terminal) || {};
   const current = active();
   const params = {
     connection_id: null,
@@ -307,7 +304,6 @@ async function connectQuick(parsed: { username: string; host: string; port: numb
     jump: null,
     cols: current ? current.term.cols : 80,
     rows: current ? current.term.rows : 24,
-    term_type: terminal.term_type || null,
     session_id: null,
   };
 

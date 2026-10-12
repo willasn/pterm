@@ -4,7 +4,9 @@
 //! 校验签名并安装，装完重启应用。**opt-in**：默认开启（`auxiliary.auto_update = true`），
 //! 可在设置中关闭。
 //!
-//! 检查由前端在启动后按开关触发一次（结果按天缓存），设置「关于」页也提供手动检查。
+//! `auxiliary.auto_update` 开关只控制「启动后自动检查一次（结果按天缓存）并自动弹提示条」
+//! 这部分自动行为；设置「关于 → 软件更新」页的「检查更新」按钮**始终可用**，关掉开关也能
+//! 主动手动检查（见 [`commands`]，其命令不受开关门控）。
 //! 真正的网络请求与安装都在 Rust 侧（见 [`commands`]），前端经 Tauri command 中介。
 
 use crate::config::feature_flags::{module_id, FeatureFlags, PluggableModule};

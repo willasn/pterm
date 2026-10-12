@@ -128,7 +128,6 @@ fn connect_jump_session(spec: &JumpSpec, keepalive_secs: u32) -> AppResult<Sessi
         jump: None,
         cols: 80,
         rows: 24,
-        term_type: None,
         session_id: None,
     };
 
