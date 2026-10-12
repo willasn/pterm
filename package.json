@@ -1,7 +1,7 @@
 {
   "name": "pterm",
   "private": true,
-  "version": "0.1.2",
+  "version": "0.1.3",
   "type": "module",
   "description": "跨平台 SSH 终端客户端前端（Vite + React + TypeScript）",
   "scripts": {
