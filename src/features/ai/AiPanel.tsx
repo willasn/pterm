@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from "react";
-import { useT } from "../../hooks/useLocale";
 import { Markdown } from "./markdown";
 import {
   approveCurrent,
@@ -7,6 +6,7 @@ import {
   close,
   persistWidth,
   primaryAction,
+  runSuggested,
   setMenuOpen,
   setMode,
   setSelectedModel,
@@ -179,6 +179,8 @@ function AssistantBody({ msg }: { msg: AiMessage }) {
         <pre className="log-preview">{msg.command}</pre>
         {msg.danger ? (
           <p className="inline-note warn">{"⚠ 命中危险规则：" + msg.danger + "，确认时会再次询问。"}</p>
+        ) : msg.authReason ? (
+          <p className="inline-note warn">{"此命令会" + msg.authReason + "，需要你授权后执行。"}</p>
         ) : null}
         {msg.state === "pending" ? (
           <div className="log-actions">
@@ -210,8 +212,8 @@ function AssistantBody({ msg }: { msg: AiMessage }) {
           // 流式阶段保持纯文本：半截的 Markdown 会渲染成乱码块
           <pre className="log-preview">{text}</pre>
         ) : (
-          // 回答结束，一次性渲染成结构化 DOM
-          <Markdown text={text} />
+          // 回答结束，一次性渲染成结构化 DOM；命令块附带「运行」按钮（手动发送到终端）
+          <Markdown text={text} onRun={(command) => void runSuggested(command)} />
         )
       ) : null}
     </div>
@@ -237,7 +239,6 @@ function MessageView({ msg }: { msg: AiMessage }) {
 
 /** AI 助手停靠面板（features.ai.ai_assistant 打开时可用）。 */
 export function AiPanel() {
-  const t = useT();
   const version = useAiVersion();
   void version;
   const state = view();
@@ -314,7 +315,10 @@ export function AiPanel() {
         }}
       />
       <header className="ai-panel-head">
-        <span className="ai-panel-title">{t("modal.ai", "AI 助手")}</span>
+        <span className={"ai-session-dot" + (state.session.connected ? " on" : "")} id="ai-session-dot" />
+        <span className="ai-panel-title" id="ai-hint">
+          {state.session.label}
+        </span>
         <span className="spacer" />
         <button className="icon-btn" id="ai-clear-btn" title="清空当前对话" onClick={() => void clearCurrent()}>
           🧹
@@ -323,10 +327,6 @@ export function AiPanel() {
           ✕
         </button>
       </header>
-      <div className="ai-panel-session">
-        <span className={"ai-session-dot" + (state.session.connected ? " on" : "")} id="ai-session-dot" />
-        <span id="ai-hint">{state.session.label}</span>
-      </div>
       <div className="ai-panel-scroll" id="ai-body" ref={scrollRef}>
         {state.empty ? (
           <div className="ai-empty">
@@ -371,7 +371,7 @@ export function AiPanel() {
                 type="button"
                 data-mode="ask"
                 aria-pressed={state.mode === "ask" ? "true" : "false"}
-                title="只回答问题，不向终端写入任何内容"
+                title="给出建议与命令，命令可手动点击「运行」发送到终端，不会自动执行"
                 onClick={() => setMode("ask")}
               >
                 Ask
@@ -381,7 +381,7 @@ export function AiPanel() {
                 type="button"
                 data-mode="agent"
                 aria-pressed={state.mode === "agent" ? "true" : "false"}
-                title="读取终端输出并在会话中执行命令，每条都需你确认"
+                title="读取终端输出并自动执行命令，涉及删除、修改等关键操作时会请你授权"
                 onClick={() => setMode("agent")}
               >
                 Agent

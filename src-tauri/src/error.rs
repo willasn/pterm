@@ -1,5 +1,7 @@
 use serde::{Serialize, Serializer};
 
+use crate::ssh::known_hosts::HostKeyInfo;
+
 /// 全应用统一错误类型。
 ///
 /// 可直接作为 Tauri command 的 `Err` 返回：`Serialize` 实现把错误降级为
@@ -13,6 +15,16 @@ pub enum AppError {
     /// 而链路错误（超时、连接重置）需要触发自动重连。
     #[error("认证失败：{0}")]
     Auth(String),
+
+    /// 用户主动取消认证（如取消键盘交互弹窗）。与 `Auth` 区分开：
+    /// 前端据此不弹「补录密码」框，也不把取消当成凭据错误。
+    #[error("{0}")]
+    AuthCancelled(String),
+
+    /// 主机密钥校验未通过。携带指纹等上下文，由会话线程转成状态事件让前端弹窗确认；
+    /// 属于不可重试错误（自动重连只会反复失败）。
+    #[error("主机密钥校验未通过")]
+    HostKey(HostKeyInfo),
 
     #[error("I/O 错误：{0}")]
     Io(#[from] std::io::Error),

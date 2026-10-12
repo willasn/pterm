@@ -22,6 +22,7 @@ use crate::error::{AppError, AppResult};
 use crate::modules::ModuleContext;
 use crate::ssh::auth;
 use crate::ssh::jump::JumpTunnel;
+use crate::ssh::known_hosts;
 use crate::ssh::session::open_transport;
 use crate::ssh::types::ConnectParams;
 
@@ -133,9 +134,14 @@ impl SftpManager {
 
         // 跳板机复用 SSH 核心的本地隧道：SFTP 侧只需连接本机端口
         let tunnel = match &params.jump {
-            Some(spec) if !spec.host.trim().is_empty() => {
-                Some(JumpTunnel::open(spec, &params.host, params.port, 0)?)
-            }
+            Some(spec) if !spec.host.trim().is_empty() => Some(JumpTunnel::open(
+                spec,
+                &params.host,
+                params.port,
+                0,
+                None,
+                Some(params.host_key_policy),
+            )?),
             _ => None,
         };
         let (host, port) = match &tunnel {
@@ -144,7 +150,9 @@ impl SftpManager {
         };
 
         let sess = open_transport(&host, port)?;
-        let method = auth::authenticate(&sess, &params)?;
+        // 主机密钥校验：SFTP 无法弹窗确认，未确认 / 变更时给出可操作提示
+        known_hosts::verify_session_strict(&sess, &params.host, params.port, params.host_key_policy)?;
+        let method = auth::authenticate(&sess, &params, None)?;
 
         // 家目录仅作初始路径，取不到就退回根目录，不阻断连接
         let home = sess

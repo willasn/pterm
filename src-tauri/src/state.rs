@@ -12,6 +12,8 @@ use crate::features::sftp::SftpManager;
 use crate::modules::ai_assistant::{AiContext, AiService};
 use crate::modules::git_sync::{GitSync, SyncContext};
 use crate::modules::{ModuleContext, ModuleRegistry};
+use crate::ssh::interactive::AuthPromptHub;
+use crate::ssh::known_hosts::{self, KnownHostsStore};
 use crate::ssh::session::{SessionDeps, SessionLogger, SessionManager};
 use crate::utils::Paths;
 
@@ -32,6 +34,10 @@ pub struct AppState {
     pub port_forward: PortForwardManager,
     /// AI 服务。命令层与模块层共用同一实例（同一个 HTTP 客户端、同一张取消表）。
     pub ai: AiService,
+    /// 已知主机（主机密钥）存储。配置目录下的 `known_hosts.json`，本机私有、不随 Git 同步。
+    pub known_hosts: Arc<KnownHostsStore>,
+    /// 键盘交互认证的应答中枢。命令层与会话线程共用同一实例。
+    pub auth_hub: Arc<AuthPromptHub>,
 }
 
 impl AppState {
@@ -46,6 +52,12 @@ impl AppState {
         port_forward: PortForwardManager,
         ai: AiService,
     ) -> Self {
+        // 已知主机表随配置目录存放，本机私有、不随 Git 同步
+        let known_hosts = Arc::new(KnownHostsStore::load(
+            paths.config_dir.join("known_hosts.json"),
+        ));
+        // 安装全局主机密钥校验器：终端 / SFTP / 端口转发 / 跳板机共用同一存储与配置
+        known_hosts::install(known_hosts.clone(), config.clone());
         Self {
             config,
             store,
@@ -57,6 +69,8 @@ impl AppState {
             sftp,
             port_forward,
             ai,
+            known_hosts,
+            auth_hub: Arc::new(AuthPromptHub::new()),
         }
     }
 
@@ -108,6 +122,7 @@ impl AppState {
             app: app.clone(),
             config: self.config.clone(),
             logger,
+            auth_hub: self.auth_hub.clone(),
         }
     }
 

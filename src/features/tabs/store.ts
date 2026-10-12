@@ -217,8 +217,9 @@ function tabMenu(group: PaneGroup, tab: HTMLElement): any[] {
   const items: any[] = [
     { label: "重命名标签", icon: "✎", run: () => startRename(group, tab, tab.querySelector(".name") as HTMLElement) },
   ];
-  // 克隆会话只针对 SSH：只有 SSH 会话带原始连接参数（RDP 走外部客户端、不产生标签）
-  if (ctrl && ctrl.params) {
+  // 克隆会话只针对 SSH：只有 SSH 会话带原始连接参数（RDP 走外部客户端、不产生标签；
+  // 本地终端没有可复用的连接参数，用快捷键 / 侧栏重新开一个即可）
+  if (ctrl && ctrl.params && ctrl.params.kind !== "local") {
     items.push({ label: "克隆会话", icon: "❐", run: () => cloneSession(ctrl) });
   }
   // 已打开的会话（含已就绪）都可以重连：后端复用同一标签 id，先关旧会话再建新连接

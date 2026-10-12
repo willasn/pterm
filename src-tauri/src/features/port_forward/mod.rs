@@ -27,6 +27,7 @@ use crate::error::{AppError, AppResult};
 use crate::modules::ModuleContext;
 use crate::ssh::auth;
 use crate::ssh::jump::{self, JumpTunnel};
+use crate::ssh::known_hosts;
 use crate::ssh::session::open_transport;
 use crate::ssh::types::ConnectParams;
 
@@ -383,9 +384,14 @@ impl PluggableModule for PortForwardModule {
 /// 建立一条独占的 SSH 连接。跳板机复用 SSH 核心的本地隧道。
 fn open_session(params: &ConnectParams) -> AppResult<(Session, Option<JumpTunnel>)> {
     let tunnel = match &params.jump {
-        Some(spec) if !spec.host.trim().is_empty() => {
-            Some(JumpTunnel::open(spec, &params.host, params.port, 0)?)
-        }
+        Some(spec) if !spec.host.trim().is_empty() => Some(JumpTunnel::open(
+            spec,
+            &params.host,
+            params.port,
+            0,
+            None,
+            Some(params.host_key_policy),
+        )?),
         _ => None,
     };
     let (host, port) = match &tunnel {
@@ -393,7 +399,9 @@ fn open_session(params: &ConnectParams) -> AppResult<(Session, Option<JumpTunnel
         None => (params.host.clone(), params.port),
     };
     let sess = open_transport(&host, port)?;
-    let method = auth::authenticate(&sess, params)?;
+    // 主机密钥校验：端口转发无法弹窗确认，未确认 / 变更时给出可操作提示
+    known_hosts::verify_session_strict(&sess, &params.host, params.port, params.host_key_policy)?;
+    let method = auth::authenticate(&sess, params, None)?;
     log::info!("端口转发会话已建立：{}（{method}）", params.endpoint());
     Ok((sess, tunnel))
 }

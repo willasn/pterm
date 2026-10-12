@@ -14,10 +14,10 @@
 
 摘要：
 
-- **核心（不可关闭）**：SSH 连接、密码/密钥认证、终端渲染、会话管理、配置加密存储、基础设置、界面语言、首次启动引导（语言选择）
-- **连接与传输**：多标签、分屏、同步输入、SFTP、端口转发、跳板机、会话日志、自动重连、连接分组、导入导出、快捷连接、远程桌面（RDP）
+- **核心（不可关闭）**：SSH 连接、密码/密钥/键盘交互认证、终端渲染、终端内搜索、会话管理、配置加密存储、基础设置、界面语言、首次启动引导（语言选择）
+- **连接与传输**：多标签、分屏、同步输入、SFTP、端口转发、跳板机、主机密钥校验、本地终端、会话日志、自动重连、连接分组、导入导出、快捷连接、远程桌面（RDP）
 - **同步**：Git 同步、同步范围、冲突提示、状态显示、提交模板、多仓库
-- **AI**：Ask 提问（右侧停靠面板）、Agent 自动执行（每条命令需确认）、多模型、历史保存（近 30 天）、流式响应、危险提示、上下文注入
+- **AI**：Ask 提问（右侧停靠面板，建议命令可手动点击运行）、Agent 自动执行（只读命令自动执行，关键操作需授权）、多模型、历史保存（近 30 天）、流式响应、危险提示、上下文注入
 - **辅助**：命令片段、全局搜索、命令历史、快捷面板、自动更新、主题、快捷键、崩溃日志
 - **系统托盘**：仅 Windows 提供且恒定常驻（无功能开关）；macOS 不支持，关闭窗口后由 Dock 图标恢复
 
@@ -43,10 +43,13 @@ pterm/
 │       ├── main.rs
 │       ├── lib.rs
 │       ├── ssh/                 # SSH 核心（不可关闭）
-│       │   ├── session.rs       # 会话管理、断线重连
-│       │   ├── auth.rs          # 密码/密钥认证
+│       │   ├── session.rs       # 会话管理、断线重连（含本地终端会话分发）
+│       │   ├── auth.rs          # 密码/密钥/键盘交互认证
 │       │   ├── channel.rs       # Shell 通道、数据流
-│       │   └── jump.rs          # 跳板机（ProxyJump 隧道）
+│       │   ├── interactive.rs   # 键盘交互认证的提示应答中枢
+│       │   ├── jump.rs          # 跳板机（ProxyJump 隧道）
+│       │   ├── known_hosts.rs   # 主机密钥校验（known_hosts / TOFU）
+│       │   └── local.rs         # 本地终端运行器（本机 PTY）
 │       ├── modules/             # 可插拔模块
 │       │   ├── git_sync/        # Git 同步（可开关）
 │       │   │   ├── repo.rs      # git2 仓库操作封装
@@ -56,6 +59,7 @@ pterm/
 │       │   ├── snippets/        # 命令片段（可开关）
 │       │   ├── global_search/   # 全局搜索（可开关，检索逻辑在前端）
 │       │   ├── command_history/ # 命令历史（可开关）
+│       │   ├── local_terminal/  # 本地终端（可开关，本机 PTY shell）
 │       │   ├── quick_panel/     # 快捷面板（可开关）
 │       │   ├── system_tray/     # 系统托盘（仅 Windows，恒定常驻）
 │       │   ├── auto_update/     # 自动更新（可开关，从 GitHub Releases 检查并安装。Tauri updater）
@@ -96,6 +100,7 @@ pterm/
     │   ├── port-forward/        # 端口转发（已迁移：store + 组件）
     │   ├── import-export/       # 配置导入导出（已迁移：store + 组件）
     │   ├── rdp/                 # 远程桌面入口（已迁移：api，无 UI）
+    │   ├── local-terminal/      # 本地终端入口（已迁移：api，无 UI，会话编排复用 ssh）
     │   ├── sftp/                # SFTP 文件（已迁移：store + 组件，含传输队列）
     │   ├── settings/            # 设置面板（已迁移：constants + store + 组件）
     │   ├── shortcuts/           # 快捷键（已迁移：api，无 UI）
@@ -184,6 +189,7 @@ cargo tauri build        # 或 npm run tauri build
 - SQLite：连接配置等非敏感数据
 - `secrets.json`：密码、私钥 passphrase、API Key 等敏感字段，由主密码经 Argon2id 派生密钥 + AES-256-GCM 加密，并可随 Git 同步一起分发。新装首次打开时设置主密码；此后派生密钥作为自动解锁令牌存在同目录的 `vault.token`（权限 0600），启动即静默解锁，无需重复输入
 - `onboarding.done`：首次启动引导（语言选择）的完成标记，同为配置目录下的本机文件，不随 Git 同步；删除它可在下次启动重新播放引导
+- `known_hosts.json`：主机密钥校验（TOFU）记录的已知主机指纹，本机私有、不随 Git 同步
 
 ## 设计约定
 

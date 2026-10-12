@@ -92,12 +92,47 @@ body {
   gap: var(--sp-4);
 }
 
+/* 快捷连接：默认收起为图标，鼠标悬停 / 聚焦时展开输入框 */
 .quick-connect {
-  padding: var(--sp-8);
-  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  flex: none;
 }
 
-.quick-connect input {
+.quick-connect[hidden] {
+  display: none;
+}
+
+.quick-connect-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius);
+  color: var(--text-dim);
+  cursor: pointer;
+  flex: none;
+}
+
+.quick-connect-icon:hover {
+  color: var(--text);
+}
+
+/* 展开容器：宽度从 0 过渡到目标宽度，撑出输入框 */
+.quick-connect-field {
+  width: 0;
+  overflow: hidden;
+  transition: width 0.2s ease;
+}
+
+.quick-connect:hover .quick-connect-field,
+.quick-connect:focus-within .quick-connect-field {
+  width: 150px;
+}
+
+.quick-connect-field input {
   width: 100%;
 }
 
@@ -143,8 +178,13 @@ body {
   width: 7px;
   height: 7px;
   border-radius: var(--radius-full);
-  background: var(--text-dim);
   flex: none;
+}
+
+/* 无会话时保持默认灰；有会话时交给 [data-state] 的状态色（见 styles/terminal.css），
+   连接自带 color 时仍以内联样式优先。 */
+.conn-item:not([data-state]) .dot {
+  background: var(--text-dim);
 }
 
 .conn-item .conn-text {
@@ -542,6 +582,11 @@ button {
   color: var(--text);
 }
 
+/* inline-flex 会盖掉浏览器对 [hidden] 的默认隐藏，需显式声明 */
+.icon-btn[hidden] {
+  display: none;
+}
+
 input[type="text"],
 input[type="password"],
 input[type="number"],
@@ -609,6 +654,16 @@ textarea:disabled {
 
 .modal-mask[hidden] {
   display: none;
+}
+
+/* 应用内通用弹窗（确认 / 选择 / 密码 / 危险确认）由 features/util 命令式驱动，
+   渲染在 #root 内；功能弹窗经 Portal 挂到 body，二者 z-index 相同时后者按 DOM 顺序覆盖前者。
+   这里抬高这组弹窗，使其始终显示在功能弹窗之上。 */
+#modal-confirm,
+#modal-choose,
+#modal-password,
+#modal-danger {
+  z-index: 60;
 }
 
 .modal {

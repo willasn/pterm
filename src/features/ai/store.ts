@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from "react";
 import { errorText, pt, toast } from "../../lib/legacy";
+import { inspect } from "../danger/rules";
 import { ipc } from "../ipc/api";
 import { recentOutput, write } from "../ssh/api";
 import { active, refitAll } from "../terminal/api";
@@ -23,8 +24,9 @@ import type {
  *
  * 内容区是**一条按 SSH 会话隔离的消息流**：每个终端会话各有一份对话，切标签各自
  * 独立、切回仍能看到，会话关闭即清空，不落库。面板只负责「组织提问 → 派发命令 →
- * 订阅事件 → 展示」；提示词组装在 Rust 侧完成。Ask 模式的输出只读，不注入终端；
- * Agent 模式的每条命令都要用户确认，危险命令额外二次确认，循环在前端跑。
+ * 订阅事件 → 展示」；提示词组装在 Rust 侧完成。Ask 模式给出建议与命令，命令由用户
+ * 手动点击「运行」才写入终端；Agent 模式自动执行只读命令，涉及删除、修改等关键操作
+ * 时停下等用户授权，危险命令额外二次确认，循环在前端跑。
  *
  * 迁移说明：消息仍是可变对象（流式期间原地追加文本），React 侧用版本号驱动重绘；
  * 消息按 id 作 key，React 会就地更新文本节点，不会整条重建。
@@ -61,7 +63,7 @@ let aiConfig: any = {};
 
 /** 面板里选中的模型条目 id；跨面板开关保留，避免每次都要重选 */
 let selectedModelId = "";
-/** 交互模式：ask 只回答，agent 可读终端并请求执行命令 */
+/** 交互模式：ask 只给建议（命令由用户点击运行），agent 自动执行只读命令、关键操作待授权 */
 let mode: "ask" | "agent" = "ask";
 
 const sessionViews = new Map<string, SessionView>();
@@ -273,6 +275,7 @@ function pushUserMessage(view: SessionView, text: string, kind: MessageKind): Ai
     noteKind: "",
     command: "",
     danger: "",
+    authReason: "",
     output: "",
     state: "",
     running: false,
@@ -298,6 +301,7 @@ function pushAssistantMessage(view: SessionView, patch: Partial<AiMessage>): AiM
       noteKind: "",
       command: "",
       danger: "",
+      authReason: "",
       output: "",
       state: "",
       running: false,
@@ -677,40 +681,45 @@ async function agentStep(key: string): Promise<void> {
     return;
   }
 
-  // 复用这条消息，把它从「思考中」变成待确认的命令气泡
+  // 复用这条消息，把它从「思考中」变成命令气泡
   msg.running = false;
   msg.command = result.command || "";
+
+  // 需要授权的命令（删除 / 修改 / 关键操作）才停下等用户确认；其余只读命令直接自动执行
+  if (!result.requires_auth) {
+    msg.danger = "";
+    msg.authReason = "";
+    msg.note = "自动执行（只读命令，无需授权）";
+    bump();
+    await agentExecute(key, msg, true);
+    return;
+  }
+
   msg.danger = result.danger || "";
+  msg.authReason = result.auth_reason || "";
   msg.state = "pending";
-  msg.note = "下一步将执行：";
+  msg.note = msg.danger ? "下一步将执行（危险命令，需二次确认）：" : "下一步需要你授权后执行：";
   ag.pending = msg;
   bump();
 }
 
-/** 用户确认后把待执行命令写入终端。这是唯一真正写入终端的地方。 */
-export async function agentApprove(key: string): Promise<void> {
+/**
+ * 执行一步命令：写入终端 → 等输出 → 读回 → 推进循环。
+ *
+ * 自动执行（只读命令）与用户授权后执行共用此函数；`auto` 仅影响提示文案。
+ * 这是唯一真正写入终端的地方。
+ */
+async function agentExecute(key: string, msg: AiMessage, auto: boolean): Promise<void> {
   const view = sessionState(key);
   const ag = view.agent;
-  if (!ag || !ag.pending) return;
-  const msg = ag.pending;
+  if (!ag) return;
 
-  // 命中危险规则时必须再确认一次，这次确认无法被跳过
-  if (msg.danger) {
-    const ok = await confirmDialog({
-      command: msg.command,
-      reason: "Agent 要执行的命令命中危险规则：" + msg.danger,
-    });
-    // 取消二次确认时保留这条待确认命令，用户还能改选「跳过这条」
-    if (!ok) return;
-  }
-
-  ag.pending = null;
   msg.state = "done";
-  msg.note = "已执行，等待输出…";
+  msg.note = auto ? "自动执行中…" : "已执行，等待输出…";
   bump();
 
   try {
-    // 直接写入会话（含回车），不经过 terminal 的按键通道：危险检测与确认已在上面完成
+    // 直接写入会话（含回车），不经过 terminal 的按键通道：授权判定已在上面完成
     await write(ag.sessionId, msg.command + "\n");
   } catch (err) {
     ag.running = false;
@@ -750,6 +759,27 @@ export async function agentApprove(key: string): Promise<void> {
     return;
   }
   void agentStep(key);
+}
+
+/** 用户授权后执行待确认命令。危险命令额外二次确认。 */
+export async function agentApprove(key: string): Promise<void> {
+  const view = sessionState(key);
+  const ag = view.agent;
+  if (!ag || !ag.pending) return;
+  const msg = ag.pending;
+
+  // 命中危险规则时必须再确认一次，这次确认无法被跳过
+  if (msg.danger) {
+    const ok = await confirmDialog({
+      command: msg.command,
+      reason: "Agent 要执行的命令命中危险规则：" + msg.danger,
+    });
+    // 取消二次确认时保留这条待确认命令，用户还能改选「跳过这条」
+    if (!ok) return;
+  }
+
+  ag.pending = null;
+  await agentExecute(key, msg, false);
 }
 
 export function agentSkip(key: string): void {
@@ -874,6 +904,34 @@ export function skipCurrent(): void {
   agentSkip(currentKey());
 }
 
+/**
+ * Ask 模式回答里命令块上的「运行」：由用户手动点击，把建议命令写入当前会话终端。
+ *
+ * 点击本身就是授权，普通命令不再额外拦截；命中危险规则时仍要二次确认（全局约束）。
+ */
+export async function runSuggested(command: string): Promise<void> {
+  const cmd = (command || "").trim();
+  if (!cmd) return;
+  const sessionId = sessionIdOf();
+  if (!sessionId) {
+    toast("请先连接一个主机", "error");
+    return;
+  }
+  const danger = inspect(cmd);
+  if (danger) {
+    const ok = await confirmDialog({ command: cmd, reason: "该命令命中危险规则：" + danger });
+    if (!ok) return;
+  }
+  try {
+    await write(sessionId, cmd + "\n");
+  } catch (err) {
+    toast(errorText(err), "error");
+    return;
+  }
+  ipc.pushHistory(cmd, hostOf() || "", sessionId).catch(() => {});
+  toast("已发送到终端", "ok");
+}
+
 // ---------------------------------------------------------------------------
 // 渲染数据（组件在渲染阶段调用；版本号变化时重新计算）
 // ---------------------------------------------------------------------------
@@ -939,13 +997,13 @@ export function view(): AiView {
             icon: "⚡",
             title: "Agent 模式",
             desc: flags.ai_danger_warning
-              ? "我可以自动分析终端输出、诊断问题并建议命令。每条命令都需你确认后才会写入终端，危险命令会额外二次确认。"
-              : "我可以自动分析终端输出、诊断问题并建议命令。每条命令都需你确认后才会写入终端。",
+              ? "我会自动分析终端输出并逐步执行命令直到完成：只读命令直接执行，涉及删除、修改等关键操作时会先请你授权，危险命令还会额外二次确认。"
+              : "我会自动分析终端输出并逐步执行命令直到完成：只读命令直接执行，涉及删除、修改等关键操作时会先请你授权。",
           }
         : {
             icon: "✦",
             title: "Ask 模式",
-            desc: "我可以回答问题、解释报错、把自然语言转成命令。提问与回答都会留在上面的消息流里；回答不会写入终端，要自动执行请切到 Agent 模式。",
+            desc: "我可以回答问题、解释报错，并把自然语言转成命令给出建议。回答不会自动执行——命令会以代码块列出，你可点击「运行」手动发送到终端；想全自动请切到 Agent 模式。",
           };
   }
 

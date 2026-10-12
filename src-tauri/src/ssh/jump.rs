@@ -11,6 +11,8 @@ use crate::config::store::secrets;
 use crate::error::{AppError, AppResult};
 
 use super::auth;
+use super::interactive::InteractivePrompter;
+use super::known_hosts::{self, HostKeyPolicy};
 use super::session::open_transport;
 use super::types::{AuthSpec, ConnectParams, JumpSpec};
 
@@ -37,13 +39,18 @@ pub struct JumpTunnel {
 
 impl JumpTunnel {
     /// 连接跳板机并启动本地转发端口。
+    ///
+    /// `prompter` 用于跳板机需要键盘交互认证时弹窗；
+    /// `host_key_policy` 为主连接的主机密钥策略，跳板机沿用同一策略（`None` 表示跳过校验）。
     pub fn open(
         spec: &JumpSpec,
         target_host: &str,
         target_port: u16,
         keepalive_secs: u32,
+        prompter: Option<&InteractivePrompter>,
+        host_key_policy: Option<HostKeyPolicy>,
     ) -> AppResult<Self> {
-        let session = connect_jump_session(spec, keepalive_secs)?;
+        let session = connect_jump_session(spec, keepalive_secs, prompter, host_key_policy)?;
 
         let listener = TcpListener::bind(("127.0.0.1", 0))
             .map_err(|e| AppError::Ssh(format!("无法为跳板机隧道分配本地端口：{e}")))?;
@@ -113,11 +120,18 @@ impl Drop for JumpTunnel {
 // 实现细节
 // ---------------------------------------------------------------------------
 
-fn connect_jump_session(spec: &JumpSpec, keepalive_secs: u32) -> AppResult<Session> {
+fn connect_jump_session(
+    spec: &JumpSpec,
+    keepalive_secs: u32,
+    prompter: Option<&InteractivePrompter>,
+    host_key_policy: Option<HostKeyPolicy>,
+) -> AppResult<Session> {
     if spec.host.trim().is_empty() || spec.username.trim().is_empty() {
         return Err(AppError::Ssh("跳板机配置不完整（缺少主机或用户名）".into()));
     }
     let params = ConnectParams {
+        // 跳板机隧道一定是 SSH 会话
+        kind: Default::default(),
         // 跳板机会话不携带连接的 id，避免误用目标主机的密码条目
         connection_id: None,
         name: Some("跳板机".into()),
@@ -126,13 +140,25 @@ fn connect_jump_session(spec: &JumpSpec, keepalive_secs: u32) -> AppResult<Sessi
         username: spec.username.clone(),
         auth: resolve_auth(spec),
         jump: None,
+        // 跳板机隧道只做传输与认证，主机密钥校验在目标连接处统一进行
+        host_key_policy: Default::default(),
         cols: 80,
         rows: 24,
         session_id: None,
     };
 
     let sess = open_transport(&spec.host, spec.port)?;
-    let method = auth::authenticate(&sess, &params)?;
+    // 跳板机也要校验主机密钥：否则目标凭据（乃至跳板机密码）会先交给可疑主机。
+    // 有界面时（终端会话）走可确认的校验，未确认的跳板机由前端弹窗确认指纹；
+    // 无界面时（SFTP / 端口转发）给出可操作提示。
+    if let Some(policy) = host_key_policy {
+        if prompter.is_some() {
+            known_hosts::verify_session(&sess, &spec.host, spec.port, policy)?;
+        } else {
+            known_hosts::verify_session_strict(&sess, &spec.host, spec.port, policy)?;
+        }
+    }
+    let method = auth::authenticate(&sess, &params, prompter)?;
     log::info!("跳板机 {} 认证成功（{method}）", params.endpoint());
     if keepalive_secs > 0 {
         sess.set_keepalive(true, keepalive_secs);
@@ -145,15 +171,20 @@ fn connect_jump_session(spec: &JumpSpec, keepalive_secs: u32) -> AppResult<Sessi
 /// 密码缺失时读取专用的保险库条目 `conn:{id}:jump-password`，
 /// **绝不**回退到目标主机的密码条目。
 fn resolve_auth(spec: &JumpSpec) -> AuthSpec {
+    let jump_password = || {
+        spec.connection_id
+            .as_deref()
+            .and_then(|id| secrets::get(&secrets::jump_password_key(id)).ok().flatten())
+            .filter(|s| !s.is_empty())
+    };
     match &spec.auth {
-        AuthSpec::Password { password: None } => {
-            let pw = spec
-                .connection_id
-                .as_deref()
-                .and_then(|id| secrets::get(&secrets::jump_password_key(id)).ok().flatten())
-                .filter(|s| !s.is_empty());
-            AuthSpec::Password { password: pw }
-        }
+        AuthSpec::Password { password: None } => AuthSpec::Password {
+            password: jump_password(),
+        },
+        // 键盘交互同样取跳板机专用密码作为静态应答（无界面时的回退）
+        AuthSpec::KeyboardInteractive { password: None } => AuthSpec::KeyboardInteractive {
+            password: jump_password(),
+        },
         other => other.clone(),
     }
 }

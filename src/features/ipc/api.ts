@@ -90,6 +90,16 @@ export const ipc = {
   sshSessions: () => call("ssh_sessions"),
   sshRecentOutput: (id: string, maxBytes: number) => call("ssh_recent_output", { id, maxBytes }),
   sshTestConnection: (params: any) => call("ssh_test_connection", { params }),
+  // 主机密钥校验（known_hosts / TOFU）
+  sshKnownHostsList: () => call("ssh_known_hosts_list"),
+  sshKnownHostsForget: (host: string, port: number) => call("ssh_known_hosts_forget", { host, port }),
+  // 键盘交互认证（keyboard-interactive）提示应答。text 为 null 表示用户取消。
+  sshAuthRespond: (id: string, text: string | null) => call("ssh_auth_respond", { id, text }),
+  sshAuthPending: (id: string) => call("ssh_auth_pending", { id }),
+
+  // ---------- 本地终端（可开关，本机 PTY shell） ----------
+  localTerminalOpen: (cols: number, rows: number, sessionId: string | null) =>
+    call("local_terminal_open", { cols, rows, sessionId }),
 
   // ---------- 输入源自动切换（可开关，仅 macOS 生效） ----------
   imeUseAscii: () => call("ime_use_ascii"),

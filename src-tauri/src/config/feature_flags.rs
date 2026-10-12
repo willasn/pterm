@@ -19,6 +19,7 @@ pub mod module_id {
     pub const QUICK_PANEL: &str = "quick_panel";
     pub const AUTO_UPDATE: &str = "auto_update";
     pub const IME_SWITCH: &str = "ime_switch";
+    pub const LOCAL_TERMINAL: &str = "local_terminal";
 }
 
 /// 可插拔模块统一接口。
@@ -66,6 +67,9 @@ pub struct ConnectionFlags {
     pub port_forward: bool,
     /// 跳板机（ProxyJump）
     pub jump_host: bool,
+    /// 主机密钥校验（known_hosts / TOFU）：建连时比对服务端主机密钥指纹，
+    /// 未记录或已变更时需用户确认，抵御中间人攻击。关闭会降低安全性。
+    pub host_key_check: bool,
     /// 会话日志
     pub session_log: bool,
     /// 断线自动重连
@@ -80,6 +84,8 @@ pub struct ConnectionFlags {
     pub import_export: bool,
     /// Windows 远程桌面（RDP）连接：调用系统 RDP 客户端打开远程桌面
     pub rdp: bool,
+    /// 本地终端：在本机 PTY 上打开一个 shell 标签（不经过网络）
+    pub local_terminal: bool,
     /// 快捷连接（user@host:port 一行直达）
     pub quick_connect: bool,
     /// 同步输入：把一台终端上的输入广播到同步组内的标签（或全局所有会话）
@@ -103,6 +109,7 @@ impl Default for ConnectionFlags {
             sftp: true,
             port_forward: true,
             jump_host: true,
+            host_key_check: true,
             session_log: false,
             auto_reconnect: true,
             auto_reconnect_max_attempts: 5,
@@ -110,6 +117,7 @@ impl Default for ConnectionFlags {
             connection_group: true,
             import_export: true,
             rdp: true,
+            local_terminal: true,
             quick_connect: true,
             sync_input: true,
             ime_auto_switch: true,
@@ -313,6 +321,7 @@ impl FeatureFlags {
             module_id::SESSION_LOG => self.connection.session_log,
             module_id::IMPORT_EXPORT => self.connection.import_export,
             module_id::RDP => self.connection.rdp,
+            module_id::LOCAL_TERMINAL => self.connection.local_terminal,
             module_id::COMMAND_HISTORY => self.auxiliary.command_history,
             module_id::THEME => self.auxiliary.theme,
             module_id::SHORTCUTS => self.auxiliary.shortcuts,
@@ -377,11 +386,13 @@ impl FeatureFlags {
             "sftp" => self.connection.sftp,
             "port_forward" => self.connection.port_forward,
             "jump_host" => self.connection.jump_host,
+            "host_key_check" => self.connection.host_key_check,
             "session_log" => self.connection.session_log,
             "auto_reconnect" => self.connection.auto_reconnect,
             "connection_group" => self.connection.connection_group,
             "import_export" => self.connection.import_export,
             "rdp" => self.connection.rdp,
+            "local_terminal" => self.connection.local_terminal,
             "quick_connect" => self.connection.quick_connect,
             "sync_input" => self.connection.sync_input,
             "ime_auto_switch" => self.connection.ime_auto_switch,

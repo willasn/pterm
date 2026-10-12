@@ -1,6 +1,7 @@
 import { pt } from "../../lib/legacy";
 import { open as openAi } from "../ai/store";
 import { openPicker } from "../connections/store";
+import { open as openLocalTerminal } from "../local-terminal/api";
 import * as terminal from "../terminal/api";
 import { close } from "../ssh/api";
 import { start } from "../split/store";
@@ -36,6 +37,11 @@ const ACTIONS: Record<string, Action> = {
     label: "新建标签 / 连接",
     hint: "打开连接选择器",
     run: () => openPicker(),
+  },
+  "session.local": {
+    label: "新建本地终端",
+    hint: "在本机 PTY 上开一个终端标签",
+    run: () => openLocalTerminal(),
   },
   "tab.close": {
     label: "关闭当前会话",
@@ -104,6 +110,11 @@ const ACTIONS: Record<string, Action> = {
     label: "粘贴",
     hint: "把剪贴板内容写入当前终端（同样经过危险命令检测）",
     run: () => terminal.pasteClipboard(),
+  },
+  "terminal.find": {
+    label: "终端内查找",
+    hint: "在当前终端输出（含回滚）中查找，Enter 下一个 / Shift+Enter 上一个",
+    run: () => terminal.findInActive(),
   },
 };
 

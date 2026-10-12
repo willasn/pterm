@@ -22,6 +22,7 @@
   "common.sidebarResize": "Drag to Resize",
   "common.footToggle": "Features",
   "common.footToggleHint": "Show / hide feature entries",
+  "common.localTerminal": "New Local Terminal",
 
   "modal.connection": "New Connection",
   "modal.connectionEdit": "Edit Connection",
@@ -36,6 +37,7 @@
   "modal.search": "Global Search",
   "modal.quickPanel": "Quick Panel",
   "modal.split": "Split View",
+  "modal.localTerminal": "Local Terminal",
   "modal.danger": "Dangerous Command",
 
   "dialog.title": "Confirm Action",
@@ -93,6 +95,7 @@
   "flags.connection.import_export": "Import / Export",
   "flags.connection.rdp": "Remote Desktop (RDP)",
   "flags.connection.quick_connect": "Quick Connect",
+  "flags.connection.local_terminal": "Local Terminal",
   "flags.connection.sync_input": "Synchronized Input",
 
   "flags.sync.git_sync": "Git Sync",

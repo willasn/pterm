@@ -532,7 +532,13 @@ fn into_stored(candidate: ExportedConnection, now: &str) -> StoredConnection {
     }
 }
 
-const AUTH_KINDS: [&str; 4] = ["password", "private_key", "agent", "auto"];
+const AUTH_KINDS: [&str; 5] = [
+    "password",
+    "private_key",
+    "agent",
+    "keyboard_interactive",
+    "auto",
+];
 
 fn normalize_auth(raw: &str) -> String {
     let value = raw.trim();

@@ -39,6 +39,7 @@ export const AUTH_KINDS = [
   { value: "password", label: "密码" },
   { value: "private_key", label: "私钥文件" },
   { value: "agent", label: "SSH Agent" },
+  { value: "keyboard_interactive", label: "键盘交互（动态验证码 / 多因素）" },
 ];
 
 /** 连接协议。RDP 仅在 features.connection.rdp 打开时可选。 */
@@ -109,6 +110,86 @@ export function getState(): ConnectionsState {
 
 export function useConnections(): ConnectionsState {
   return useSyncExternalStore(subscribe, getState, getState);
+}
+
+// ---------------------------------------------------------------------------
+// 会话状态：侧栏连接点的状态色
+// ---------------------------------------------------------------------------
+
+/**
+ * 已打开会话的实时状态：sessionId -> { 连接 id, 状态 }。
+ *
+ * 由 terminal 模块在会话建立 / 状态变化 / 关闭时经依赖注入回写
+ * （见 features/terminal 的 wireDependencies），避免反向 import 成环。
+ * 只有带连接 id 的会话会被登记：快捷连接没有对应的连接项，不进列表。
+ */
+const sessionStates = new Map<string, { connId: string; state: string }>();
+let sessionVersion = 0;
+const sessionListeners = new Set<() => void>();
+
+function bumpSessions(): void {
+  sessionVersion += 1;
+  sessionListeners.forEach((listener) => listener());
+}
+
+function subscribeSessions(listener: () => void): () => void {
+  sessionListeners.add(listener);
+  return () => {
+    sessionListeners.delete(listener);
+  };
+}
+
+function sessionSnapshot(): number {
+  return sessionVersion;
+}
+
+/** 会话状态变化时登记；连接 id 为空（快捷连接）时忽略。 */
+export function noteSession(
+  connectionId: string | null | undefined,
+  sessionId: string,
+  state: string
+): void {
+  if (!connectionId) return;
+  const prev = sessionStates.get(sessionId);
+  if (prev && prev.connId === connectionId && prev.state === state) return;
+  sessionStates.set(sessionId, { connId: connectionId, state });
+  bumpSessions();
+}
+
+/** 会话关闭时注销。 */
+export function dropSession(sessionId: string): void {
+  if (sessionStates.delete(sessionId)) bumpSessions();
+}
+
+/** 状态优先级：同一连接开了多个会话时，取最「活跃」的一个作为代表。 */
+const STATE_RANK: Record<string, number> = {
+  ready: 4,
+  reconnecting: 3,
+  connecting: 2,
+  authenticated: 2,
+  disconnected: 1,
+  error: 1,
+  closed: 0,
+};
+
+/** 该连接当前所有会话的聚合状态；无会话时返回 null（点保持默认灰）。 */
+export function connectionState(connId: string): string | null {
+  let best: string | null = null;
+  let bestRank = -1;
+  sessionStates.forEach((item) => {
+    if (item.connId !== connId) return;
+    const rank = STATE_RANK[item.state] ?? 1;
+    if (rank > bestRank) {
+      bestRank = rank;
+      best = item.state;
+    }
+  });
+  return best;
+}
+
+/** 订阅会话状态版本：会话增删 / 状态变化时触发侧栏重渲染。 */
+export function useSessionVersion(): number {
+  return useSyncExternalStore(subscribeSessions, sessionSnapshot, sessionSnapshot);
 }
 
 /** 当前表单草稿（组件渲染阶段读取）。 */
@@ -236,6 +317,8 @@ function authSpec(kind: string, keyPath: string | null): any {
       return { kind: "private_key", key_path: keyPath || "" };
     case "agent":
       return { kind: "agent" };
+    case "keyboard_interactive":
+      return { kind: "keyboard_interactive" };
     default:
       return { kind: "auto" };
   }
@@ -565,9 +648,13 @@ export async function test(): Promise<void> {
   }
 
   const params = paramsFor(draft);
-  // 新建连接尚未存过密码时，允许用当前输入临时测试（不落盘）
-  if (draft.auth_kind === "password" && state.secrets.password) {
-    params.auth = { kind: "password", password: state.secrets.password };
+  // 新建连接尚未存过密码时，允许用当前输入临时测试（不落盘）；
+  // 键盘交互也用它作为静态应答，覆盖「纯键盘交互但只问密码」的服务器。
+  if (
+    (draft.auth_kind === "password" || draft.auth_kind === "keyboard_interactive") &&
+    state.secrets.password
+  ) {
+    params.auth = { kind: draft.auth_kind, password: state.secrets.password };
   }
   setState({ testing: true });
   try {

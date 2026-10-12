@@ -84,7 +84,7 @@ export function GitSyncModal() {
               >
                 <div className="git-actions">
                   <Btn kind="primary" disabled={state.busy} onClick={() => void resolveConflicts()}>
-                    处理冲突
+                    {state.busy ? "处理中…" : "处理冲突"}
                   </Btn>
                 </div>
               </Section>
@@ -96,7 +96,7 @@ export function GitSyncModal() {
                 >
                   <div className="git-actions">
                     <Btn kind="primary" disabled={state.busy} onClick={() => void startSync()}>
-                      同步
+                      {state.busy ? "同步中…" : "同步"}
                     </Btn>
                   </div>
                   <Details state={state} />
@@ -110,7 +110,9 @@ export function GitSyncModal() {
             )}
           </div>
           <footer className="modal-foot">
-            <span className="muted" id="git-hint" />
+            <span className="muted" id="git-hint">
+              {state.busy ? "同步中…" : ""}
+            </span>
             <span className="spacer" />
             <Btn onClick={closePanel}>{t("common.close", "关闭")}</Btn>
           </footer>

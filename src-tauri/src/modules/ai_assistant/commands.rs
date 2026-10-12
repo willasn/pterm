@@ -49,16 +49,18 @@ pub struct AiAskResult {
 
 /// 组装 Ask 模式的 user 消息。
 ///
-/// Ask 模式不区分场景：问题原样交给模型，只约定「不要假装已经执行」——可以给出
-/// 命令与解释，但真正写终端是 Agent 模式的事，且每条都要用户确认。
+/// Ask 模式不区分场景：问题原样交给模型，只约定「给出建议与指导」。命令以 ```sh
+/// 代码块单独列出，面板会为每个命令块生成「运行」按钮，由用户手动点击后才写入终端——
+/// 模型自己不会执行任何命令。
 fn build_user_message(input: &AiAskInput) -> AppResult<String> {
     let q = input.input.trim();
     if q.is_empty() {
         return Err(AppError::Ai("请输入你想问的内容".into()));
     }
     Ok(format!(
-        "你是终端助手。请回答下面的问题；如需给出 shell 命令，请附上用途说明，\
-并明确你并没有执行它。\n\n{q}"
+        "你是终端助手。请回答下面的问题，给出可操作的建议与指导。需要给出 shell 命令时，\
+请把每条命令放进 ```sh 代码块单独列出，并简要说明用途与风险——用户会在面板里点击\
+「运行」手动执行，你并不会真的执行它。\n\n{q}"
     ))
 }
 
@@ -341,14 +343,18 @@ pub struct AiAgentStepInput {
     pub model: Option<String>,
 }
 
-/// 一步的结果：要么给出一条待确认执行的命令，要么宣告结束。
+/// 一步的结果：要么给出一条命令（可能需授权），要么宣告结束。
 #[derive(Debug, Clone, Serialize)]
 pub struct AiAgentStepResult {
     /// run | done
     pub action: String,
     pub command: Option<String>,
     pub summary: Option<String>,
-    /// 命中危险规则时的原因；前端必须额外二次确认
+    /// 是否需要用户授权后才能执行（删除 / 修改 / 关键操作等）；false 时前端自动执行
+    pub requires_auth: bool,
+    /// 需要授权的原因；可自动执行时为空
+    pub auth_reason: Option<String>,
+    /// 命中破坏性危险规则的原因；前端据此额外高亮并二次确认
     pub danger: Option<String>,
     /// 模型原始回复，便于排查解析问题
     pub raw: String,
@@ -356,7 +362,8 @@ pub struct AiAgentStepResult {
 
 /// Agent 模式的一步：读终端输出 → 让模型决定下一步 → 解析成结构化动作。
 ///
-/// 本命令**不执行任何命令**，只负责决策。真正写入终端由前端在用户确认后发起。
+/// 本命令**不执行任何命令**，只负责决策：连同「这一步是否需要用户授权」一起返回。
+/// 可自动执行的只读命令由前端直接写入终端，关键操作则由前端停下等用户确认。
 #[tauri::command]
 pub async fn ai_agent_step(
     app: AppHandle,
@@ -396,17 +403,18 @@ pub async fn ai_agent_step(
         .unwrap_or_default();
 
     let parsed = agent::parse_action(&text)?;
-    let danger = parsed
-        .command
-        .as_deref()
-        .and_then(danger::inspect)
-        .map(str::to_string);
+    let verdict = match parsed.command.as_deref() {
+        Some(cmd) => danger::classify(cmd),
+        None => danger::Verdict::safe(),
+    };
 
     Ok(AiAgentStepResult {
         action: parsed.action,
         command: parsed.command,
         summary: parsed.summary,
-        danger,
+        requires_auth: verdict.requires_auth,
+        auth_reason: verdict.reason.map(str::to_string),
+        danger: if verdict.danger { verdict.reason.map(str::to_string) } else { None },
         raw: text,
     })
 }

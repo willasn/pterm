@@ -13,6 +13,7 @@ import { setEnabledFromConfig as setHistoryConfig } from "../history/store";
 import { setConfig as setLocaleConfig } from "../i18n/store";
 import { setEnabledFromConfig as setImportExportConfig } from "../import-export/store";
 import { ipc } from "../ipc/api";
+import { open as openLocalTerminal, setEnabledFromConfig as setLocalTerminalConfig } from "../local-terminal/api";
 import { run as runOnboarding } from "../onboarding/store";
 import { setEnabledFromConfig as setPortForwardConfig } from "../port-forward/store";
 import { setEnabledFromConfig as setQuickPanelConfig } from "../quick-panel/store";
@@ -130,6 +131,7 @@ const CONFIG_CONSUMERS: ConfigConsumer[] = [
   ["portForward", setPortForwardConfig],
   ["importExport", setImportExportConfig],
   ["rdp", setRdpConfig],
+  ["localTerminal", setLocalTerminalConfig],
   ["snippets", setSnippetsConfig],
   ["history", setHistoryConfig],
   ["search", (config) => pt().search?.setConfig?.(config)],
@@ -464,6 +466,7 @@ function bind(): () => void {
   suppressNative();
 
   on("btn-new-conn", "click", () => connectionsOpenForm(null));
+  on("btn-local-term", "click", () => openLocalTerminal());
   on("tab-add-btn", "click", () => connectionsOpenPicker());
   on("btn-settings", "click", () => pt().settings?.open?.());
   on("quick-input", "keydown", (event: Event) => {

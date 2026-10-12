@@ -1,6 +1,7 @@
+import { t } from "../i18n/store";
 import { ipc } from "../ipc/api";
 import * as terminalApi from "../terminal/api";
-import { b64ToBytes, errorText, toast } from "../util/util";
+import { ask, b64ToBytes, errorText, promptPassword, toast } from "../util/util";
 
 /**
  * SSH 会话编排（由原 src/legacy/ssh.ts 迁移而来）。
@@ -13,12 +14,55 @@ import { b64ToBytes, errorText, toast } from "../util/util";
 /** id -> 取消订阅函数数组 */
 const subscriptions = new Map<string, (() => void)[]>();
 
-function eventsFor(id: string): { data: string; status: string; closed: string } {
+function eventsFor(id: string): { data: string; status: string; closed: string; prompt: string } {
   return {
     data: `ssh:data:${id}`,
     status: `ssh:status:${id}`,
     closed: `ssh:closed:${id}`,
+    prompt: `ssh:auth-prompt:${id}`,
   };
+}
+
+/**
+ * 正在等待用户应答键盘交互认证的会话。事件推送与订阅后的对齐可能指向同一条提示，
+ * 用它去重，避免同一个弹窗被弹两次。
+ */
+const promptingIds = new Set<string>();
+
+/**
+ * 输入弹窗的全局串行队列：同一时刻只弹一个认证输入框。
+ * 多个会话同时要求输入时排队依次弹，避免共用一个弹窗时互相顶掉。
+ */
+let promptChain: Promise<unknown> = Promise.resolve();
+function enqueuePrompt<T>(task: () => Promise<T>): Promise<T> {
+  const run = promptChain.then(task, task);
+  promptChain = run.then(
+    () => undefined,
+    () => undefined
+  );
+  return run;
+}
+
+/**
+ * 弹窗询问一条键盘交互认证提示（密码 / 动态验证码等），把答案回填给后端。
+ * 用户取消时回填 null，后端以「已取消键盘交互认证」结束，而不是报成凭据错误。
+ */
+async function showAuthPrompt(id: string, prompt: any): Promise<void> {
+  if (promptingIds.has(id) || !terminalApi.get(id)) return;
+  promptingIds.add(id);
+  try {
+    const text = await enqueuePrompt(() =>
+      promptPassword(prompt.text || "请输入认证信息", {
+        title: "键盘交互认证",
+        label: prompt.echo ? "输入" : "密码 / 验证码",
+        okText: "提交",
+        cancelText: "取消",
+      })
+    );
+    await ipc.sshAuthRespond(id, text == null ? null : text).catch(() => {});
+  } finally {
+    promptingIds.delete(id);
+  }
 }
 
 async function subscribe(id: string): Promise<void> {
@@ -52,8 +96,20 @@ async function subscribe(id: string): Promise<void> {
       }
       unsubscribe(id);
     }),
+    // 键盘交互认证提示：会话线程阻塞等待，这里弹窗收集答案再回填
+    ipc.listen(names.prompt, (prompt: any) => {
+      if (prompt) showAuthPrompt(id, prompt);
+    }),
   ]);
   subscriptions.set(id, unlisten);
+
+  // 对齐抢跑：会话线程可能在订阅前就发出了提示，事件会丢，这里主动取一次
+  ipc
+    .sshAuthPending(id)
+    .then((prompt: any) => {
+      if (prompt) showAuthPrompt(id, prompt);
+    })
+    .catch(() => {});
 }
 
 function unsubscribe(id: string): void {
@@ -85,6 +141,8 @@ export interface SshOutcome {
   ok: boolean;
   authFailed: boolean;
   message: string;
+  /** 主机密钥未通过时后端附带的指纹上下文（见 known_hosts）。 */
+  hostKey?: any;
 }
 
 /**
@@ -108,9 +166,15 @@ export function awaitOutcome(id: string): Promise<SshOutcome> {
         ok: false,
         authFailed: !!state.auth_failed,
         message: state.message || "",
+        hostKey: state.host_key || undefined,
       };
     }
     if (kind === "closed" || kind === "disconnected") {
+      return { ok: false, authFailed: false, message: state.reason || "" };
+    }
+    // 进入重连循环也算「本轮有了结论」：不是认证失败，也不该继续阻塞等待
+    // （否则调用方会在自动重连的整段时间里一直挂着）。
+    if (kind === "reconnecting") {
       return { ok: false, authFailed: false, message: state.reason || "" };
     }
     return null;
@@ -167,17 +231,88 @@ export async function connect(rawParams: any, options?: any): Promise<any> {
   const ctrl = terminalApi.open(info, Object.assign({ params }, options));
   await subscribe(info.id);
   await resyncState(ctrl);
+
+  // 主机密钥校验：后端拒绝（首次 / 变更）时弹窗确认，确认后在原标签内用放行策略重连。
+  // 开关关闭时后端不会返回 hostKey，这里自然跳过。
+  const outcome = await awaitOutcome(info.id);
+  if (!outcome.ok && outcome.hostKey) {
+    const accepted = await confirmHostKey(outcome.hostKey);
+    if (accepted) {
+      const kind = outcome.hostKey.status && outcome.hostKey.status.status;
+      ctrl.params.host_key_policy = kind === "mismatch" ? "accept_any" : "accept_new";
+      return reconnect(info.id);
+    }
+    await close(info.id);
+    return null;
+  }
   return ctrl;
+}
+
+/** 打开一个本地终端（本机 PTY shell），复用与 SSH 相同的终端装配与订阅流程。 */
+export async function openLocal(): Promise<any> {
+  try {
+    if (!terminalApi.isSupported()) {
+      throw new Error("终端组件未加载（vendor/xterm.js 缺失）");
+    }
+    if (!terminalApi.hasTabs()) {
+      await closeAll();
+    }
+    const current = terminalApi.active();
+    const cols = current ? current.term.cols : 80;
+    const rows = current ? current.term.rows : 24;
+    const info = await ipc.localTerminalOpen(cols, rows, null);
+    const name = t("modal.localTerminal", "本地终端");
+    if (info) info.name = name;
+    const ctrl = terminalApi.open(info, { params: { kind: "local", name, cols, rows } });
+    await subscribe(info.id);
+    await resyncState(ctrl);
+    return ctrl;
+  } catch (err) {
+    toast(errorText(err), "error");
+    return null;
+  }
+}
+
+/**
+ * 主机密钥确认弹窗：首次连接只提示指纹，密钥变更时用危险样式强调风险。
+ * 返回 true 表示用户确认信任。
+ */
+async function confirmHostKey(info: any): Promise<boolean> {
+  const target = `${info.host}:${info.port}`;
+  const status = info.status || {};
+  const mismatch = status.status === "mismatch";
+  const message = mismatch
+    ? `警告：${target} 的主机密钥已变更。已记录 ${status.known_fingerprint}（${status.known_key_type}），本次收到 ${info.fingerprint}（${info.key_type}）。这可能是服务器重装，也可能是中间人攻击，仅在确认无误时继续。`
+    : `首次连接 ${target}，主机密钥指纹（${info.key_type}）为 ${info.fingerprint}。无法自动验证该主机身份，确认信任并继续？`;
+  return ask(message, {
+    title: mismatch ? "主机密钥已变更" : "确认主机密钥",
+    okText: mismatch ? "信任并继续" : "信任并连接",
+    kind: mismatch ? "danger" : "warn",
+  });
 }
 
 /** 断开后按原参数重建同名会话（标签 id 不变）。 */
 export async function reconnect(id: string): Promise<any> {
   const ctrl = terminalApi.get(id);
-  if (!ctrl || !ctrl.params) {
-    toast("缺少原始连接参数，无法重连", "error");
+  if (!ctrl) {
+    toast("会话不存在，无法重连", "error");
     return null;
   }
   try {
+    // 本地终端没有连接参数，按同一 id 重开一个本机 shell
+    if (ctrl.info && ctrl.info.kind === "local") {
+      const info = await ipc.localTerminalOpen(ctrl.term.cols, ctrl.term.rows, id);
+      info.name = t("modal.localTerminal", "本地终端");
+      ctrl.info = info;
+      ctrl.setState(info.state || { state: "connecting" });
+      await subscribe(id);
+      await resyncState(ctrl);
+      return ctrl;
+    }
+    if (!ctrl.params) {
+      toast("缺少原始连接参数，无法重连", "error");
+      return null;
+    }
     const params = Object.assign({}, ctrl.params, { session_id: id });
     const info = await ipc.sshConnect(params);
     ctrl.info = info;

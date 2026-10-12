@@ -3,6 +3,7 @@ pub mod auto_update;
 pub mod command_history;
 pub mod git_sync;
 pub mod global_search;
+pub mod local_terminal;
 pub mod quick_panel;
 pub mod shortcuts;
 pub mod snippets;

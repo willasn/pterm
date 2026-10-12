@@ -1,5 +1,21 @@
 use serde::{Deserialize, Serialize};
 
+use super::known_hosts::{HostKeyInfo, HostKeyPolicy};
+
+// ---------------------------------------------------------------------------
+// 会话类型
+// ---------------------------------------------------------------------------
+
+/// 会话类型。SSH 为默认；Local 是本机 PTY 上的本地 shell（不经过网络）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionKind {
+    #[default]
+    Ssh,
+    Local,
+}
+
+
 // ---------------------------------------------------------------------------
 // 认证
 // ---------------------------------------------------------------------------
@@ -24,6 +40,13 @@ pub enum AuthSpec {
         passphrase: Option<String>,
     },
     Agent,
+    /// 键盘交互认证（keyboard-interactive）：由服务端下发提示（密码 / 动态验证码等），
+    /// 逐条应答。有界面时弹窗询问；无界面（SFTP / 端口转发 / 跳板机等后台连接）时
+    /// 回退用 `password`（缺省取保险库中的密码）统一应答所有提示。
+    KeyboardInteractive {
+        #[serde(default)]
+        password: Option<String>,
+    },
 }
 
 /// 跳板机（ProxyJump）配置。
@@ -57,6 +80,9 @@ impl Default for JumpSpec {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, rename_all = "snake_case")]
 pub struct ConnectParams {
+    /// 会话类型：SSH（默认）或本地终端。
+    #[serde(default)]
+    pub kind: SessionKind,
     /// 对应 SQLite 中的连接配置 id，用于读取保险库与记录历史。临时连接可为空。
     pub connection_id: Option<String>,
     pub name: Option<String>,
@@ -65,6 +91,9 @@ pub struct ConnectParams {
     pub username: String,
     pub auth: AuthSpec,
     pub jump: Option<JumpSpec>,
+    /// 主机密钥信任策略。默认 `strict`：未记录或不一致一律拒绝。
+    /// 前端在用户确认弹窗后置为 `accept_new` / `accept_any` 再重连。
+    pub host_key_policy: HostKeyPolicy,
     /// 初始终端列数
     pub cols: u32,
     /// 初始终端行数
@@ -76,6 +105,7 @@ pub struct ConnectParams {
 impl Default for ConnectParams {
     fn default() -> Self {
         Self {
+            kind: SessionKind::Ssh,
             connection_id: None,
             name: None,
             host: String::new(),
@@ -83,6 +113,7 @@ impl Default for ConnectParams {
             username: String::new(),
             auth: AuthSpec::Auto,
             jump: None,
+            host_key_policy: HostKeyPolicy::Strict,
             cols: 80,
             rows: 24,
             session_id: None,
@@ -121,6 +152,9 @@ pub enum SessionState {
         /// 是否为「认证被拒」（区别于网络 / 参数错误）。前端据此在快捷连接
         /// 失败后弹框补录密码，而不是把超时、握手失败也当成密码问题。
         auth_failed: bool,
+        /// 主机密钥校验未通过时附带的上下文（指纹 / 是否变更），前端据此弹信任确认框。
+        #[serde(skip_serializing_if = "Option::is_none")]
+        host_key: Option<HostKeyInfo>,
     },
 }
 
@@ -135,6 +169,7 @@ impl SessionState {
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionInfo {
     pub id: String,
+    pub kind: SessionKind,
     pub name: String,
     pub host: String,
     pub port: u16,

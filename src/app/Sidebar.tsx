@@ -18,8 +18,62 @@ export function Sidebar() {
   return (
     <aside className="sidebar" id="sidebar">
       <header className="sidebar-head">
+        {/* 快捷连接：默认收起为图标，鼠标悬停 / 聚焦时展开输入框（外壳按 id 协作） */}
+        <div className="quick-connect" id="quick-connect" hidden>
+          <span
+            className="quick-connect-icon"
+            title="快捷连接：user@host:port"
+            aria-hidden="true"
+            onClick={() => document.getElementById("quick-input")?.focus()}
+          >
+            <svg
+              viewBox="0 0 24 24"
+              width="16"
+              height="16"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
+            </svg>
+          </span>
+          <div className="quick-connect-field">
+            <input
+              id="quick-input"
+              type="text"
+              placeholder="user@host:port  ⏎"
+              spellCheck={false}
+            />
+          </div>
+        </div>
         <SearchBadge />
         <div className="sidebar-head-actions">
+          {/* 本地终端：按开关显隐，由 features/local-terminal 的 setEnabledFromConfig 控制 */}
+          <button
+            id="btn-local-term"
+            className="icon-btn"
+            title="新建本地终端"
+            data-i18n-title="common.localTerminal"
+            hidden
+          >
+            <svg
+              viewBox="0 0 24 24"
+              width="16"
+              height="16"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <rect x="2" y="4" width="20" height="16" rx="2" />
+              <polyline points="6 9 9 12 6 15" />
+              <line x1="12" y1="15" x2="17" y2="15" />
+            </svg>
+          </button>
           <button id="btn-new-conn" className="icon-btn" title="新建连接" data-i18n-title="common.new">
             ＋
           </button>
@@ -36,14 +90,6 @@ export function Sidebar() {
           </button>
         </div>
       </header>
-      <div className="quick-connect" id="quick-connect" hidden>
-        <input
-          id="quick-input"
-          type="text"
-          placeholder="user@host:port  回车直达"
-          spellCheck={false}
-        />
-      </div>
       <nav id="conn-list" className="conn-list">
         <ConnectionList />
       </nav>

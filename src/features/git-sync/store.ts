@@ -9,10 +9,10 @@ import type { ConflictChoice, GitStatus, SyncOutcome } from "./types";
 /**
  * Git 同步面板的状态与行为（由原 src/legacy/git_sync.ts 迁移而来）。
  *
- * 面向使用者只暴露一个「同步」按钮：点击后选择同步范围，出现冲突时再按数据域逐个选择
- * 处理方式。Git 内部概念（分支 / ahead / behind / diff / 初始化）不上界面；仓库操作全部
- * 经 Tauri command 交给 Rust：优先 git2（进程内 libgit2），仅在 libgit2 明确不支持时
- * 回退系统 git CLI。
+ * 面向使用者只暴露一个「同步」按钮：同步范围跟随「设置 → Git 同步」中的配置，点击后直接
+ * 执行，出现冲突时再按数据域逐个选择处理方式。Git 内部概念（分支 / ahead / behind / diff /
+ * 初始化）不上界面；仓库操作全部经 Tauri command 交给 Rust：优先 git2（进程内 libgit2），
+ * 仅在 libgit2 明确不支持时回退系统 git CLI。
  *
  * 只在 features.sync.git_sync 打开时可用：关闭时侧栏入口隐藏、面板不加载，
  * 后端 command 也会以 ModuleDisabled 拒绝。
@@ -76,6 +76,7 @@ function formatSyncTime(raw?: string | null): string {
 /** 侧栏徽标文案（只讲业务状态，不暴露 Git 细节）。 */
 export function badgeText(): string {
   const { status, pendingConflicts } = state;
+  if (state.busy) return "同步中…";
   if (!status) return "同步 …";
   if (pendingConflicts) return "需处理冲突";
   if (!(status.remotes || []).length) return "未配置远端";
@@ -125,19 +126,11 @@ async function run(fn: () => Promise<SyncOutcome>): Promise<void> {
   }
 }
 
-/** 单按钮入口：先选同步范围，再执行。 */
+/** 单按钮入口：同步范围跟随「设置 → Git 同步」中的配置，直接执行。 */
 export async function startSync(): Promise<void> {
   if (state.busy) return;
-  const includeSecrets = await choose({
-    title: "同步",
-    message: "选择本次同步的范围。连接密码与 API Key 属于敏感信息，可单独排除。",
-    options: [
-      { value: true, label: "同步全部", desc: "包含连接密码与 API Key（密文）", kind: "primary" },
-      { value: false, label: "同步全部（不包含连接密码、API Key）", desc: "仅同步设置、连接与命令片段" },
-    ],
-  });
-  if (includeSecrets === null) return;
-  await run(() => ipc.gitSyncNow(includeSecrets));
+  // 不传 includeSecrets，后端按设置中的同步范围（git_sync_secrets）决定是否带上密文
+  await run(() => ipc.gitSyncNow());
 }
 
 /** 冲突决策：按数据域逐个让用户选择，随后一次提交给后端解决并推送。 */

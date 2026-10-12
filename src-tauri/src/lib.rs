@@ -22,6 +22,7 @@ use modules::auto_update::AutoUpdateModule;
 use modules::command_history::CommandHistoryModule;
 use modules::git_sync::{GitSync, GitSyncModule};
 use modules::global_search::GlobalSearchModule;
+use modules::local_terminal::LocalTerminalModule;
 use modules::quick_panel::QuickPanelModule;
 use modules::shortcuts::ShortcutsModule;
 use modules::snippets::SnippetsModule;
@@ -84,6 +85,8 @@ pub fn run() {
             registry.register(Arc::new(ImportExportModule::new()));
             // 远程桌面（RDP）：不实现协议，连接交给系统 / 外部客户端
             registry.register(Arc::new(RdpModule::new()));
+            // 本地终端：本机 PTY shell，复用 SSH 会话表与事件通道
+            registry.register(Arc::new(LocalTerminalModule::new()));
             // 命令片段同样无运行期状态，数据全部落在 SQLite 的 snippets 表
             registry.register(Arc::new(SnippetsModule::new()));
             // 命令历史同样无运行期状态，数据全部落在 SQLite 的 command_history 表
@@ -170,6 +173,14 @@ pub fn run() {
             ssh::commands::ssh_sessions,
             ssh::commands::ssh_recent_output,
             ssh::commands::ssh_test_connection,
+            // 主机密钥校验（known_hosts / TOFU）
+            ssh::commands::ssh_known_hosts_list,
+            ssh::commands::ssh_known_hosts_forget,
+            // 键盘交互认证（keyboard-interactive）提示应答
+            ssh::commands::ssh_auth_respond,
+            ssh::commands::ssh_auth_pending,
+            // 本地终端（可开关）
+            modules::local_terminal::commands::local_terminal_open,
             // Git 同步（可开关）
             modules::git_sync::commands::git_sync_status,
             modules::git_sync::commands::git_sync_init,

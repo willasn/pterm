@@ -4,7 +4,9 @@ use crate::error::{AppError, AppResult};
 use crate::state::AppState;
 
 use super::auth;
+use super::interactive::AuthPrompt;
 use super::jump::JumpTunnel;
+use super::known_hosts::KnownHostEntry;
 use super::session::open_transport;
 use super::types::{ConnectParams, SessionInfo};
 
@@ -67,6 +69,39 @@ pub async fn ssh_test_connection(params: ConnectParams) -> AppResult<String> {
         .map_err(|e| AppError::Ssh(format!("测试连接任务异常结束：{e}")))?
 }
 
+/// 已知主机（主机密钥）列表。供设置界面展示与删除。
+#[tauri::command]
+pub fn ssh_known_hosts_list(state: State<'_, AppState>) -> AppResult<Vec<KnownHostEntry>> {
+    Ok(state.known_hosts.list())
+}
+
+/// 删除一台主机的已知密钥记录，下次连接会重新走首次信任。
+#[tauri::command]
+pub fn ssh_known_hosts_forget(state: State<'_, AppState>, host: String, port: u16) -> AppResult<()> {
+    state.known_hosts.forget(&host, port)
+}
+
+/// 回填一次键盘交互认证的提示应答（对应 `ssh:auth-prompt:{id}` 事件）。
+/// `text` 为 `None` 表示用户取消，认证会随即以「已取消」结束。
+#[tauri::command]
+pub fn ssh_auth_respond(
+    state: State<'_, AppState>,
+    id: String,
+    text: Option<String>,
+) -> AppResult<()> {
+    if state.auth_hub.respond(&id, text) {
+        Ok(())
+    } else {
+        Err(AppError::Other("没有等待中的认证提示".into()))
+    }
+}
+
+/// 读取某会话当前待应答的键盘交互提示。前端订阅后用它对齐抢跑期间发出的提示。
+#[tauri::command]
+pub fn ssh_auth_pending(state: State<'_, AppState>, id: String) -> AppResult<Option<AuthPrompt>> {
+    Ok(state.auth_hub.pending_of(&id))
+}
+
 fn test_connection(params: &ConnectParams) -> AppResult<String> {
     if params.host.trim().is_empty() {
         return Err(AppError::Config("未填写主机地址".into()));
@@ -77,7 +112,15 @@ fn test_connection(params: &ConnectParams) -> AppResult<String> {
 
     let tunnel = match &params.jump {
         Some(spec) if !spec.host.trim().is_empty() => {
-            Some(JumpTunnel::open(spec, &params.host, params.port, 0)?)
+            // 测试不校验主机密钥（与目标连接的测试一致），也不写 known_hosts
+            Some(JumpTunnel::open(
+                spec,
+                &params.host,
+                params.port,
+                0,
+                None,
+                None,
+            )?)
         }
         _ => None,
     };
@@ -86,9 +129,11 @@ fn test_connection(params: &ConnectParams) -> AppResult<String> {
         None => (params.host.clone(), params.port),
     };
 
-    // 传输与认证都带超时，避免界面长时间无响应
+    // 传输与认证都带超时，避免界面长时间无响应。
+    // 这里不校验主机密钥：测试只探连通性与凭据，不建立持久会话，也不写 known_hosts；
+    // 真正建立会话时（ssh_connect）才做校验。
     let sess = open_transport(&host, port)?;
-    let method = auth::authenticate(&sess, params)?;
+    let method = auth::authenticate(&sess, params, None)?;
     drop(tunnel);
     Ok(method)
 }

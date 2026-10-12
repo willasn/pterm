@@ -14,8 +14,11 @@ use crate::config::ConfigManager;
 use crate::error::{AppError, AppResult};
 
 use super::channel;
+use super::interactive::{AuthPromptHub, InteractivePrompter};
 use super::jump::JumpTunnel;
-use super::types::{ConnectParams, SessionCommand, SessionInfo, SessionState};
+use super::known_hosts;
+use super::local;
+use super::types::{ConnectParams, SessionCommand, SessionInfo, SessionKind, SessionState};
 use super::auth;
 
 /// TCP 连接（含 DNS 解析）超时
@@ -142,6 +145,8 @@ pub struct SessionDeps {
     pub config: Arc<ConfigManager>,
     /// 可选的终端输出记录器（会话日志模块）。关闭时为 `None`。
     pub logger: Option<Arc<dyn SessionLogger>>,
+    /// 键盘交互认证的应答中枢：会话线程发问、前端回填。
+    pub auth_hub: Arc<AuthPromptHub>,
 }
 
 // ---------------------------------------------------------------------------
@@ -168,11 +173,14 @@ impl SessionManager {
 
     /// 创建会话并立即返回；连接在后台线程中进行，进度通过状态事件推送。
     pub fn create(&self, deps: &SessionDeps, params: ConnectParams) -> AppResult<SessionInfo> {
-        if params.host.trim().is_empty() {
-            return Err(AppError::Config("未填写主机地址".into()));
-        }
-        if params.username.trim().is_empty() {
-            return Err(AppError::Config("未填写用户名".into()));
+        // 本地终端没有主机 / 用户名，只有 SSH 需要这两个字段
+        if params.kind == SessionKind::Ssh {
+            if params.host.trim().is_empty() {
+                return Err(AppError::Config("未填写主机地址".into()));
+            }
+            if params.username.trim().is_empty() {
+                return Err(AppError::Config("未填写用户名".into()));
+            }
         }
 
         let id = params
@@ -195,10 +203,17 @@ impl SessionManager {
             .name
             .clone()
             .filter(|s| !s.trim().is_empty())
-            .unwrap_or_else(|| params.endpoint());
+            .unwrap_or_else(|| {
+                if params.kind == SessionKind::Local {
+                    "本地终端".to_string()
+                } else {
+                    params.endpoint()
+                }
+            });
 
         let info = Arc::new(Mutex::new(SessionInfo {
             id: id.clone(),
+            kind: params.kind,
             name,
             host: params.host.clone(),
             port: params.port,
@@ -350,6 +365,12 @@ struct RunContext {
 
 impl RunContext {
     fn run(self, rx: Receiver<SessionCommand>) {
+        // 本地终端不经过网络，也不自动重连：PTY 退出即会话结束
+        if self.params.kind == SessionKind::Local {
+            self.run_local(rx);
+            return;
+        }
+
         let flags = self.deps.config.flags().connection;
         let max_attempts = flags.auto_reconnect_max_attempts.max(1);
         let base_delay = Duration::from_millis(flags.auto_reconnect_base_delay_ms.max(100));
@@ -397,9 +418,15 @@ impl RunContext {
                         let msg = e.to_string();
                         // 认证被拒时打个标记：前端可据此弹框让用户补录密码
                         let auth_failed = matches!(e, AppError::Auth(_));
+                        // 主机密钥未通过时把指纹上下文带给前端，由它弹信任确认框
+                        let host_key = match &e {
+                            AppError::HostKey(info) => Some(info.clone()),
+                            _ => None,
+                        };
                         self.set_state(SessionState::Error {
                             message: msg.clone(),
                             auth_failed,
+                            host_key,
                         });
                         channel::emit_closed(&self.deps.app, &self.id, &msg, false);
                         self.finish();
@@ -452,14 +479,60 @@ impl RunContext {
         self.finish();
     }
 
+    /// 运行一个本地终端会话：起一个本机 PTY shell，读写走与 SSH 相同的事件通道。
+    fn run_local(self, rx: Receiver<SessionCommand>) {
+        self.set_state(SessionState::Ready);
+        let result = local::run_local(
+            self.deps.app.clone(),
+            self.id.clone(),
+            self.params.cols,
+            self.params.rows,
+            &rx,
+            &self.cancel,
+            self.recent.clone(),
+            self.sink.clone(),
+        );
+        match result {
+            Ok(end) => {
+                self.set_state(SessionState::Closed);
+                channel::emit_closed(&self.deps.app, &self.id, &end.reason, true);
+            }
+            Err(e) => {
+                let msg = e.to_string();
+                self.set_state(SessionState::Error {
+                    message: msg.clone(),
+                    auth_failed: false,
+                    host_key: None,
+                });
+                channel::emit_closed(&self.deps.app, &self.id, &msg, false);
+            }
+        }
+        self.finish();
+    }
+
     /// 建立一次连接并运行 shell。
     fn connect_and_shell(&self, rx: &Receiver<SessionCommand>) -> Result<super::types::ShellEnd, AppError> {
         let keepalive = self.deps.config.snapshot().terminal.keepalive_secs;
 
+        // 键盘交互认证的应答器：跳板机与我方目标连接共用同一个会话 id，
+        // 因此两者的提示都能弹到同一个界面上。
+        let prompter = InteractivePrompter::new(
+            self.deps.app.clone(),
+            self.id.clone(),
+            self.deps.auth_hub.clone(),
+        );
+
         // 跳板机：在本机开一条隧道，目标连接指向隧道端口
         let _tunnel = match &self.params.jump {
             Some(spec) if !spec.host.trim().is_empty() => {
-                let tunnel = JumpTunnel::open(spec, &self.params.host, self.params.port, keepalive)?;
+                let tunnel = JumpTunnel::open(
+                    spec,
+                    &self.params.host,
+                    self.params.port,
+                    keepalive,
+                    Some(&prompter),
+                    Some(self.params.host_key_policy),
+                )?;
                 log::info!(
                     "经跳板机 {} 的隧道已就绪：127.0.0.1:{}",
                     spec.host,
@@ -476,7 +549,24 @@ impl RunContext {
         };
 
         let sess = open_transport(&host, port)?;
-        let method = auth::authenticate(&sess, &self.params)?;
+
+        // 主机密钥校验（known_hosts / TOFU）：在认证之前完成，避免把凭据交给可疑主机。
+        // 未通过时返回带指纹上下文的错误，由前端弹窗让用户确认。
+        let host_key = known_hosts::verify_session(
+            &sess,
+            &self.params.host,
+            self.params.port,
+            self.params.host_key_policy,
+        )?;
+        log::info!(
+            "主机密钥校验通过：{}:{} {} {}",
+            host_key.host,
+            host_key.port,
+            host_key.key_type,
+            host_key.fingerprint
+        );
+
+        let method = auth::authenticate(&sess, &self.params, Some(&prompter))?;
         log::info!("会话 {} 认证成功（{method}）", self.params.endpoint());
 
         if keepalive > 0 {
@@ -537,6 +627,8 @@ impl RunContext {
         if let Some(logger) = &self.deps.logger {
             logger.close(&self.id);
         }
+        // 会话结束：清掉可能残留的键盘交互等待，避免前端弹出一个无人等待的输入框
+        self.deps.auth_hub.cancel(&self.id);
         let snapshot = self.info.lock().clone();
         {
             let mut ended = self.ended.lock();
@@ -566,11 +658,15 @@ fn backoff(base: Duration, attempt: u32) -> Duration {
     Duration::from_millis(ms.min(MAX_RECONNECT_DELAY_MS))
 }
 
-/// 是否值得重试。认证失败、参数错误等重试也不会成功。
+/// 是否值得重试。认证失败、用户取消认证、主机密钥不符、参数错误等重试也不会成功。
 fn retryable(err: &AppError) -> bool {
     !matches!(
         err,
-        AppError::Auth(_) | AppError::Config(_) | AppError::ModuleDisabled(_)
+        AppError::Auth(_)
+            | AppError::AuthCancelled(_)
+            | AppError::HostKey(_)
+            | AppError::Config(_)
+            | AppError::ModuleDisabled(_)
     )
 }
 

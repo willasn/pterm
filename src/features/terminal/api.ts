@@ -3,17 +3,24 @@ import { createTracker } from "../danger/tracker";
 import { ipc } from "../ipc/api";
 import * as tabs from "../tabs/store";
 import { $, confirmDialog, el, errorText, toast } from "../util/util";
+import { collectMatches, firstIndexFrom, SearchMatch } from "./search";
 
 let ssh: { disconnect(id: string): Promise<void>; reconnect(id: string): Promise<any> };
 let syncInput: { targetsFor(id: string): string[] };
 let ai: { forget(id: string): void };
+/** 连接管理：把会话状态回写给侧栏连接点的状态色（见 connections/store 的 noteSession）。 */
+let connections: {
+  noteSession(connectionId: string | null | undefined, sessionId: string, state: string): void;
+  dropSession(sessionId: string): void;
+};
 
 export function wireDependencies(deps: {
   ssh: typeof ssh;
   syncInput: typeof syncInput;
   ai: typeof ai;
+  connections: typeof connections;
 }): void {
-  ({ ssh, syncInput, ai } = deps);
+  ({ ssh, syncInput, ai, connections } = deps);
 }
 
 /**
@@ -31,6 +38,8 @@ export interface SessionState {
   reason?: string;
   message?: string;
   auth_failed?: boolean;
+  /** 主机密钥校验未通过时的指纹上下文（见 known_hosts）。 */
+  host_key?: any;
   delay_ms?: number;
   attempt?: number;
   max_attempts?: number;
@@ -81,6 +90,10 @@ export interface TerminalController {
   copySelection(): boolean;
   /** 把剪贴板内容粘贴到本会话；返回 false 表示本次不接管。 */
   pasteClipboard(): boolean;
+  /** 打开终端内查找条（并对当前选中文本预填）。 */
+  openSearch(): void;
+  /** 关闭查找条并清除命中高亮。 */
+  closeSearch(): void;
   activate(): void;
   dispose(): void;
 }
@@ -98,6 +111,9 @@ let lastImeMode = "strict";
 /** 输入法模式取值。见 open() 中的 imeMode 说明。 */
 const IME_STRICT = "strict";
 const IME_NATIVE = "native";
+
+/** 终端内搜索最多高亮的命中数（超出只计数、不建装饰，避免拖慢输入）。 */
+const MAX_SEARCH_HIGHLIGHTS = 1000;
 
 let imeWindowBound = false;
 /** 「平台不支持自动切换输入源」只提示一次 */
@@ -409,6 +425,8 @@ export function open(info: SessionInfo, options?: any): TerminalController {
   let imeMode = lastImeMode === IME_NATIVE ? IME_NATIVE : IME_STRICT;
   /** 右下角的模式角标（可点击切换），在 term.open 之后创建 */
   let imeBadge: HTMLElement | null = null;
+  /** 查找条是否打开：打开期间 select() 造成的选中变化不触发「选中即复制」 */
+  let searchOpen = false;
 
   /** 按当前模式申请切换系统输入源。平台不支持时切换不会生效。 */
   function syncInputSource(): void {
@@ -508,6 +526,8 @@ export function open(info: SessionInfo, options?: any): TerminalController {
       // 分屏时可能同时有多个会话在连接，只把焦点给当前活跃的那个
       if (kind === "ready" && tabs.activeIdOf() === info.id) term.focus();
       tabs.touch(this);
+      // 回写侧栏连接点的状态色：仅带连接 id 的会话会被登记
+      if (connections) connections.noteSession(this.params && this.params.connection_id, info.id, kind);
     },
 
     fit() {
@@ -525,6 +545,10 @@ export function open(info: SessionInfo, options?: any): TerminalController {
     copySelection: copyToClipboard,
     /** 把剪贴板内容粘贴到本会话；返回 false 表示本次不接管。 */
     pasteClipboard: pasteFromClipboard,
+    /** 打开终端内查找条。 */
+    openSearch,
+    /** 关闭查找条。 */
+    closeSearch,
 
     activate() {
       activate(info.id);
@@ -536,6 +560,7 @@ export function open(info: SessionInfo, options?: any): TerminalController {
           fn();
         } catch (_) {}
       });
+      clearSearchHighlights();
       try {
         term.dispose();
       } catch (_) {}
@@ -590,6 +615,8 @@ export function open(info: SessionInfo, options?: any): TerminalController {
 
   // 选中即复制
   term.onSelectionChange(() => {
+    // 查找条打开时的高亮来自 term.select()，不是用户的复制意图，跳过
+    if (searchOpen) return;
     const t = (config && config.terminal) || {};
     if (!t.copy_on_select) return;
     const selection = term.getSelection();
@@ -665,6 +692,187 @@ export function open(info: SessionInfo, options?: any): TerminalController {
     onclick: () => ctrl.toggleImeMode(),
   });
   pane.appendChild(imeBadge);
+
+  // -------------------------------------------------------------------------
+  // 终端内查找：顶部的查找条 + 命中高亮（见 ./search 的 collectMatches）
+  // -------------------------------------------------------------------------
+  const searchBar = el("div", { class: "pane-search" });
+  const searchInput = el("input", {
+    class: "pane-search-input",
+    type: "text",
+    placeholder: "查找",
+    spellcheck: "false",
+  }) as HTMLInputElement;
+  const searchPrev = el("button", { class: "btn ghost", type: "button", title: "上一个（Shift+Enter）", text: "↑" });
+  const searchNext = el("button", { class: "btn ghost", type: "button", title: "下一个（Enter）", text: "↓" });
+  const searchCase = el("button", { class: "btn ghost", type: "button", title: "区分大小写", text: "Aa" });
+  const searchCount = el("span", { class: "pane-search-count" });
+  const searchClose = el("button", { class: "btn ghost", type: "button", title: "关闭（Esc）", text: "✕" });
+  searchBar.append(searchInput, searchPrev, searchNext, searchCase, searchCount, searchClose);
+  pane.appendChild(searchBar);
+
+  let searchMatches: SearchMatch[] = [];
+  let searchIndex = -1;
+  let searchCaseSensitive = false;
+  /** 每个命中项的高亮装饰（marker + decoration），随查询 / 导航重建 */
+  let searchHighlights: { marker: any; decoration: any }[] = [];
+
+  /** 清掉全部命中高亮。 */
+  function clearSearchHighlights(): void {
+    searchHighlights.forEach((item) => {
+      try {
+        item.decoration.dispose();
+      } catch (_) {}
+      try {
+        item.marker.dispose();
+      } catch (_) {}
+    });
+    searchHighlights = [];
+  }
+
+  /**
+   * 用 xterm 的 decoration 给全部命中项铺一层鲜艳背景。
+   *
+   * 装饰层在文字之上，因此用半透明色，既醒目又不遮住字形；
+   * marker 把高亮锚定到具体行，终端滚动 / 输出时高亮会跟着走。
+   */
+  function renderSearchHighlights(): void {
+    clearSearchHighlights();
+    const buffer = term.buffer && term.buffer.active;
+    if (!buffer || !searchMatches.length) return;
+    const cursorRow = buffer.baseY + buffer.cursorY;
+    // 上限保护：命中极多时逐个建装饰会拖慢输入，只高亮前 N 个（导航仍可用全部命中）
+    const limit = Math.min(searchMatches.length, MAX_SEARCH_HIGHLIGHTS);
+    for (let index = 0; index < limit; index += 1) {
+      const match = searchMatches[index];
+      try {
+        const marker = term.registerMarker(match.row - cursorRow);
+        if (!marker) continue;
+        const decoration = term.registerDecoration({
+          marker,
+          x: match.col,
+          width: match.len,
+          layer: "top",
+        });
+        if (!decoration) {
+          marker.dispose();
+          continue;
+        }
+        const active = index === searchIndex;
+        decoration.onRender((element: HTMLElement) => {
+          element.classList.add("term-search-hit");
+          if (active) element.classList.add("active");
+        });
+        searchHighlights.push({ marker, decoration });
+      } catch (_) {
+        // 单个命中高亮失败不影响其余
+      }
+    }
+  }
+
+  function renderSearchCount(): void {
+    if (!searchInput.value) {
+      searchCount.textContent = "";
+      return;
+    }
+    searchCount.textContent = searchMatches.length ? `${searchIndex + 1}/${searchMatches.length}` : "无匹配";
+  }
+
+  /** 高亮某个命中：选中 + 滚到可视区中部。 */
+  function jumpToMatch(match: SearchMatch): void {
+    try {
+      term.select(match.col, match.row, match.len);
+      const half = Math.floor((term.rows || 24) / 2);
+      term.scrollToLine(Math.max(0, match.row - half));
+    } catch (_) {}
+  }
+
+  /** 重新扫描当前查询。`reset` 为 true 时从当前视口向下定位第一个命中。 */
+  function runSearch(reset: boolean): void {
+    const query = searchInput.value;
+    searchMatches = collectMatches(term, query, searchCaseSensitive);
+    if (reset) {
+      const buffer = term.buffer && term.buffer.active;
+      const from = (buffer && buffer.viewportY) || 0;
+      searchIndex = firstIndexFrom(searchMatches, from);
+    } else if (searchIndex >= searchMatches.length) {
+      searchIndex = searchMatches.length - 1;
+    }
+    if (searchIndex >= 0 && searchMatches[searchIndex]) jumpToMatch(searchMatches[searchIndex]);
+    renderSearchHighlights();
+    renderSearchCount();
+  }
+
+  /** 上 / 下一个命中，环形循环。 */
+  function stepSearch(delta: number): void {
+    if (!searchMatches.length) {
+      runSearch(false);
+      return;
+    }
+    searchIndex = (searchIndex + delta + searchMatches.length) % searchMatches.length;
+    jumpToMatch(searchMatches[searchIndex]);
+    renderSearchHighlights();
+    renderSearchCount();
+  }
+
+  function openSearch(): void {
+    searchOpen = true;
+    pane.dataset.search = "1";
+    // 有单行选中时预填，省得再打一遍
+    try {
+      const selection = term.getSelection && term.getSelection();
+      if (selection && selection.indexOf("\n") === -1) searchInput.value = selection;
+    } catch (_) {}
+    runSearch(true);
+    searchInput.focus();
+    searchInput.select();
+  }
+
+  function closeSearch(): void {
+    searchOpen = false;
+    delete pane.dataset.search;
+    searchMatches = [];
+    searchIndex = -1;
+    clearSearchHighlights();
+    try {
+      term.clearSelection();
+    } catch (_) {}
+    term.focus();
+  }
+
+  searchInput.addEventListener("input", () => runSearch(true));
+  searchInput.addEventListener("keydown", (event: KeyboardEvent) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      stepSearch(event.shiftKey ? -1 : 1);
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      closeSearch();
+    }
+  });
+  searchPrev.addEventListener("click", () => stepSearch(-1));
+  searchNext.addEventListener("click", () => stepSearch(1));
+  searchCase.addEventListener("click", () => {
+    searchCaseSensitive = !searchCaseSensitive;
+    searchCase.dataset.on = searchCaseSensitive ? "1" : "0";
+    runSearch(true);
+    searchInput.focus();
+  });
+  searchClose.addEventListener("click", () => closeSearch());
+
+  // 终端内 Cmd/Ctrl+F 打开查找。捕获阶段，抢在 xterm 的按键处理之前。
+  const onFindKey = (event: KeyboardEvent) => {
+    if (!(event.metaKey || event.ctrlKey) || event.shiftKey || event.altKey) return;
+    if (event.key !== "f" && event.key !== "F") return;
+    if (!ctrl.pane.contains(document.activeElement)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    openSearch();
+  };
+  document.addEventListener("keydown", onFindKey, true);
+  detachHandlers.push(() => document.removeEventListener("keydown", onFindKey, true));
+
   // 必须在 term.open 之后：helper textarea 是它创建出来的
   applyImeMode();
   // 命令模式下把系统输入源切到英文，让命令走 xterm 原生按键通道
@@ -819,6 +1027,8 @@ export function close(id: string): void {
   tabs.detach(ctrl);
   // 对话与 SSH 会话绑定：会话关闭后丢弃它那份 AI 对话
   if (ai && typeof ai.forget === "function") ai.forget(id);
+  // 注销侧栏连接点的状态色
+  if (connections) connections.dropSession(id);
   updateEmptyState();
 }
 
@@ -855,6 +1065,14 @@ export function copySelection(): boolean {
 export function pasteClipboard(): boolean {
   const ctrl = active();
   return ctrl ? ctrl.pasteClipboard() : false;
+}
+
+/** 在当前终端（活跃会话）打开内查找。无会话返回 false。 */
+export function findInActive(): boolean {
+  const ctrl = active();
+  if (!ctrl || typeof ctrl.openSearch !== "function") return false;
+  ctrl.openSearch();
+  return true;
 }
 
 export { hasTabs };

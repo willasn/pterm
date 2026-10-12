@@ -86,13 +86,29 @@ function MdCopyButton({ code }: { code: string }) {
   );
 }
 
+/** 可一键"运行"到终端的语言：shell 家族，以及未标注语言的代码块（模型常省略标注）。 */
+const RUN_LANGS = new Set(["", "sh", "bash", "zsh", "shell", "fish", "ksh", "dash", "ash"]);
+
 /** 一个代码块：语言标签 + 复制按钮 + 代码体（不折行，长命令横向滚动，保持原样）。 */
-function MdCodeBlock({ code, lang }: { code: string; lang: string }) {
+function MdCodeBlock({ code, lang, onRun }: { code: string; lang: string; onRun?: (command: string) => void }) {
+  const runnable = !!onRun && RUN_LANGS.has(lang) && code.trim().length > 0;
   return (
     <div className="md-code">
       <div className="md-code-head">
         <span className="md-code-lang">{lang || "text"}</span>
-        <MdCopyButton code={code} />
+        <span className="md-code-actions">
+          {runnable ? (
+            <button
+              className="md-run"
+              type="button"
+              title="把这段命令发送到当前终端会话执行"
+              onClick={() => onRun!(code.trim())}
+            >
+              运行
+            </button>
+          ) : null}
+          <MdCopyButton code={code} />
+        </span>
       </div>
       <pre className="md-code-body">
         <code className="md-code-text">{highlight(code, lang)}</code>
@@ -152,7 +168,7 @@ function inlineNodes(text: string): ReactNode[] {
 }
 
 /** 逐行解析块级结构：围栏代码 / 标题 / 列表 / 引用 / 分隔线 / 段落。 */
-function blockNodes(text: string): ReactNode[] {
+function blockNodes(text: string, onRun?: (command: string) => void): ReactNode[] {
   const out: ReactNode[] = [];
   const lines = String(text == null ? "" : text).replace(/\r\n?/g, "\n").split("\n");
   let i = 0;
@@ -200,7 +216,7 @@ function blockNodes(text: string): ReactNode[] {
         i += 1;
       }
       i += 1;
-      out.push(<MdCodeBlock key={k++} code={buf.join("\n")} lang={lang} />);
+      out.push(<MdCodeBlock key={k++} code={buf.join("\n")} lang={lang} onRun={onRun} />);
       continue;
     }
 
@@ -242,7 +258,7 @@ function blockNodes(text: string): ReactNode[] {
       }
       out.push(
         <blockquote className="md-quote" key={k++}>
-          <div className="md">{blockNodes(buf.join("\n"))}</div>
+          <div className="md">{blockNodes(buf.join("\n"), onRun)}</div>
         </blockquote>
       );
       continue;
@@ -274,8 +290,8 @@ function blockNodes(text: string): ReactNode[] {
   return out;
 }
 
-/** 渲染一段 Markdown 文本。 */
-export function Markdown({ text }: { text: string }) {
+/** 渲染一段 Markdown 文本。传入 `onRun` 时，命令代码块会附带「运行」按钮。 */
+export function Markdown({ text, onRun }: { text: string; onRun?: (command: string) => void }) {
   // 注意：每次渲染重新解析，模型回答结束后才会走到这里，开销可接受
-  return <div className="md">{blockNodes(text)}</div>;
+  return <div className="md">{blockNodes(text, onRun)}</div>;
 }

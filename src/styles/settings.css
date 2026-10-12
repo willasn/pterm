@@ -337,16 +337,9 @@
   font-weight: 600;
 }
 
-/* 会话行：当前主机 + 连接状态点。模式说明只在内容区空状态里给出。 */
-.ai-panel-session {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-8);
-  padding: var(--sp-8) var(--sp-12);
-  font-size: var(--fs-xs);
-  color: var(--text-dim);
-  border-bottom: 1px solid var(--border);
-  flex: none;
+/* 顶部标题区：连接状态点 + 当前主机 · 交互模式。 */
+.ai-panel-head .ai-session-dot {
+  margin-right: var(--sp-8);
 }
 
 .ai-session-dot {
@@ -881,7 +874,14 @@
   font-family: var(--font-mono);
 }
 
-.md-copy {
+.md-code-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.md-copy,
+.md-run {
   padding: 0 var(--sp-8);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
@@ -891,9 +891,14 @@
   cursor: pointer;
 }
 
-.md-copy:hover {
+.md-copy:hover,
+.md-run:hover {
   border-color: var(--accent);
   color: var(--text);
+}
+
+.md-run:hover {
+  color: var(--accent);
 }
 
 .md-code-body {
@@ -1983,3 +1988,44 @@ body[data-theme="light"] .foot-badges--tiles .git-status:active {
   background: var(--accent);
   transition: width 0.2s ease;
 }
+
+/* 已知主机（主机密钥）列表：目标 + 指纹 + 移除按钮 */
+.known-hosts {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  width: 100%;
+}
+
+.known-host-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-8);
+  padding: var(--sp-4) var(--sp-8);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-alt);
+}
+
+.known-host-row .kh-target {
+  flex: none;
+  min-width: 140px;
+  color: var(--text);
+  font-size: var(--fs-sm);
+}
+
+.known-host-row .kh-fp {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+}
+
+.known-host-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+

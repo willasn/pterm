@@ -26,6 +26,8 @@ serde_yaml = "0.9"
 
 # SSH 核心
 ssh2 = { version = "0.9", features = ["vendored-openssl"] }
+# 本地终端：跨平台 PTY（Unix pty / Windows ConPTY）
+portable-pty = "0.8"
 
 # 可选模块
 git2 = { version = "0.19", features = ["vendored-libgit2", "vendored-openssl"] }
@@ -33,6 +35,9 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "str
 
 # 本地存储
 rusqlite = { version = "0.32", features = ["bundled"] }
+
+# 主机密钥指纹（known_hosts，OpenSSH 风格 SHA256 指纹）
+sha2 = "0.10"
 
 # 保险库加密（主密码 Argon2id 派生 + AES-256-GCM）
 argon2 = "0.5"

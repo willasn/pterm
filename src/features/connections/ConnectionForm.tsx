@@ -266,10 +266,14 @@ export function ConnectionForm() {
               <Section title="认证" desc="密码与 passphrase 保存在加密保险库中，不写入配置文件。">
                 <AuthSelect label="认证方式" target={draft} path="auth_kind" rerender={rerenderForm} />
                 {draft.auth_kind === "private_key" ? <KeyPathField /> : null}
-                {draft.auth_kind === "password" ? (
+                {draft.auth_kind === "password" || draft.auth_kind === "keyboard_interactive" ? (
                   <SecretField
-                    label="密码"
-                    hint="仅写入加密保险库"
+                    label={draft.auth_kind === "keyboard_interactive" ? "密码（可选）" : "密码"}
+                    hint={
+                      draft.auth_kind === "keyboard_interactive"
+                        ? "连接时仍会弹出服务端提示逐条输入；此处保存的密码用于 SFTP / 端口转发等无法弹窗的后台连接"
+                        : "仅写入加密保险库"
+                    }
                     placeholder={passwordPlaceholder}
                     secretKey={state.secretKey}
                     showClear={draft.has_password && state.secrets.password === null}
@@ -373,8 +377,16 @@ function JumpSection({ draft, secretKey }: { draft: any; secretKey: number }) {
               />
             </Field>
           ) : null}
-          {jump.auth_kind === "password" ? (
-            <Field label="跳板机密码" hint="仅写入加密保险库" compact>
+          {jump.auth_kind === "password" || jump.auth_kind === "keyboard_interactive" ? (
+            <Field
+              label={jump.auth_kind === "keyboard_interactive" ? "跳板机密码（可选）" : "跳板机密码"}
+              hint={
+                jump.auth_kind === "keyboard_interactive"
+                  ? "键盘交互时作为无法弹窗场景的静态应答"
+                  : "仅写入加密保险库"
+              }
+              compact
+            >
               <input
                 type="password"
                 key={secretKey}

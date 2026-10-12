@@ -491,3 +491,73 @@
   height: 10px;
   border-radius: 50%;
 }
+
+/* 终端内查找条：默认隐藏，pane 打开查找时以 data-search 显形（见 terminal/api.ts）。
+   放左上角，避开右下角的输入法角标与底部状态提示条。 */
+.pane-search {
+  position: absolute;
+  top: var(--sp-8);
+  left: var(--sp-12);
+  z-index: 5;
+  display: none;
+  align-items: center;
+  gap: var(--sp-4);
+  padding: var(--sp-4) var(--sp-8);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-elev);
+  box-shadow: var(--shadow);
+}
+
+.pane[data-search="1"] .pane-search {
+  display: flex;
+}
+
+.pane-search-input {
+  width: 180px;
+  padding: 2px var(--sp-8);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--fs-sm);
+  outline: none;
+}
+
+.pane-search-input:focus {
+  border-color: var(--accent);
+}
+
+.pane-search .btn {
+  padding: 2px var(--sp-8);
+  font-size: var(--fs-sm);
+  line-height: 1.4;
+}
+
+.pane-search .btn[data-on="1"] {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.pane-search-count {
+  min-width: 48px;
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+  text-align: center;
+}
+
+/* 终端内搜索的命中高亮：xterm decoration 元素，盖在文字之上，
+   因此用半透明鲜艳底色 —— 醒目但不遮住字形；pointer-events:none 保证
+   仍可正常选中 / 点击下方的文本。 */
+.term-search-hit {
+  background: rgba(255, 214, 0, 0.5);
+  pointer-events: none;
+}
+
+/* 当前定位到的命中项：换成更艳的橙色并加一圈描边 */
+.term-search-hit.active {
+  background: rgba(255, 122, 0, 0.8);
+  box-shadow: inset 0 0 0 1px rgba(255, 80, 0, 0.95);
+}
+

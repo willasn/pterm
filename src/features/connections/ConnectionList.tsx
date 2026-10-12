@@ -1,5 +1,14 @@
 import { openMenu } from "../context-menu/store";
-import { connMenu, connectTo, groupEnabled, groupedList, openForm, useConnections } from "./store";
+import {
+  connMenu,
+  connectTo,
+  connectionState,
+  groupEnabled,
+  groupedList,
+  openForm,
+  useConnections,
+  useSessionVersion,
+} from "./store";
 
 const isRdp = (conn: any) => !!conn && conn.protocol === "rdp";
 
@@ -14,6 +23,8 @@ function ConnItem({ conn }: { conn: any }) {
   return (
     <div
       className="conn-item"
+      // 有会话在跑时带上状态，让状态点沿用标签栏那套状态色（见 styles/terminal.css 的 [data-state]）
+      data-state={connectionState(conn.id) || undefined}
       title={title}
       onClick={() => void connectTo(conn)}
       onContextMenu={(event) => {
@@ -50,6 +61,8 @@ function ConnItem({ conn }: { conn: any }) {
 /** 侧栏连接列表（渲染进外壳的 #conn-list）。 */
 export function ConnectionList() {
   const state = useConnections();
+  // 订阅会话状态版本：会话增删 / 状态变化时重渲染，让连接点的状态色跟上
+  useSessionVersion();
 
   return (
     <>

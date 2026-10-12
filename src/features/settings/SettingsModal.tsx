@@ -24,6 +24,7 @@ import {
   close,
   deleteModel,
   exportCrashLog,
+  forgetKnownHost,
   getActiveCat,
   getAiModels,
   getConfiguredModelIds,
@@ -34,6 +35,7 @@ import {
   getFormKey,
   getGitCredentialNames,
   getInfo,
+  getKnownHosts,
   getModules,
   getOpen,
   getPath,
@@ -45,6 +47,7 @@ import {
   normalizeModel,
   protocolOptions,
   protocolSpec,
+  refreshKnownHosts,
   removeShortcutBinding,
   rerender,
   reset,
@@ -356,11 +359,51 @@ function TerminalCategory() {
 // 分类：连接
 // ---------------------------------------------------------------------------
 
+/** 主机密钥校验开关 + 已知主机（known_hosts）管理。 */
+function KnownHostsSection() {
+  const hosts = getKnownHosts();
+  return (
+    <Section
+      title="主机密钥校验"
+      desc="记录并比对服务端主机密钥指纹，抵御中间人攻击。首次连接或密钥变更时会弹窗确认；记录为本机私有，不随 Git 同步。"
+    >
+      <ToggleField
+        label="启用主机密钥校验"
+        hint="关闭后不再校验服务端身份，安全性下降，不建议关闭"
+        path="features.connection.host_key_check"
+      />
+      <Field label="已知主机" hint={hosts.length ? `共 ${hosts.length} 台` : null}>
+        <div className="known-hosts">
+          {hosts.length === 0 ? (
+            <Note>尚无记录。成功连接并信任的主机会出现在这里。</Note>
+          ) : (
+            hosts.map((item: any) => (
+              <div className="known-host-row" key={`${item.host}:${item.port}`}>
+                <span className="kh-target">
+                  {item.host}:{item.port}
+                </span>
+                <span className="kh-fp" title={`${item.key_type} ${item.fingerprint}`}>
+                  {item.fingerprint}
+                </span>
+                <Btn onClick={() => forgetKnownHost(item.host, item.port)}>移除</Btn>
+              </div>
+            ))
+          )}
+          <div className="known-host-actions">
+            <Btn onClick={() => refreshKnownHosts()}>刷新</Btn>
+          </div>
+        </div>
+      </Field>
+    </Section>
+  );
+}
+
 function ConnectionCategory() {
   const draft = getDraft();
   const sessionLogOn = !!(draft.features && draft.features.connection && draft.features.connection.session_log);
   return (
     <>
+      <KnownHostsSection />
       <Section title="自动重连" desc="断线后按指数退避重试，直到达到最大次数。">
         <ToggleField label="启用自动重连" path="features.connection.auto_reconnect" />
         <NumberField

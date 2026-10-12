@@ -51,7 +51,8 @@ pub fn emit_status(app: &AppHandle, id: &str, state: &SessionState) {
     }
 }
 
-fn emit_data(app: &AppHandle, id: &str, stream: &str, bytes: &[u8]) {
+/// 推送一段会话输出（stdout / stderr）。供 SSH shell 泵与本地终端共用。
+pub(crate) fn emit_data(app: &AppHandle, id: &str, stream: &str, bytes: &[u8]) {
     let payload = serde_json::json!({
         "stream": stream,
         "data": BASE64.encode(bytes),

@@ -60,6 +60,8 @@ let crashTail: CrashLogInfo | null = null;
 let crashBusy = false;
 /** 保险库状态；null = 尚未读取 */
 let vaultState: VaultStatus | null = null;
+/** 已知主机（主机密钥）列表；打开设置时随其它数据一起拉取，可手动刷新。 */
+let knownHosts: any[] = [];
 
 // ---------------------------------------------------------------------------
 // 响应式外壳（版本号驱动重绘）
@@ -119,6 +121,7 @@ export const getGitCredentialNames = () => gitCredentialNames;
 export const getCrashTail = () => crashTail;
 export const getCrashBusy = () => crashBusy;
 export const getVaultState = () => vaultState;
+export const getKnownHosts = () => knownHosts;
 
 /** 路径读写：用于非受控输入直接写入 draft。 */
 export function getPath(obj: any, path: string): any {
@@ -165,7 +168,7 @@ export async function open(category?: string): Promise<void> {
   try {
     // 这些命令相互独立：任何一个失败都不该让整个设置面板打不开（原先用 Promise.all，
     // 一个 AI 模块未就绪就会让 open() 直接跳到 catch，表现就是「点设置没反应」）。
-    const [cfg, flagList, moduleList, appInfo, keySet, gitCreds, vState, protos] = await Promise.all([
+    const [cfg, flagList, moduleList, appInfo, keySet, gitCreds, vState, protos, hosts] = await Promise.all([
       ipc.getConfig(),
       ipc.featureFlags(),
       ipc.moduleStatus(),
@@ -174,6 +177,7 @@ export async function open(category?: string): Promise<void> {
       ipc.gitCredentials().catch(() => []),
       ipc.vaultStatus().catch(() => null),
       ipc.aiProtocols().catch(() => []),
+      ipc.sshKnownHostsList().catch(() => []),
     ]);
     draft = deepClone(cfg);
     flags = flagList || [];
@@ -181,6 +185,7 @@ export async function open(category?: string): Promise<void> {
     protocolList = protos || [];
     info = appInfo || null;
     vaultState = vState || null;
+    knownHosts = hosts || [];
     configuredModelIds = new Set(keySet || []);
     aiModels = deepClone((cfg.ai && cfg.ai.models) || []);
     savedModelIds = new Set(aiModels.map((m) => m.id));
@@ -549,6 +554,32 @@ function crashLogPath(name: string): string {
 function crashFileName(): string {
   const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
   return `pterm-crash-${stamp}.log`;
+}
+
+// ---------------------------------------------------------------------------
+// 主机密钥（known_hosts）
+// ---------------------------------------------------------------------------
+
+/** 重新拉取已知主机列表。 */
+export async function refreshKnownHosts(): Promise<void> {
+  try {
+    knownHosts = (await ipc.sshKnownHostsList()) || [];
+    rerender();
+  } catch (err) {
+    toast(errorText(err), "error");
+  }
+}
+
+/** 移除一台主机的已知密钥记录（下次连接重新走首次信任）。 */
+export async function forgetKnownHost(host: string, port: number): Promise<void> {
+  try {
+    await ipc.sshKnownHostsForget(host, port);
+    knownHosts = knownHosts.filter((item) => !(item.host === host && item.port === port));
+    rerender();
+    toast(`已移除 ${host}:${port} 的已知密钥`, "ok");
+  } catch (err) {
+    toast(errorText(err), "error");
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -34,8 +34,10 @@
 | [x] | SSH 连接 | 建立到远程主机的 SSH 会话，指定 host/port/user | `src-tauri/src/ssh/session.rs` |
 | [x] | 密码认证 | 密码登录，密码经主密码加密后存入本地保险库 | `src-tauri/src/ssh/auth.rs` |
 | [x] | 密钥认证 | 私钥文件 + 可选 passphrase，支持 key 探测 | `src-tauri/src/ssh/auth.rs` |
+| [x] | 键盘交互认证 | 支持 keyboard-interactive：建连时服务端下发提示（`Password:` / 动态验证码等），弹窗逐条应答后继续认证，覆盖 PAM / 多因素（MFA / OTP）服务器。连接认证方式可选「键盘交互」；`auto` 模式在其它方式失败后也会自动尝试。跳板机提示复用同一会话界面。弹窗全局串行（多会话同时要求输入时排队，不互相顶掉）；**用户取消 / 超时会给出「已取消键盘交互认证」/「等待超时」的明确提示，且不触发补录密码**。SFTP / 端口转发等无界面连接用保险库中保存的密码作为静态应答 | `src-tauri/src/ssh/auth.rs`、`src-tauri/src/ssh/interactive.rs`、`src/features/ssh/api.ts` |
 | [x] | 终端渲染 | xterm.js 渲染 ANSI/VT，自适应尺寸（fit addon） | `src/features/terminal/` |
 | [x] | 复制 / 粘贴 | 选中即复制可选（`terminal.copy_on_select`）；终端内右击弹出「复制 / 粘贴」菜单（`terminal.right_click_menu`）；复制 / 粘贴可绑定快捷键（动作 `terminal.copy` / `terminal.paste`），无选中文本时复制键原样落到终端；粘贴走 xterm 原生 paste，同样经过危险命令检测 | `src/features/terminal/`、`src/features/shortcuts/` |
+| [x] | 终端内搜索 | 终端内 `Cmd/Ctrl+F` 打开查找条，在回滚缓冲中查找：输入即从当前视口向下定位，Enter 下一个 / Shift+Enter 上一个（环形），`Aa` 切换区分大小写，Esc 关闭。**全部命中项用鲜艳底色高亮**（xterm decoration 半透明色块，不遮字），当前项换橙色并加描边；同时滚动到可视区中部。快捷动作 `terminal.find` | `src/features/terminal/`（`search.ts` + `api.ts`） |
 | [x] | 本地即时回显 | 预测性回显：按键先本地上屏，远端回显到达后逐字节比对对齐，不一致则整段撤回重画；回车、Tab、方向键、粘贴不预测。可用 `terminal.local_echo` 关闭 | `src/features/terminal/` |
 | [x] | 输入法自动切换 | `ime_auto_switch` | WKWebView 下简体拼音 / 微信输入法等会把普通字母键报成 `keyCode 229`，字符只能经隐藏 textarea 的组合通道进来，快打丢字、慢打重复（系统 ABC 无此问题）。命令模式（默认）在终端获得焦点时把系统输入源切到英文、应用失焦时还原；输入法模式则交还系统输入法以输入中文。终端内 `Cmd/Ctrl+Shift+I` 或点击右下角角标切换，新会话继承上次选择。仅 macOS 生效 | `src-tauri/src/features/ime/`、`src/features/terminal/` |
 
@@ -77,6 +79,8 @@ features:
   sftp:            true
   port_forward:    false
   jump_host:       true
+  host_key_check:  true    # 开关在「设置 → 连接」
+  local_terminal:  true
   session_log:     false
   auto_reconnect:  true    # 开关在「设置 → 连接」
   connection_group:true    # 必开项
@@ -96,6 +100,8 @@ features:
 | [x] | SFTP | `sftp` | 文件浏览、上传、下载、删除、重命名、权限修改；支持文件夹递归传输、拖拽上传、传输进度与中断 | `src/features/sftp/`、`src-tauri/src/features/sftp/` |
 | [x] | 端口转发 | `port_forward` | 本地转发 / 远程转发 / 动态转发（SOCKS5），支持启停与状态查看 | `src/features/port-forward/`、`src-tauri/src/features/port_forward/` |
 | [x] | 跳板机 | `jump_host` | 通过 ProxyJump 链式连接（支持多级） | `src-tauri/src/ssh/jump.rs` |
+| [x] | 主机密钥校验 | `host_key_check` | 建连握手后、认证前比对服务端主机密钥：首次连接弹窗确认指纹（TOFU），密钥变更时以危险样式二次确认，确认后写入配置目录下的 `known_hosts.json`（本机私有、不随 Git 同步）；未确认一律拒绝，抵御中间人攻击。**校验覆盖终端 / SFTP / 端口转发 / 跳板机**：后三者无法弹窗，未确认或已变更时提示「先在终端中连接该主机完成首次信任」。设置「连接 → 主机密钥校验」可关闭开关并管理 / 移除已知主机；「测试连接」不校验也不写入 | `src-tauri/src/ssh/known_hosts.rs`、`src-tauri/src/ssh/session.rs`、`src/features/ssh/api.ts`、`src/features/settings/` |
+| [x] | 本地终端 | `local_terminal` | 在本机 PTY（Unix pty / Windows ConPTY）上打开一个 shell 标签，不经过网络；复用 SSH 的会话表、事件通道与标签 / 分屏体系，读写 / 改尺寸 / 断开走同一组命令。入口：侧栏按钮与快捷键（默认 `Cmd/Ctrl+Shift+T`）。Windows 优先 PowerShell、回退 cmd | `src-tauri/src/ssh/local.rs`、`src-tauri/src/modules/local_terminal/`、`src/features/local-terminal/` |
 | [x] | 会话日志 | `session_log` | 按会话落盘完整终端输出，支持开关、保留天数（默认 10 天）、保留条数（默认 20 条）与单文件大小上限（默认 100 KB，超出丢弃最旧内容）；天数 / 条数 / 上限任一置 0 表示该项不限制。预览按「单个文件」截取末尾 10 KB | `src/features/session-log/`、`src-tauri/src/features/session_log/` |
 | [x] | 自动重连 | `auto_reconnect` | 断线后指数退避重连，可配置最大次数与间隔 | `src-tauri/src/ssh/session.rs` |
 | [x] | 连接分组 | `connection_group` | 连接按文件夹/标签分组，支持折叠与搜索 | `src-tauri/src/config/app_config.rs` |
@@ -125,9 +131,9 @@ features:
 
 | 状态 | 功能 | FLAG | 说明 | 代码位置 |
 | --- | --- | --- | --- | --- |
-| [x] | Git 同步 | `git_sync` | 总开关。界面只暴露一个「同步」按钮：点击后选择范围（同步全部 / 同步全部（不含连接密码、API Key）），`clone/pull/push/commit/status` 全部由后端在进程内完成，不向使用者暴露 Git 细节 | `src-tauri/src/modules/git_sync/repo.rs`、`src/features/git-sync/` |
+| [x] | Git 同步 | `git_sync` | 总开关。界面只暴露一个「同步」按钮：同步范围跟随「设置 → Git 同步」中的配置，点击后直接执行，`clone/pull/push/commit/status` 全部由后端在进程内完成，不向使用者暴露 Git 细节 | `src-tauri/src/modules/git_sync/repo.rs`、`src/features/git-sync/` |
 | [x] | 同步范围 | `git_sync_scope` | 「设置 → Git 同步」中为两档选择：**同步全部** / **同步全部（不包含连接密码、API Key）**，两档数据域均为 `all`，区别在是否带上 `secrets.json`。不在功能开关中暴露 | `src-tauri/src/modules/git_sync/mod.rs`、`src/features/settings/` |
-| [x] | 同步敏感字段密文 | `git_sync_secrets` | `secrets.json` 是否随 Git 同步，由上面的「同步范围」档位决定（不单独暴露开关）；关闭后本地与远端互不覆盖，用于主密码冲突时临时搁置。亦可在同步弹窗中选「同步全部（不包含连接密码、API Key）」临时排除本次 | `src-tauri/src/modules/git_sync/mod.rs` |
+| [x] | 同步敏感字段密文 | `git_sync_secrets` | `secrets.json` 是否随 Git 同步，由上面的「同步范围」档位决定（不单独暴露开关）；关闭后本地与远端互不覆盖，用于主密码冲突时临时搁置 | `src-tauri/src/modules/git_sync/mod.rs` |
 | [x] | 冲突处理 | `git_conflict_prompt` | 设置与 `secrets.json` 固定「以远端为准」自动解决；`connections.json` / `snippets.json` 冲突时弹窗让用户按数据域选择「远端覆盖 / 本地覆盖 / 两者保留」（两者保留 = 同名条目保留为两条，重复 id 的本地条目另起新 id），解决后自动导入并推送 | `src-tauri/src/modules/git_sync/repo.rs`、`src-tauri/src/modules/git_sync/mod.rs` |
 | [x] | 状态徽标 | `git_status_badge` | 侧栏用大白话显示同步状态：已同步 / 待同步 N 项 / 需处理冲突 / 未配置远端；不暴露 ahead/behind 等 Git 概念（内部开关，界面不暴露） | `src/features/git-sync/` |
 | [x] | 提交模板 | `git_commit_template` | 自动生成 commit message，模板可配置（支持 `{date}` `{host}` 等占位符）；内部开关，界面不暴露 | `src-tauri/src/modules/git_sync/mod.rs` |
@@ -152,11 +158,11 @@ features:
 | 状态 | 功能 | FLAG | 说明 | 代码位置 |
 | --- | --- | --- | --- | --- |
 | [x] | 总开关 | `ai_assistant` | 关闭时不注册任何 AI command、不加载 AI UI | `src-tauri/src/modules/ai_assistant/mod.rs` |
-| [x] | Ask 模式 | — | 面板右侧停靠，输入即提问：只回答问题、给建议命令，不向终端写入任何内容。输入框回车即发送、Shift + 回车换行；输入法组词中（中文候选面板打开）回车只上屏、不发送 | `src-tauri/src/modules/ai_assistant/commands.rs`、`src/features/ai/` |
+| [x] | Ask 模式 | — | 面板右侧停靠，输入即提问：回答问题、解释报错并给出建议与指导，命令以代码块列出、不自动执行。每个 shell 代码块带「运行」按钮，用户手动点击后才写入当前终端会话（危险命令仍二次确认）。输入框回车即发送、Shift + 回车换行；输入法组词中（中文候选面板打开）回车只上屏、不发送 | `src-tauri/src/modules/ai_assistant/commands.rs`、`src/features/ai/` |
 | [x] | 消息流 | — | 内容区是一条**按 SSH 会话隔离**的对话流：每个终端会话各有一份对话，切标签各自独立、切回仍能看到；提问发出后立即进流并清空输入框，模型的思考 / 流式回答 / Agent 每步命令与结论都作为消息依次落进消息框。对话只存内存、不落库，会话关闭即随会话丢弃；面板右上角按钮可二次确认后清空当前对话 | `src/features/ai/store.ts` |
-| [x] | 回答渲染 | — | 回答结束后按 Markdown 渲染一次（流式期间仍是纯文本，避免半截语法闪烁）：代码块（语言标签 + 复制按钮 + 注释 / 字符串 / 数字 / 关键字基础配色）、行内 code、加粗 / 斜体 / 删除线、有序与无序列表、标题、引用、分隔线、http(s) 链接（点击复制链接，应用未装 opener 插件、不唤起浏览器）。白名单子集，DOM 全部由 textContent 构建、不用 innerHTML，模型输出里的标签只会显示为纯文本 | `src/features/ai/markdown.tsx`、`src/styles/settings.css` |
+| [x] | 回答渲染 | — | 回答结束后按 Markdown 渲染一次（流式期间仍是纯文本，避免半截语法闪烁）：代码块（语言标签 + 复制按钮 + 注释 / 字符串 / 数字 / 关键字基础配色；shell 家族或无标注语言的代码块额外带「运行」按钮，手动发送到终端）、行内 code、加粗 / 斜体 / 删除线、有序与无序列表、标题、引用、分隔线、http(s) 链接（点击复制链接，应用未装 opener 插件、不唤起浏览器）。白名单子集，DOM 全部由 textContent 构建、不用 innerHTML，模型输出里的标签只会显示为纯文本 | `src/features/ai/markdown.tsx`、`src/styles/settings.css` |
 | [x] | 流式响应 | `ai_streaming` | SSE 流式输出，逐字上屏，支持中途取消 | `src-tauri/src/modules/ai_assistant/client.rs` |
-| [x] | Agent 模式 | — | 读取终端输出决定下一步，请求在会话中执行命令；每条命令在消息流里单独成条、需用户确认后才写入终端，危险命令额外二次确认。循环在前端，后端不写终端。与 Ask 一样由面板切换，不设独立开关；执行过的命令写入「命令历史」（受 `auxiliary.command_history` 门控） | `src-tauri/src/modules/ai_assistant/agent.rs`、`src/features/ai/store.ts` |
+| [x] | Agent 模式 | — | 读取终端输出决定下一步，自动执行命令直到完成：只读命令（ls / cat / df / grep / `systemctl status` / `docker ps` 等）直接写入终端无需确认；涉及删除、修改、改动系统状态的关键操作（rm / mv / chmod / 软件包与服务管理 / `git push` / 容器改动 / 数据库写入等）在消息流里单独成条、需用户授权后才执行；危险命令额外二次确认。授权判定在后端（`danger::classify`），循环在前端，后端不写终端。与 Ask 一样由面板切换，不设独立开关；执行过的命令写入「命令历史」（受 `auxiliary.command_history` 门控） | `src-tauri/src/modules/ai_assistant/agent.rs`、`danger.rs`、`src/features/ai/store.ts` |
 | [x] | 多模型 | — | 设置里可添加任意多个自定义模型，每个模型独立配置协议、API 地址、API Key（各存加密保险库）与生成参数（温度 / 输入 token 上限 / 输出 token 上限 / 超时 / 上下文字节数，留空用默认值）；面板底部显式选择用哪个 | `src-tauri/src/modules/ai_assistant/client.rs` |
 | [x] | 多协议 | — | 每个模型单独选择协议，协议决定 `base_url` 之后拼接的路径后缀、鉴权头与请求 / 响应格式：OpenAI 兼容（`/chat/completions`，Bearer）、OpenAI Responses（`/responses`，Bearer）、Anthropic Messages（`/messages`，`x-api-key` + `anthropic-version`）。流式与非流式均按协议分别解析。设置界面在协议下方实时提示「实际请求地址」（即会加什么后缀） | `src-tauri/src/modules/ai_assistant/protocol.rs`、`client.rs` |
 | [x] | 上下文占比 | — | 输入控件行里（Agent 右侧）一个环形图标，显示「上下文使用率」＝当前窗口总 token ÷ 所选模型的输入 token 上限（本地估算，不发往服务端）；鼠标移上弹出「上下文使用率 / {百分比}% of {输入上限}」，占比升高由绿转黄转红；无会话 / 无模型时收起 | `src/features/ai/store.ts` |
@@ -212,6 +218,7 @@ features:
 - ❌ 不实现「笔记」功能。
 - ❌ 无明确理由不引入系统 git CLI 依赖（Git 默认走 `git2`）。
 - ⚠️ 危险命令（`rm -rf`、`dd`、`mkfs` 等）必须二次确认。
+- ⚠️ 主机密钥校验不得静默放行：首次连接 / 密钥变更必须由用户显式确认后才写入 `known_hosts.json`。
 - ⚠️ 所有网络请求（AI、Git）必须支持超时与取消。
 - ⚠️ 终端输入输出通过 Tauri event 流式传输，避免轮询。
 - ⚠️ 前端不直接访问 SSH 底层，一律经 Tauri command 中介。

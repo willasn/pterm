@@ -248,6 +248,7 @@ pub fn default_shortcuts() -> Vec<ShortcutBinding> {
     };
     let pairs = [
         ("tab.new", "CmdOrCtrl+T"),
+        ("session.local", "CmdOrCtrl+Shift+T"),
         ("tab.close", "CmdOrCtrl+W"),
         ("tab.next", "CmdOrCtrl+Tab"),
         ("app.settings", "CmdOrCtrl+,"),
@@ -259,6 +260,7 @@ pub fn default_shortcuts() -> Vec<ShortcutBinding> {
         ("view.split_v", "CmdOrCtrl+Shift+O"),
         ("terminal.copy", copy_keys),
         ("terminal.paste", paste_keys),
+        ("terminal.find", "CmdOrCtrl+F"),
     ];
     pairs
         .into_iter()

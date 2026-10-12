@@ -63,6 +63,10 @@ export const FLAG_META: Record<string, { label: string; hint?: string }> = {
     hint: "新建连接时可选 RDP 协议打开 Windows 远程桌面：Windows 调用系统 mstsc，macOS 调用微软「Windows App」（需自行安装）",
   },
   "connection.quick_connect": { label: "快捷连接", hint: "侧栏直接输入 user@host:port" },
+  "connection.local_terminal": {
+    label: "本地终端",
+    hint: "在本机 PTY 上打开一个 shell 标签（不经过网络），入口在侧栏与快捷键",
+  },
   "connection.sync_input": {
     label: "同步输入",
     hint: "把一台终端上的输入广播到同一同步组内的标签；分组与组内同步开关在标签右键菜单中操作",
@@ -118,6 +122,7 @@ export const HIDDEN_FLAGS = new Set([
   "connection.sync_input",
   "connection.rdp",
   "connection.auto_reconnect",
+  "connection.host_key_check",
   "sync.git_sync",
   "sync.git_sync_scope",
   "sync.git_sync_secrets",

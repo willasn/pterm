@@ -24,6 +24,8 @@ export interface AiMessage {
   command: string;
   /** 命令命中的危险规则说明。 */
   danger: string;
+  /** 需要用户授权的原因（删除 / 修改 / 关键操作等）；可自动执行时为空。 */
+  authReason: string;
   /** 命令执行后读回的终端输出。 */
   output: string;
   state: MessageState;
