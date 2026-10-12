@@ -1,6 +1,6 @@
 import { pt } from "../../lib/legacy";
 import { setEnabledFromConfig as setAiConfig } from "../ai/store";
-import { autoCheckOnStartup, setEnabledFromConfig as setAutoUpdateConfig } from "../auto-update/store";
+import { autoCheckOnStartup, setAppVersion, setEnabledFromConfig as setAutoUpdateConfig } from "../auto-update/store";
 import {
   onQuickSubmit as connectionsQuickSubmit,
   openForm as connectionsOpenForm,
@@ -204,7 +204,8 @@ async function boot(): Promise<void> {
     await refreshConnections();
     terminal.updateEmptyState();
 
-    // 自动更新：开关开启时检查一次（结果按天缓存），有新版会在右下角提示
+    // 自动更新：先登记当前运行版本（版本变化即作废旧检查缓存），再按开关检查一次
+    setAppVersion(info.version);
     autoCheckOnStartup();
 
     // 把首次选择的语言落盘，之后启动直接生效；失败不阻断启动

@@ -6,6 +6,7 @@ pub mod global_search;
 pub mod quick_panel;
 pub mod shortcuts;
 pub mod snippets;
+#[cfg(windows)]
 pub mod system_tray;
 pub mod theme;
 

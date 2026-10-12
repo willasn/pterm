@@ -90,7 +90,6 @@ export const FLAG_META: Record<string, { label: string; hint?: string }> = {
   "auxiliary.global_search": { label: "全局搜索" },
   "auxiliary.command_history": { label: "命令历史" },
   "auxiliary.quick_panel": { label: "快捷面板" },
-  "auxiliary.system_tray": { label: "系统托盘" },
   "auxiliary.auto_update": {
     label: "自动更新",
     hint: "启动后自动检查新版本并弹提示；关闭后仍可在「关于」页手动检查",
@@ -146,7 +145,6 @@ export const FLAG_MODULE: Record<string, string> = {
   "auxiliary.theme": "theme",
   "auxiliary.shortcuts": "shortcuts",
   "auxiliary.quick_panel": "quick_panel",
-  "auxiliary.system_tray": "system_tray",
   "auxiliary.auto_update": "auto_update",
   "connection.sftp": "sftp",
   "connection.port_forward": "port_forward",

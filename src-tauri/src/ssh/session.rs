@@ -83,8 +83,9 @@ pub(crate) fn open_transport(host: &str, port: u16) -> AppResult<Session> {
 ///
 /// SSH 核心只依赖这个抽象，不感知具体模块，符合「核心不依赖可选模块」的分层约定。
 pub trait SessionLogger: Send + Sync {
-    /// 为一个会话开启记录。返回 `None` 表示跳过记录（例如文件创建失败）。
-    fn open(&self, info: &SessionInfo) -> Option<Arc<dyn OutputSink>>;
+    /// 为一个会话开启记录。`max_bytes` 为单文件大小上限（0 表示不限）。
+    /// 返回 `None` 表示跳过记录（例如文件创建失败）。
+    fn open(&self, info: &SessionInfo, max_bytes: u64) -> Option<Arc<dyn OutputSink>>;
 
     /// 会话结束时的收尾；可重复调用。
     fn close(&self, session_id: &str);
@@ -219,8 +220,13 @@ impl SessionManager {
         self.sessions.lock().insert(id.clone(), handle);
 
         let snapshot = info.lock().clone();
-        // 一个会话一个日志文件，跨自动重连复用同一写入端
-        let sink = deps.logger.as_ref().and_then(|l| l.open(&snapshot));
+        // 一个会话一个日志文件，跨自动重连复用同一写入端；
+        // 单文件大小上限由配置决定（单位 KB，0 表示不限）
+        let max_bytes = u64::from(deps.config.flags().connection.session_log_max_file_kb) * 1024;
+        let sink = deps
+            .logger
+            .as_ref()
+            .and_then(|l| l.open(&snapshot, max_bytes));
         let run = RunContext {
             deps: deps.clone(),
             params,

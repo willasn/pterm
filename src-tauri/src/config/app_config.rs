@@ -293,7 +293,7 @@ impl AppConfig {
     /// 生成一份带完整默认值的配置（首次启动时落盘，便于用户直接编辑）。
     pub fn with_defaults() -> Self {
         let mut cfg = Self {
-            version: 1,
+            version: 2,
             features: FeatureFlags::default(),
             terminal: TerminalConfig::default(),
             ai: AiConfig::default(),
@@ -343,6 +343,15 @@ impl AppConfig {
         if self.version == 0 {
             self.version = 1;
             changed = true;
+        }
+        // v1 → v2：会话日志「保留天数」默认值由 30 修订为 10。
+        // 旧配置里仍沿用旧默认 30 的，同步迁移为 10；用户自定义过的其它值保持不变。
+        if self.version < 2 {
+            self.version = 2;
+            changed = true;
+            if self.features.connection.session_log_retention_days == 30 {
+                self.features.connection.session_log_retention_days = 10;
+            }
         }
         if self.language.is_empty() {
             self.language = "zh-CN".into();
@@ -449,6 +458,25 @@ mod tests {
     fn empty_config_parses_to_defaults() {
         let cfg: AppConfig = serde_yaml::from_str("{}").expect("空配置应可解析");
         assert!(cfg.terminal.local_echo);
+    }
+
+    /// v1 配置里仍沿用旧默认 30 的会话日志保留天数，加载时应迁移为新默认 10。
+    #[test]
+    fn v1_retention_days_migrates_to_new_default() {
+        let yaml = "version: 1\nfeatures:\n  connection:\n    session_log_retention_days: 30\n";
+        let mut cfg: AppConfig = serde_yaml::from_str(yaml).expect("应能解析 v1 配置");
+        assert!(cfg.fill_missing(), "版本迁移应产生改动以触发回写");
+        assert_eq!(cfg.version, 2);
+        assert_eq!(cfg.features.connection.session_log_retention_days, 10);
+    }
+
+    /// 用户自定义过的保留天数（非旧默认 30）在迁移时不应被覆盖。
+    #[test]
+    fn migration_keeps_custom_retention_days() {
+        let yaml = "version: 1\nfeatures:\n  connection:\n    session_log_retention_days: 7\n";
+        let mut cfg: AppConfig = serde_yaml::from_str(yaml).expect("应能解析 v1 配置");
+        cfg.fill_missing();
+        assert_eq!(cfg.features.connection.session_log_retention_days, 7);
     }
 
     /// 模型参数留空时必须落到权威默认值，而不是 f32 / u32 的零值——

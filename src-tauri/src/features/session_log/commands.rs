@@ -15,6 +15,10 @@ pub struct SessionLogStatus {
     pub enabled: bool,
     pub dir: String,
     pub retention_days: u32,
+    /// 最多保留的日志文件条数（0 表示不按条数清理）
+    pub retention_count: u32,
+    /// 单个日志文件大小上限（KB）；0 表示不限
+    pub max_file_kb: u32,
     pub count: usize,
     /// 当前正在记录日志的会话数
     pub active: usize,
@@ -27,6 +31,8 @@ pub fn session_log_status(state: State<'_, AppState>) -> SessionLogStatus {
         enabled: flags.connection.session_log,
         dir: state.session_log.dir().display().to_string(),
         retention_days: flags.connection.session_log_retention_days,
+        retention_count: flags.connection.session_log_retention_count,
+        max_file_kb: flags.connection.session_log_max_file_kb,
         count: state.session_log.list().map(|v| v.len()).unwrap_or(0),
         active: state.session_log.active_count(),
     }

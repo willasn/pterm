@@ -112,7 +112,6 @@
   "flags.auxiliary.global_search": "Global Search",
   "flags.auxiliary.command_history": "Command History",
   "flags.auxiliary.quick_panel": "Quick Panel",
-  "flags.auxiliary.system_tray": "System Tray",
   "flags.auxiliary.auto_update": "Auto Update",
   "flags.auxiliary.theme": "Theme",
   "flags.auxiliary.shortcuts": "Shortcuts",

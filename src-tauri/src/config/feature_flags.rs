@@ -17,7 +17,6 @@ pub mod module_id {
     pub const THEME: &str = "theme";
     pub const SHORTCUTS: &str = "shortcuts";
     pub const QUICK_PANEL: &str = "quick_panel";
-    pub const SYSTEM_TRAY: &str = "system_tray";
     pub const AUTO_UPDATE: &str = "auto_update";
     pub const IME_SWITCH: &str = "ime_switch";
 }
@@ -88,8 +87,12 @@ pub struct ConnectionFlags {
     /// 终端获得焦点时自动把系统输入源切到英文、失焦时还原（仅 macOS）。
     /// 关闭后需用户自行保证终端里使用英文输入法，否则输入法异常时快打会漏字。
     pub ime_auto_switch: bool,
-    /// 会话日志保留天数
+    /// 会话日志保留天数（按文件最后修改时间计算，超过即清理）
     pub session_log_retention_days: u32,
+    /// 会话日志保留条数（最多保留最近修改的 N 个日志文件）
+    pub session_log_retention_count: u32,
+    /// 单个会话日志文件大小上限（KB）；超出时丢弃最旧内容，仅保留最近的部分。0 表示不限
+    pub session_log_max_file_kb: u32,
 }
 
 impl Default for ConnectionFlags {
@@ -110,7 +113,9 @@ impl Default for ConnectionFlags {
             quick_connect: true,
             sync_input: true,
             ime_auto_switch: true,
-            session_log_retention_days: 30,
+            session_log_retention_days: 10,
+            session_log_retention_count: 20,
+            session_log_max_file_kb: 100,
         }
     }
 }
@@ -253,8 +258,6 @@ pub struct AuxiliaryFlags {
     pub command_history: bool,
     /// 快捷面板
     pub quick_panel: bool,
-    /// 系统托盘
-    pub system_tray: bool,
     /// 自动更新
     pub auto_update: bool,
     /// 主题
@@ -272,7 +275,6 @@ impl Default for AuxiliaryFlags {
             global_search: true,
             command_history: true,
             quick_panel: true,
-            system_tray: false,
             auto_update: true,
             theme: true,
             shortcuts: true,
@@ -315,7 +317,6 @@ impl FeatureFlags {
             module_id::THEME => self.auxiliary.theme,
             module_id::SHORTCUTS => self.auxiliary.shortcuts,
             module_id::QUICK_PANEL => self.auxiliary.quick_panel,
-            module_id::SYSTEM_TRAY => self.auxiliary.system_tray,
             module_id::AUTO_UPDATE => self.auxiliary.auto_update,
             module_id::IME_SWITCH => self.connection.ime_auto_switch,
             // 未登记的标识视为可用，避免误伤核心功能
@@ -406,7 +407,6 @@ impl FeatureFlags {
             "global_search" => self.auxiliary.global_search,
             "command_history" => self.auxiliary.command_history,
             "quick_panel" => self.auxiliary.quick_panel,
-            "system_tray" => self.auxiliary.system_tray,
             "auto_update" => self.auxiliary.auto_update,
             "theme" => self.auxiliary.theme,
             "shortcuts" => self.auxiliary.shortcuts,
@@ -487,16 +487,6 @@ mod tests {
 
         flags.auxiliary.quick_panel = true;
         assert!(flags.module_enabled(module_id::QUICK_PANEL));
-    }
-
-    #[test]
-    fn system_tray_follows_its_flag() {
-        let mut flags = FeatureFlags::default();
-        flags.auxiliary.system_tray = false;
-        assert!(!flags.module_enabled(module_id::SYSTEM_TRAY));
-
-        flags.auxiliary.system_tray = true;
-        assert!(flags.module_enabled(module_id::SYSTEM_TRAY));
     }
 
     #[test]

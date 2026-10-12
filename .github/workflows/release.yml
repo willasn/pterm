@@ -49,12 +49,10 @@ jobs:
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           echo "Syncing version -> $VERSION"
+          # tauri.conf.json 的 version 已指向 package.json，无需在此改写。
           node -e '
             const fs = require("fs");
             const v = process.argv[1];
-            const conf = JSON.parse(fs.readFileSync("src-tauri/tauri.conf.json", "utf8"));
-            conf.version = v;
-            fs.writeFileSync("src-tauri/tauri.conf.json", JSON.stringify(conf, null, 2) + "\n");
             let cargo = fs.readFileSync("src-tauri/Cargo.toml", "utf8");
             cargo = cargo.replace(/^version = ".*"$/m, `version = "${v}"`);
             fs.writeFileSync("src-tauri/Cargo.toml", cargo);

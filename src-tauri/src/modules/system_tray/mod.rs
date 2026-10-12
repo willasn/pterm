@@ -1,68 +1,26 @@
-//! 系统托盘（FEATURES.md §6）。
+//! 系统托盘（仅 Windows）。
 //!
-//! 托盘图标、右键菜单、最小化到托盘。**opt-in**：默认关闭（`auxiliary.system_tray = false`）。
+//! 托盘图标、右键菜单、最小化到托盘。**无功能开关**：Windows 上恒定启用，
+//! 设置里不再出现「系统托盘」开关；macOS 不编译本模块（见 `modules/mod.rs` 的
+//! `#[cfg(windows)]`），也不支持系统托盘，关闭窗口改由 Dock 图标恢复。
 //!
-//! 托盘随模块生命周期动态创建 / 销毁：设置里切换开关保存后，`save_config` 调用
-//! `ModuleRegistry::apply`，本模块的 `init` 构建托盘、`dispose` 移除托盘，无需重启。
-//! 前端只需据此显示设置徽标，没有后端命令。
+//! 托盘在 `setup` 中随窗口一起构建、退出时移除。左键单击恢复主窗口，
+//! 右键菜单提供「显示 / 退出」；「退出」通过 [`tauri::AppHandle::exit`] 真正结束进程，
+//! 不触发「关闭 → 隐藏」逻辑。
 
-use parking_lot::Mutex;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager};
 
-use crate::config::feature_flags::{module_id, FeatureFlags, PluggableModule};
-use crate::error::{AppError, AppResult};
-use crate::modules::ModuleContext;
-
 /// 托盘资源 id。创建与移除都用它定位，保证同一时刻最多一个托盘。
 const TRAY_ID: &str = "pterm-tray";
 
-/// 系统托盘模块。
-///
-/// 托盘句柄由 Tauri 的资源表持有，这里只记住 app 句柄：`dispose` 没有上下文参数，
-/// 只能靠它按 id 移除托盘。
-#[derive(Default)]
-pub struct SystemTrayModule {
-    app: Mutex<Option<AppHandle>>,
-}
-
-impl SystemTrayModule {
-    pub fn new() -> Self {
-        Self::default()
-    }
-}
-
-impl PluggableModule for SystemTrayModule {
-    fn id(&self) -> &'static str {
-        module_id::SYSTEM_TRAY
+/// 构建托盘图标与右键菜单。幂等：已存在则直接返回。
+pub fn build_tray(app: &AppHandle) -> tauri::Result<()> {
+    if app.tray_by_id(TRAY_ID).is_some() {
+        return Ok(());
     }
 
-    fn is_enabled(&self, flags: &FeatureFlags) -> bool {
-        flags.auxiliary.system_tray
-    }
-
-    fn init(&self, ctx: &ModuleContext) -> AppResult<()> {
-        build_tray(&ctx.app).map_err(|e| AppError::Other(format!("构建系统托盘失败：{e}")))?;
-        *self.app.lock() = Some(ctx.app.clone());
-        log::info!("系统托盘已启用：关闭窗口将最小化到托盘");
-        Ok(())
-    }
-
-    fn dispose(&self) -> AppResult<()> {
-        if let Some(app) = self.app.lock().take() {
-            remove_tray(&app);
-        }
-        log::info!("系统托盘已关闭");
-        Ok(())
-    }
-}
-
-/// 构建托盘图标与右键菜单（FEATURES.md §6）。
-///
-/// 左键单击恢复到主窗口，右键菜单提供「显示 / 退出」。
-/// 「退出」通过 [`tauri::AppHandle::exit`] 真正结束进程，不触发「关闭 → 隐藏」逻辑。
-fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     let show = MenuItem::with_id(app, "show", "显示", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&show, &quit])?;
@@ -79,22 +37,11 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
                 ..
             } = event
             {
-                let app = tray.app_handle();
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.show();
-                    let _ = window.unminimize();
-                    let _ = window.set_focus();
-                }
+                show_main_window(tray.app_handle());
             }
         })
         .on_menu_event(|app, event| match event.id().as_ref() {
-            "show" => {
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.show();
-                    let _ = window.unminimize();
-                    let _ = window.set_focus();
-                }
-            }
+            "show" => show_main_window(app),
             "quit" => app.exit(0),
             _ => {}
         });
@@ -109,8 +56,17 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
 }
 
 /// 移除托盘图标与菜单。可重复调用。
-fn remove_tray(app: &AppHandle) {
+pub fn remove_tray(app: &AppHandle) {
     if app.remove_tray_by_id(TRAY_ID).is_none() {
         log::warn!("未找到 id 为 {TRAY_ID} 的托盘，可能已被移除");
+    }
+}
+
+/// 呼出被隐藏到后台的主窗口。
+fn show_main_window(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
     }
 }

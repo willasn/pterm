@@ -16,6 +16,14 @@ const PROGRESS_EVENT = "update:progress";
 const CACHE_KEY = "pterm.update.check";
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
+/**
+ * 当前运行版本，由启动流程写入。
+ *
+ * 检查结果缓存必须绑定运行版本：升级（或开发/打包版本切换）后旧结果不再可信，
+ * 否则会出现「当前已是 X，却仍提示可更新到 X」这类自相矛盾的展示。
+ */
+let appVersion = "";
+
 export interface UpdateInfo {
   has_update: boolean;
   current: string;
@@ -93,6 +101,8 @@ function cacheRead(): { at: number; info: UpdateInfo } | null {
     if (!raw) return null;
     const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed.at !== "number" || !parsed.info) return null;
+    // 缓存生成时的运行版本与当前不一致（升级/切换版本）→ 视为无缓存，重新检查。
+    if (appVersion && parsed.info.current && parsed.info.current !== appVersion) return null;
     return parsed;
   } catch (_) {
     return null;
@@ -110,7 +120,7 @@ function cacheWrite(info: UpdateInfo): void {
 /** 把一次检查结果落到状态里。 */
 function applyInfo(info: UpdateInfo): void {
   setState({
-    current: info.current || state.current,
+    current: appVersion || info.current || state.current,
     latest: info.latest,
     notes: info.notes,
     publishedAt: info.published_at,
@@ -121,6 +131,22 @@ function applyInfo(info: UpdateInfo): void {
     // 有新版本就重新展示提示条（即使上次点过「稍后」）
     dismissed: info.has_update ? false : state.dismissed,
   });
+}
+
+/** 启动流程设置当前运行版本；版本变化时作废缓存并纠正状态里的「当前版本」。 */
+export function setAppVersion(version: string): void {
+  const next = (version || "").trim();
+  if (!next || next === appVersion) return;
+  const changed = !!appVersion;
+  appVersion = next;
+  if (changed) {
+    try {
+      localStorage.removeItem(CACHE_KEY);
+    } catch (_) {
+      /* 存储不可用时忽略 */
+    }
+  }
+  if (state.current !== next) setState({ current: next });
 }
 
 /** 配置派发：记录开关；关闭时清空提示与状态。 */

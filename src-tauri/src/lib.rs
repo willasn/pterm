@@ -25,7 +25,6 @@ use modules::global_search::GlobalSearchModule;
 use modules::quick_panel::QuickPanelModule;
 use modules::shortcuts::ShortcutsModule;
 use modules::snippets::SnippetsModule;
-use modules::system_tray::SystemTrayModule;
 use modules::theme::ThemeModule;
 use modules::ModuleRegistry;
 use state::AppState;
@@ -97,8 +96,6 @@ pub fn run() {
             registry.register(Arc::new(ShortcutsModule::new()));
             // 快捷命令面板列动作并在前端过滤执行（js/quick_panel.js），无运行期状态
             registry.register(Arc::new(QuickPanelModule::new()));
-            // 系统托盘由模块生命周期构建 / 移除（modules/system_tray），这里注册即可
-            registry.register(Arc::new(SystemTrayModule::new()));
             // 自动更新无运行期状态，检查与安装都由命令驱动（modules/auto_update）
             registry.register(Arc::new(AutoUpdateModule::new()));
             // AI 助手服务与模块共用同一实例：命令层与后台流式任务共用一个 HTTP 客户端
@@ -120,15 +117,23 @@ pub fn run() {
             state.modules.apply(&ctx)?;
             app.manage(state);
 
+            // 系统托盘仅 Windows 提供，且恒定常驻（设置里的开关已移除，不再可配置）。
+            // macOS 不支持系统托盘，关闭窗口改由 Dock 图标恢复（见下方 RunEvent::Reopen）。
+            #[cfg(windows)]
+            modules::system_tray::build_tray(app.handle())
+                .map_err(|e| crate::error::AppError::Other(format!("构建系统托盘失败：{e}")))?;
+
             Ok(())
         })
         .on_window_event(|window, event| {
-            // 系统托盘启用时，「关闭窗口」改为隐藏到托盘，否则按默认关闭退出应用。
+            // 关闭窗口（叉号 / Cmd+W）只隐藏到后台，不退出进程：
+            // SSH 会话、端口转发、AI 流式任务等后台能力需要持续保活。
+            // 恢复入口：macOS 点击 Dock 图标（见下方 RunEvent::Reopen）；
+            // Windows 常驻系统托盘，左键单击或右键「显示」呼出窗口。
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                if window.state::<AppState>().flags().auxiliary.system_tray {
-                    let _ = window.hide();
-                    api.prevent_close();
-                }
+                api.prevent_close();
+                let _ = window.hide();
+                log::info!("主窗口已隐藏到后台，进程保活");
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -238,12 +243,25 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("构建 Tauri 应用失败")
-        .run(|app, event| {
-            if let tauri::RunEvent::Exit = event {
+        .run(|app, event| match event {
+            // macOS 点击 Dock 图标（且当前无可见窗口）时，重新呼出被隐藏的主窗口。
+            #[cfg(target_os = "macos")]
+            tauri::RunEvent::Reopen { .. } => {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.unminimize();
+                    let _ = window.set_focus();
+                }
+            }
+            tauri::RunEvent::Exit => {
                 let state = app.state::<AppState>();
                 state.sessions.close_all();
                 state.modules.dispose_all();
+                // Windows 常驻托盘随进程退出一起移除。
+                #[cfg(windows)]
+                modules::system_tray::remove_tray(app);
                 log::info!("pterm 已退出");
             }
+            _ => {}
         });
 }

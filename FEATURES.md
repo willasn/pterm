@@ -47,6 +47,7 @@
 | [x] | 基础设置 | 应用级基础设置面板（默认字体、回滚行数、外壳参数） | `src/features/settings/` |
 | [x] | 界面语言 | 中英文界面切换，无开关，作为设置「通用 → 语言」的基础设置；语言包外置，切换立即生效 | `src/features/i18n/` + `src/public/locales/en-US.json` |
 | [x] | 首次启动引导 | 新装首次打开时先展示一屏语言选择（按系统语言预选，点击卡片即切换界面语言），确认后写入配置目录下的本机标记文件 `onboarding.done`，之后启动不再出现。标记为本机私有、不随 Git 同步，故换机后会重新引导一次。核心，无开关 | `src/features/onboarding/`、`src-tauri/src/config/commands.rs` |
+| [x] | 窗口关闭保活 | 关闭窗口（叉号 / Cmd+W）只隐藏到后台、不退出进程，SSH 会话、端口转发、AI 任务等后台能力持续运行。恢复入口：macOS 点击 Dock 图标；Windows 常驻系统托盘（左键单击或右键「显示」呼出窗口，右键「退出」结束进程）。核心，无开关 | `src-tauri/src/lib.rs` |
 
 ---
 
@@ -95,7 +96,7 @@ features:
 | [x] | SFTP | `sftp` | 文件浏览、上传、下载、删除、重命名、权限修改；支持文件夹递归传输、拖拽上传、传输进度与中断 | `src/features/sftp/`、`src-tauri/src/features/sftp/` |
 | [x] | 端口转发 | `port_forward` | 本地转发 / 远程转发 / 动态转发（SOCKS5），支持启停与状态查看 | `src/features/port-forward/`、`src-tauri/src/features/port_forward/` |
 | [x] | 跳板机 | `jump_host` | 通过 ProxyJump 链式连接（支持多级） | `src-tauri/src/ssh/jump.rs` |
-| [x] | 会话日志 | `session_log` | 按会话落盘完整终端输出，支持开关与保留天数 | `src/features/session-log/`、`src-tauri/src/features/session_log/` |
+| [x] | 会话日志 | `session_log` | 按会话落盘完整终端输出，支持开关、保留天数（默认 10 天）、保留条数（默认 20 条）与单文件大小上限（默认 100 KB，超出丢弃最旧内容）；天数 / 条数 / 上限任一置 0 表示该项不限制。预览按「单个文件」截取末尾 10 KB | `src/features/session-log/`、`src-tauri/src/features/session_log/` |
 | [x] | 自动重连 | `auto_reconnect` | 断线后指数退避重连，可配置最大次数与间隔 | `src-tauri/src/ssh/session.rs` |
 | [x] | 连接分组 | `connection_group` | 连接按文件夹/标签分组，支持折叠与搜索 | `src-tauri/src/config/app_config.rs` |
 | [x] | 导入导出 | `import_export` | 导入/导出连接配置（含 `~/.ssh/config` 解析），导出时排除凭据 | `src/features/import-export/`、`src-tauri/src/features/import_export/` |
@@ -168,13 +169,14 @@ features:
 
 ## 6. 辅助
 
+> 系统托盘**仅 Windows 提供、恒定常驻，不设功能开关**（设置里不再出现「系统托盘」项，macOS 不支持系统托盘）。
+
 ```yaml
 features:
   snippets:        true    # 必开项
   global_search:   true    # 必开项
   command_history: true    # 必开项
   quick_panel:     true
-  system_tray:     false
   auto_update:     true
   theme:           true    # 必开项
   shortcuts:       true    # 总开关在「设置 → 快捷键」
@@ -187,7 +189,6 @@ features:
 | [x] | 全局搜索 | `global_search` | 跨连接 / 片段 / 历史 / 设置的统一模糊搜索 | `src/features/search/`、`src-tauri/src/modules/global_search/` |
 | [x] | 命令历史 | `command_history` | 记录并检索历史执行的命令，支持去重与频率排序 | `src/features/history/`、`src-tauri/src/modules/command_history/` |
 | [x] | 快捷面板 | `quick_panel` | 全局快捷键唤起的命令面板（类 Spotlight） | `src/features/quick-panel/`、`src-tauri/src/modules/quick_panel/` |
-| [x] | 系统托盘 | `system_tray` | 托盘图标、菜单、最小化到托盘 | `src-tauri/src/lib.rs` + `src-tauri/src/modules/system_tray/` |
 | [x] | 自动更新 | `auto_update` | 开关控制启动后自动从 GitHub Releases 检查新版本（结果按天缓存）并在发现新版时右下角提示；设置「关于 → 软件更新」页的「检查更新」按钮始终可用，关闭开关也能主动手动检查。确认后下载、校验签名并安装，装完重启应用（Tauri updater） | `src-tauri/src/modules/auto_update/`、`src/features/auto-update/` |
 | [x] | 主题 | `theme` | 内置亮/暗主题 + 自定义配色，终端配色独立配置 | `src/styles/theme.css`、`src-tauri/src/modules/theme/` |
 | [x] | 快捷键 | `shortcuts` | 全部操作可绑定快捷键；设置页每个动作固定一行，左侧只读描述，可逐条启用 / 禁用、改键或清空解绑，附冲突检测 | `src/features/shortcuts/`、`src/features/settings/`、`src-tauri/src/modules/shortcuts/` |

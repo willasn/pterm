@@ -338,6 +338,23 @@ body {
   font-size: var(--fs-xl);
   font-weight: 600;
   letter-spacing: 0.04em;
+  /* 与吉祥物浮动同周期（4.5s），在它上浮到最高点的瞬间被轻碰一下 */
+  animation: empty-mark-bump 4.5s ease-in-out infinite;
+}
+
+/* 吉祥物上浮到顶点（empty-figure-float 的 50%）触碰品牌文字，文字轻轻弹跳一下 */
+@keyframes empty-mark-bump {
+  0%,
+  50%,
+  100% {
+    transform: translateY(0);
+  }
+  57% {
+    transform: translateY(-5px);
+  }
+  64% {
+    transform: translateY(-1px);
+  }
 }
 
 .empty-state p {

@@ -1,6 +1,6 @@
 [package]
 name = "pterm"
-version = "0.1.0"
+version = "0.1.2"
 description = "跨平台 SSH 终端客户端"
 authors = ["pterm"]
 edition = "2021"
@@ -15,7 +15,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["tray-icon"] }
+tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 # 自动更新（FEATURES.md §6）：从 GitHub Releases 的 latest.json 检查并安装更新
 tauri-plugin-updater = "2"
@@ -52,6 +52,11 @@ env_logger = "0.11"
 parking_lot = "0.12"
 dirs = "5"
 tauri-plugin-single-instance = "2.5.3"
+
+# 系统托盘（仅 Windows）：托盘图标 / 右键菜单依赖 tauri 的 tray-icon feature。
+# macOS 不支持系统托盘，通用依赖里不开启该 feature，避免无用编译。
+[target.'cfg(windows)'.dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
 
 [profile.release]
 codegen-units = 1

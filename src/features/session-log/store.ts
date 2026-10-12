@@ -108,7 +108,7 @@ async function run(label: string, fn: () => Promise<unknown>): Promise<void> {
   }
 }
 
-/** 选中文件并读取尾部内容（最多 64 KB）。 */
+/** 选中单个文件并读取其末尾内容（仅单个文件，最多截取末尾 10 KB）。 */
 export async function selectLog(name: string): Promise<void> {
   let preview: string;
   try {

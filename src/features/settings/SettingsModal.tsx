@@ -381,10 +381,24 @@ function ConnectionCategory() {
       <Section title="会话日志" desc={sessionLogOn ? null : "「会话日志」开关已关闭，该设置暂不生效。"}>
         <NumberField
           label="保留天数"
-          hint="超过该天数的日志会被清理"
+          hint="超过该天数的日志会被清理；填 0 表示不按天数清理"
           path="features.connection.session_log_retention_days"
-          fallback={30}
-          attrs={{ min: 1 }}
+          fallback={10}
+          attrs={{ min: 0 }}
+        />
+        <NumberField
+          label="保留条数"
+          hint="最多保留最近修改的 N 个日志文件，超出的最旧文件会被清理；填 0 表示不按条数清理"
+          path="features.connection.session_log_retention_count"
+          fallback={20}
+          attrs={{ min: 0 }}
+        />
+        <NumberField
+          label="单文件大小上限"
+          hint="单个日志文件达到该大小（KB）后丢弃最旧内容、只保留最近的部分；填 0 表示不限"
+          path="features.connection.session_log_max_file_kb"
+          fallback={100}
+          attrs={{ min: 0 }}
         />
       </Section>
     </>

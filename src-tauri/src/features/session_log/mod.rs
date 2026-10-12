@@ -6,8 +6,10 @@
 //! - 落盘发生在 SSH 核心的数据泵里（经由 [`crate::ssh::session::OutputSink`] 抽象），
 //!   与前端渲染完全解耦：前端卡顿或标签关闭都不会丢日志。
 //! - 一个会话一个文件，跨自动重连复用同一文件，命名为 `本地时间-会话名.log`。
+//! - 单个文件可设大小上限：超出时丢弃最旧内容、只保留最近的部分（置 0 表示不限）。
 //! - 模块关闭时正在记录的会话立即停止写入（`enabled` 置 false 而非删文件）。
-//! - 过期清理按「保留天数」在模块初始化时执行一次；置 0 表示不清理。
+//! - 过期清理按「保留天数」与「保留条数」在模块初始化时各执行一次；
+//!   任一项置 0 表示该项不清理。
 
 use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
@@ -31,6 +33,10 @@ pub mod commands;
 /// 文件名中允许保留的最大字符数。
 const NAME_LIMIT: usize = 48;
 
+/// 单次预览单个日志文件时，最多读取的**文件末尾**字节数（10 KB）。
+/// 注意这是「单个文件」的上限，不是全部日志的总量上限。
+const PREVIEW_TAIL_LIMIT: usize = 10 * 1024;
+
 // ---------------------------------------------------------------------------
 // 单个会话的日志文件
 // ---------------------------------------------------------------------------
@@ -43,17 +49,22 @@ struct LogFile {
     path: PathBuf,
     file: File,
     written: AtomicU64,
+    /// 单文件大小上限（字节）；0 表示不限。
+    max_bytes: u64,
     /// 模块被关闭 / 会话结束后置 false，之后不再接受写入
     enabled: AtomicBool,
 }
 
 impl LogFile {
-    fn create(path: PathBuf) -> AppResult<Self> {
+    fn create(path: PathBuf, max_bytes: u64) -> AppResult<Self> {
         let file = OpenOptions::new().create(true).append(true).open(&path)?;
+        // 复用的文件（一般不会出现）按其现有大小起算，避免上限判断失真
+        let written = file.metadata().map(|m| m.len()).unwrap_or(0);
         Ok(Self {
             path,
             file,
-            written: AtomicU64::new(0),
+            written: AtomicU64::new(written),
+            max_bytes,
             enabled: AtomicBool::new(true),
         })
     }
@@ -63,6 +74,38 @@ impl LogFile {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default()
+    }
+
+    /// 超过上限时丢弃最旧内容，只保留最近的一段（约 3/4 上限）。
+    ///
+    /// 一次性留出 1/4 的余量，避免每次写入都重写整个文件——否则文件在到达上限后
+    /// 每次追加都会触发压缩，开销与文件大小成正比。
+    fn compact_if_needed(&self) {
+        if self.max_bytes == 0 || self.written.load(Ordering::Relaxed) <= self.max_bytes {
+            return;
+        }
+        let keep = (self.max_bytes * 3 / 4).max(1);
+        let data = match std::fs::read(&self.path) {
+            Ok(d) => d,
+            Err(e) => {
+                log::warn!("读取会话日志 {} 失败：{e}", self.path.display());
+                return;
+            }
+        };
+        let keep = keep.min(data.len() as u64) as usize;
+        let tail = &data[data.len() - keep..];
+        // 用独立句柄截断重写；追加句柄以 O_APPEND 写入，下一次写入会落到新的文件末尾
+        match std::fs::write(&self.path, tail) {
+            Ok(()) => {
+                self.written.store(tail.len() as u64, Ordering::Relaxed);
+                log::debug!(
+                    "会话日志 {} 超出单文件上限，已丢弃最旧内容，保留最近 {} 字节",
+                    self.path.display(),
+                    tail.len()
+                );
+            }
+            Err(e) => log::warn!("截断会话日志 {} 失败：{e}", self.path.display()),
+        }
     }
 }
 
@@ -76,6 +119,7 @@ impl OutputSink for LogFile {
         match file.write_all(bytes) {
             Ok(()) => {
                 self.written.fetch_add(bytes.len() as u64, Ordering::Relaxed);
+                self.compact_if_needed();
             }
             Err(e) => log::warn!("写入会话日志 {} 失败：{e}", self.path.display()),
         }
@@ -161,6 +205,53 @@ impl SessionLog {
         }
     }
 
+    /// 删除超出保留条数的日志，只保留最近修改的 `retention_count` 个。
+    ///
+    /// `retention_count = 0` 表示不清理；正在记录中的文件永不删除。
+    pub fn cleanup_excess(&self, retention_count: u32) {
+        if retention_count == 0 {
+            return;
+        }
+        let keep = retention_count as usize;
+        let active_names: HashSet<String> =
+            self.active.lock().values().map(|f| f.name()).collect();
+        let entries = match std::fs::read_dir(&self.dir) {
+            Ok(e) => e,
+            Err(e) => {
+                log::warn!("读取会话日志目录失败：{e}");
+                return;
+            }
+        };
+        // (路径, 最后修改时间, 文件名)
+        let mut files: Vec<(PathBuf, SystemTime, String)> = Vec::new();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !is_log_file(&path) {
+                continue;
+            }
+            let Ok(modified) = entry.metadata().and_then(|m| m.modified()) else {
+                continue;
+            };
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default()
+                .to_string();
+            files.push((path, modified, name));
+        }
+        // 最新的在前；保留前 keep 个，其余删除（记录中的文件跳过）
+        files.sort_by(|a, b| b.1.cmp(&a.1));
+        for (index, (path, _, name)) in files.iter().enumerate() {
+            if index < keep || active_names.contains(name) {
+                continue;
+            }
+            match std::fs::remove_file(path) {
+                Ok(()) => log::info!("已清理超出保留条数的会话日志 {}", path.display()),
+                Err(e) => log::warn!("删除会话日志 {} 失败：{e}", path.display()),
+            }
+        }
+    }
+
     /// 列出全部日志文件，最新的在前。
     pub fn list(&self) -> AppResult<Vec<LogEntry>> {
         let active_names: HashSet<String> = self
@@ -200,11 +291,15 @@ impl SessionLog {
         Ok(out)
     }
 
-    /// 读取日志尾部内容。`max_bytes` 为 0 时按默认上限截断。
+    /// 读取单个日志文件末尾的内容。
+    ///
+    /// `max_bytes` 为该**单个文件**的读取上限，为 0 时按默认上限
+    /// [`PREVIEW_TAIL_LIMIT`]（10 KB）截断；这是单个文件的末尾截取，
+    /// 与全部日志文件的总大小无关。
     pub fn read(&self, name: &str, max_bytes: usize) -> AppResult<String> {
         let path = self.resolve(name)?;
         let data = std::fs::read(&path)?;
-        let limit = if max_bytes == 0 { 64 * 1024 } else { max_bytes };
+        let limit = if max_bytes == 0 { PREVIEW_TAIL_LIMIT } else { max_bytes };
         let take = data.len().min(limit);
         let slice = &data[data.len() - take..];
         Ok(String::from_utf8_lossy(slice).into_owned())
@@ -259,9 +354,9 @@ impl SessionLog {
 }
 
 impl SessionLogger for SessionLog {
-    fn open(&self, info: &SessionInfo) -> Option<Arc<dyn OutputSink>> {
+    fn open(&self, info: &SessionInfo, max_bytes: u64) -> Option<Arc<dyn OutputSink>> {
         let path = self.allocate_path(&info.name);
-        match LogFile::create(path) {
+        match LogFile::create(path, max_bytes) {
             Ok(file) => {
                 let file = Arc::new(file);
                 self.active.lock().insert(info.id.clone(), file.clone());
@@ -309,11 +404,15 @@ impl PluggableModule for SessionLogModule {
 
     fn init(&self, ctx: &ModuleContext) -> AppResult<()> {
         std::fs::create_dir_all(&self.service.dir)?;
-        let days = ctx.config.flags().connection.session_log_retention_days;
-        self.service.cleanup_expired(days);
+        let conn = &ctx.config.flags().connection;
+        self.service.cleanup_expired(conn.session_log_retention_days);
+        self.service.cleanup_excess(conn.session_log_retention_count);
         log::info!(
-            "会话日志已启用：目录 {}，保留 {days} 天",
-            self.service.dir.display()
+            "会话日志已启用：目录 {}，保留 {} 天 / {} 条（置 0 表示该项不清理），单文件上限 {} KB（置 0 表示不限）",
+            self.service.dir.display(),
+            conn.session_log_retention_days,
+            conn.session_log_retention_count,
+            conn.session_log_max_file_kb
         );
         Ok(())
     }
@@ -371,5 +470,51 @@ mod tests {
         assert!(service.resolve("../config.yaml").is_err());
         assert!(service.resolve("a/b.log").is_err());
         assert!(service.resolve("..").is_err());
+    }
+
+    #[test]
+    fn cleanup_excess_keeps_newest_files() {
+        let dir = std::env::temp_dir().join(format!(
+            "pterm-session-log-excess-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let files: Vec<PathBuf> = (0..5)
+            .map(|i| dir.join(format!("log-{i}.log")))
+            .collect();
+        for (i, path) in files.iter().enumerate() {
+            let file = File::create(path).unwrap();
+            // 修改时间递增：i 越大越新
+            file.set_modified(SystemTime::now() + Duration::from_secs(i as u64))
+                .unwrap();
+        }
+
+        SessionLog::new(dir.clone()).cleanup_excess(2);
+
+        assert!(!files[0].exists());
+        assert!(!files[1].exists());
+        assert!(!files[2].exists());
+        assert!(files[3].exists());
+        assert!(files[4].exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn log_file_truncates_oldest_when_exceeding_max() {
+        let dir = std::env::temp_dir().join(format!("pterm-logfile-cap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("cap.log");
+        let file = LogFile::create(path.clone(), 100).unwrap();
+        // 依次写入 60 字节的 a / b / c，累计 180 字节，超出 100 字节上限
+        for byte in [b'a', b'b', b'c'] {
+            file.append("stdout", &[byte; 60]);
+        }
+        let len = std::fs::metadata(&path).unwrap().len();
+        assert!(len <= 100, "单文件不应超过上限，实际 {len}");
+        let data = std::fs::read(&path).unwrap();
+        assert_eq!(data.last().copied(), Some(b'c'), "应保留最近写入的内容");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
