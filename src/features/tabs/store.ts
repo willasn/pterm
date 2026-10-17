@@ -6,6 +6,11 @@ interface OpenableModule {
   open(): void;
 }
 
+/** SFTP 模块额外提供「跳过选择框、直连指定会话」的入口。 */
+interface SftpModule extends OpenableModule {
+  openFor(params: any): void;
+}
+
 let terminal: { get(id: string | null): any; list(): any[] };
 let ssh: { close(id: string): void; connect(params: any): Promise<any>; reconnect(id: string): Promise<any> };
 let split: { start(dir: "h" | "v"): void; stop(): void; sync(): void };
@@ -21,11 +26,9 @@ let syncInput: {
   onTabGone(id: string): boolean;
   onTabsFromSplit(id: string, created: string[]): void;
 };
-let sftp: OpenableModule;
+let sftp: SftpModule;
 let portForward: OpenableModule;
-let sessionLog: OpenableModule;
 let snippets: OpenableModule;
-let history: OpenableModule;
 let ai: { renderBadge(): void };
 
 export function wireDependencies(deps: {
@@ -33,14 +36,12 @@ export function wireDependencies(deps: {
   ssh: typeof ssh;
   split: typeof split;
   syncInput: typeof syncInput;
-  sftp: typeof sftp;
-  portForward: typeof portForward;
-  sessionLog: typeof sessionLog;
-  snippets: typeof snippets;
-  history: typeof history;
+  sftp: SftpModule;
+  portForward: OpenableModule;
+  snippets: OpenableModule;
   ai: typeof ai;
 }): void {
-  ({ terminal, ssh, split, syncInput, sftp, portForward, sessionLog, snippets, history, ai } = deps);
+  ({ terminal, ssh, split, syncInput, sftp, portForward, snippets, ai } = deps);
 }
 
 /**
@@ -266,11 +267,9 @@ function tabMenu(group: PaneGroup, tab: HTMLElement): any[] {
   }
 
   const modules = [
-    conn.sftp ? { label: "打开 SFTP", icon: "⇅", run: () => openModule(sftp) } : null,
+    conn.sftp ? { label: "打开 SFTP", icon: "⇅", run: () => openSftpForTab(ctrl) } : null,
     conn.port_forward ? { label: "端口转发", icon: "⇄", run: () => openModule(portForward) } : null,
-    conn.session_log ? { label: "会话日志", icon: "▤", run: () => openModule(sessionLog) } : null,
     aux.snippets ? { label: "命令片段", icon: "⌘", run: () => openModule(snippets) } : null,
-    aux.command_history ? { label: "命令历史", icon: "⟲", run: () => openModule(history) } : null,
   ].filter(Boolean);
   if (modules.length) items.push({ sep: true }, ...modules);
 
@@ -280,6 +279,17 @@ function tabMenu(group: PaneGroup, tab: HTMLElement): any[] {
     { label: "关闭其他标签", icon: "⊘", danger: true, run: () => closeOthers(group) }
   );
   return items;
+}
+
+/** 打开 SFTP 并直连当前标签的会话；本地终端无 SSH 参数，退回面板选择框。 */
+function openSftpForTab(ctrl: any): void {
+  const params = ctrl && ctrl.params;
+  if (!params || params.kind === "local" || !params.host) {
+    openModule(sftp);
+    return;
+  }
+  if (typeof sftp.openFor === "function") sftp.openFor(params);
+  else openModule(sftp);
 }
 
 /** 模块可能未启用或未加载，open 不可用时静默跳过。 */

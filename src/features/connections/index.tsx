@@ -1,9 +1,6 @@
 import { useEffect } from "react";
-import { openPanel as openHistory } from "../history/store";
 import { openPanel as openPortForward } from "../port-forward/store";
-import { openPanel as openSessionLog } from "../session-log/store";
-import { openPanel as openSftp } from "../sftp/store";
-import { openPanel as openSnippets } from "../snippets/store";
+import { openFor as openSftpFor, openPanel as openSftp } from "../sftp/store";
 import { ConnectionForm } from "./ConnectionForm";
 import { useConnections, wireDependencies } from "./store";
 
@@ -18,11 +15,8 @@ export function ConnectionsFeature() {
 
   useEffect(() => {
     wireDependencies({
-      sftp: { open: openSftp },
+      sftp: { open: openSftp, openFor: openSftpFor },
       portForward: { open: openPortForward },
-      sessionLog: { open: openSessionLog },
-      snippets: { open: openSnippets },
-      history: { open: openHistory },
     });
   }, []);
 

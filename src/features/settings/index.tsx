@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { KnownHostsModal } from "./KnownHostsModal";
 import { SettingsModal } from "./SettingsModal";
 import { open, reset, save, searchIndex } from "./store";
 
@@ -18,5 +19,10 @@ export function SettingsFeature() {
     };
   }, []);
 
-  return <SettingsModal />;
+  return (
+    <>
+      <SettingsModal />
+      <KnownHostsModal />
+    </>
+  );
 }

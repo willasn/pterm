@@ -337,8 +337,9 @@ impl FeatureFlags {
     /// 配置文件里写成 false 也会在加载 / 重置时被强制回写为 true。
     ///
     /// 目前包含：多标签、分屏、连接分组、配置导入导出、快捷连接、同步输入、远程桌面
-    /// （`connection.*`），Git 同步（`sync.git_sync`），流式响应（`ai.ai_streaming`），
-    /// 命令片段 / 全局搜索 / 命令历史 / 主题 / 崩溃日志（`auxiliary.*`）。
+    /// （`connection.*`），Git 同步（`sync.git_sync`），流式响应、危险命令提示
+    /// （`ai.ai_streaming` / `ai.ai_danger_warning`），
+    /// 命令片段 / 全局搜索 / 命令历史 / 快捷面板 / 主题 / 崩溃日志（`auxiliary.*`）。
     /// 返回值表示是否发生了改动，供调用方决定要不要回写文件。
     pub fn enforce_mandatory(&mut self) -> bool {
         // 全部是不相交的字段，可以同时可变借用
@@ -352,9 +353,11 @@ impl FeatureFlags {
             &mut self.connection.rdp,
             &mut self.sync.git_sync,
             &mut self.ai.ai_streaming,
+            &mut self.ai.ai_danger_warning,
             &mut self.auxiliary.snippets,
             &mut self.auxiliary.global_search,
             &mut self.auxiliary.command_history,
+            &mut self.auxiliary.quick_panel,
             &mut self.auxiliary.theme,
             &mut self.auxiliary.crash_log,
         ];

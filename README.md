@@ -60,9 +60,9 @@ pterm/
 │       │   ├── global_search/   # 全局搜索（可开关，检索逻辑在前端）
 │       │   ├── command_history/ # 命令历史（可开关）
 │       │   ├── local_terminal/  # 本地终端（可开关，本机 PTY shell）
-│       │   ├── quick_panel/     # 快捷面板（可开关）
+│       │   ├── quick_panel/     # 快捷面板（必开，恒定开启）
 │       │   ├── system_tray/     # 系统托盘（仅 Windows，恒定常驻）
-│       │   ├── auto_update/     # 自动更新（可开关，从 GitHub Releases 检查并安装。Tauri updater）
+│       │   ├── auto_update/     # 自动更新（开关在设置「关于 → 软件更新」，从 GitHub Releases 检查并安装。Tauri updater）
 │       │   ├── theme/           # 主题（可开关，配色在前端 src/styles/theme.css）
 │       │   └── shortcuts/       # 快捷键（可开关，派发在前端 src/features/shortcuts/）
 │       ├── features/            # 用户可配置的功能点

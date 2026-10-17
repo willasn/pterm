@@ -109,3 +109,68 @@ fn require_enabled(state: &State<'_, AppState>) -> AppResult<()> {
         Err(AppError::ModuleDisabled("崩溃日志".into()))
     }
 }
+
+// ---------------------------------------------------------------------------
+// 系统剪贴板
+//
+// macOS 打包后页面运行在 `tauri://` 自定义协议下，WKWebView 不把它视为安全上下文，
+// `navigator.clipboard` 往往不存在；Linux 的 WebKitGTK 也可能拒绝读取。终端里的
+// 复制 / 粘贴因此统一回退到这里，用 arboard 直接读写系统剪贴板。
+// ---------------------------------------------------------------------------
+
+/// Linux 的 X11 剪贴板是「所有者」模型：内容由本进程的线程持续应答，实例销毁后
+/// 内容即失效，因此全局复用一个实例（同时用锁串行化访问）。macOS / Windows 的
+/// 剪贴板由系统持有，Windows 的实例还与创建线程绑定，按需创建更安全。
+#[cfg(target_os = "linux")]
+fn with_clipboard<T>(run: impl FnOnce(&mut arboard::Clipboard) -> AppResult<T>) -> AppResult<T> {
+    use std::sync::{Mutex, OnceLock};
+
+    static CLIPBOARD: OnceLock<Mutex<arboard::Clipboard>> = OnceLock::new();
+    if CLIPBOARD.get().is_none() {
+        let clipboard = arboard::Clipboard::new()
+            .map_err(|e| AppError::Other(format!("无法访问系统剪贴板：{e}")))?;
+        let _ = CLIPBOARD.set(Mutex::new(clipboard));
+    }
+    let cell = CLIPBOARD
+        .get()
+        .ok_or_else(|| AppError::Other("剪贴板初始化失败".into()))?;
+    let mut clipboard = cell
+        .lock()
+        .map_err(|_| AppError::Other("剪贴板状态异常".into()))?;
+    run(&mut clipboard)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn with_clipboard<T>(run: impl FnOnce(&mut arboard::Clipboard) -> AppResult<T>) -> AppResult<T> {
+    let mut clipboard = arboard::Clipboard::new()
+        .map_err(|e| AppError::Other(format!("无法访问系统剪贴板：{e}")))?;
+    run(&mut clipboard)
+}
+
+/// 读取系统剪贴板文本。剪贴板中没有文本（例如只有图片）时返回空串。
+#[tauri::command]
+pub async fn clipboard_read_text() -> AppResult<String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        with_clipboard(|clipboard| match clipboard.get_text() {
+            Ok(text) => Ok(text),
+            Err(arboard::Error::ContentNotAvailable) => Ok(String::new()),
+            Err(e) => Err(AppError::Other(format!("读取剪贴板失败：{e}"))),
+        })
+    })
+    .await
+    .map_err(|e| AppError::Other(format!("读取剪贴板失败：{e}")))?
+}
+
+/// 写入系统剪贴板文本。
+#[tauri::command]
+pub async fn clipboard_write_text(text: String) -> AppResult<()> {
+    tauri::async_runtime::spawn_blocking(move || {
+        with_clipboard(|clipboard| {
+            clipboard
+                .set_text(text)
+                .map_err(|e| AppError::Other(format!("写入剪贴板失败：{e}")))
+        })
+    })
+    .await
+    .map_err(|e| AppError::Other(format!("写入剪贴板失败：{e}")))?
+}

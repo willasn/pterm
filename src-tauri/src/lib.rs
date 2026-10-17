@@ -240,6 +240,7 @@ pub fn run() {
             // AI 助手（可开关）
             modules::ai_assistant::commands::ai_ask,
             modules::ai_assistant::commands::ai_cancel,
+            modules::ai_assistant::commands::ai_set_context_inject,
             modules::ai_assistant::commands::ai_agent_step,
             modules::ai_assistant::commands::ai_test_model,
             modules::ai_assistant::commands::ai_save_model,
@@ -248,6 +249,9 @@ pub fn run() {
             // 崩溃日志（可开关）
             utils::commands::crash_log_read,
             utils::commands::crash_log_export,
+            // 系统剪贴板（核心）：终端复制 / 粘贴在 WebView 无剪贴板 API 时兜底
+            utils::commands::clipboard_read_text,
+            utils::commands::clipboard_write_text,
             // 自动更新（可开关）
             modules::auto_update::commands::auto_update_check,
             modules::auto_update::commands::auto_update_install,

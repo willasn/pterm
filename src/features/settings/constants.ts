@@ -93,11 +93,6 @@ export const FLAG_META: Record<string, { label: string; hint?: string }> = {
   "auxiliary.snippets": { label: "命令片段" },
   "auxiliary.global_search": { label: "全局搜索" },
   "auxiliary.command_history": { label: "命令历史" },
-  "auxiliary.quick_panel": { label: "快捷面板" },
-  "auxiliary.auto_update": {
-    label: "自动更新",
-    hint: "启动后自动检查新版本并弹提示；关闭后仍可在「关于」页手动检查",
-  },
   "auxiliary.theme": { label: "主题", hint: "关闭后外观设置不生效" },
   "auxiliary.shortcuts": { label: "快捷键", hint: "关闭后不响应自定义组合键" },
   "auxiliary.crash_log": { label: "崩溃日志" },
@@ -108,10 +103,13 @@ export const FLAG_META: Record<string, { label: string; hint?: string }> = {
  *
  * - Git 内部细节（提交模板 / 多仓库 / CLI 回退 / 冲突提示 / 徽标）由「设置 → Git 同步」页
  *   与后端默认行为接管。
- * - 已在专属设置页配置：断线自动重连（设置 → 连接）、快捷键总开关（设置 → 快捷键）。
+ * - 已在专属设置页配置：断线自动重连、主机密钥校验（设置 → 连接）、快捷键总开关
+ *   （设置 → 快捷键）、自动更新（设置 → 关于 → 软件更新）。
  * - 必开项（多标签 / 分屏 / 连接分组 / 配置导入导出 / 快捷连接 / 同步输入 / 远程桌面 /
- *   Git 同步 / 流式响应 / 命令片段 / 全局搜索 / 命令历史 / 主题 / 崩溃日志）恒为开启，
- *   后端会强制拉回 true。
+ *   Git 同步 / 流式响应 / 危险命令提示 / 命令片段 / 全局搜索 / 命令历史 / 快捷面板 /
+ *   主题 / 崩溃日志）恒为开启，后端会强制拉回 true。
+ * - 上下文注入（`ai.ai_context_inject`）的开关已移到主界面右侧 AI 助手面板的标题栏，
+ *   设置里不再展示。
  */
 export const HIDDEN_FLAGS = new Set([
   "connection.tabs",
@@ -132,9 +130,13 @@ export const HIDDEN_FLAGS = new Set([
   "sync.git_multi_repo",
   "sync.git_cli_fallback",
   "ai.ai_streaming",
+  "ai.ai_danger_warning",
+  "ai.ai_context_inject",
   "auxiliary.snippets",
   "auxiliary.global_search",
   "auxiliary.command_history",
+  "auxiliary.quick_panel",
+  "auxiliary.auto_update",
   "auxiliary.theme",
   "auxiliary.shortcuts",
   "auxiliary.crash_log",
@@ -149,8 +151,6 @@ export const FLAG_MODULE: Record<string, string> = {
   "auxiliary.command_history": "command_history",
   "auxiliary.theme": "theme",
   "auxiliary.shortcuts": "shortcuts",
-  "auxiliary.quick_panel": "quick_panel",
-  "auxiliary.auto_update": "auto_update",
   "connection.sftp": "sftp",
   "connection.port_forward": "port_forward",
   "connection.session_log": "session_log",

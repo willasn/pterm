@@ -1,10 +1,8 @@
 import { useEffect } from "react";
 import { wireDependencies } from "./store";
 import { renderBadge } from "../ai/store";
-import { openPanel as openHistory } from "../history/store";
 import { openPanel as openPortForward } from "../port-forward/store";
-import { openPanel as openSessionLog } from "../session-log/store";
-import { openPanel as openSftp } from "../sftp/store";
+import { openFor as openSftpFor, openPanel as openSftp } from "../sftp/store";
 import { openPanel as openSnippets } from "../snippets/store";
 import * as split from "../split/store";
 import * as ssh from "../ssh/api";
@@ -19,11 +17,9 @@ export function TabsFeature() {
       ssh,
       split,
       syncInput,
-      sftp: { open: openSftp },
+      sftp: { open: openSftp, openFor: openSftpFor },
       portForward: { open: openPortForward },
-      sessionLog: { open: openSessionLog },
       snippets: { open: openSnippets },
-      history: { open: openHistory },
       ai: { renderBadge },
     });
   }, []);

@@ -168,6 +168,19 @@ pub fn ai_cancel(state: State<'_, AppState>, id: String) -> AppResult<()> {
     Ok(())
 }
 
+/// 切换「上下文注入」开关。
+///
+/// 该开关原先在「设置 → 功能开关」中，现已移到主界面右侧 AI 助手面板的标题栏，
+/// 因此提供一个单独的轻量命令：只改这一个字段并落盘，不整体替换配置、不触发模块重载。
+#[tauri::command]
+pub fn ai_set_context_inject(state: State<'_, AppState>, enabled: bool) -> AppResult<bool> {
+    state.require_module(module_id::AI_ASSISTANT)?;
+    state
+        .config
+        .update(|cfg| cfg.features.ai.ai_context_inject = enabled)?;
+    Ok(enabled)
+}
+
 // ---------------------------------------------------------------------------
 // 模型配置：连通性测试 / 单条保存
 // ---------------------------------------------------------------------------

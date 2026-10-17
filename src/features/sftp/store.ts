@@ -544,19 +544,19 @@ async function run(label: string, fn: () => Promise<unknown>): Promise<void> {
   }
 }
 
-export async function connect(id: string): Promise<void> {
-  const conn = state.connections.filter((c) => c.id === id)[0];
-  if (!conn || state.busy) return;
+/** 用一份连接参数建立 SFTP 会话（选择框手动连接与右键直连共用）。 */
+async function connectWith(params: any, pendingConn: string | null): Promise<void> {
+  if (state.busy) return;
   // 过场期间就让窗口到位，避免连接成功后突然撑高
   setState({
     busy: true,
-    pendingConn: conn.id,
+    pendingConn,
     connecting: true,
-    connectingText: `正在建立 SFTP 连接 · ${conn.name || conn.host}`,
+    connectingText: `正在建立 SFTP 连接 · ${params.name || params.host}`,
   });
   const started = Date.now();
   try {
-    const info = (await ipc.sftpConnect(paramsFor(conn))) as SftpSession;
+    const info = (await ipc.sftpConnect(params)) as SftpSession;
     setState({ currentId: info.id, listing: null, editing: null });
     toast(`已建立 SFTP 连接 ${info.username}@${info.host}`, "ok");
   } catch (err) {
@@ -567,6 +567,42 @@ export async function connect(id: string): Promise<void> {
     setState({ connecting: false, busy: false });
     await refresh();
   }
+}
+
+export async function connect(id: string): Promise<void> {
+  const conn = state.connections.filter((c) => c.id === id)[0];
+  if (!conn) return;
+  await connectWith(paramsFor(conn), conn.id);
+}
+
+/** 会话与目标参数是否指向同一端点（主机 / 端口 / 用户名一致）。 */
+function sameEndpoint(session: SftpSession, params: any): boolean {
+  return (
+    session.host === params.host &&
+    String(session.port) === String(params.port) &&
+    session.username === params.username
+  );
+}
+
+/**
+ * 由连接 / 标签右键菜单直接打开 SFTP：跳过面板里的连接选择框，直接连到目标连接。
+ * 已有指向同一端点的会话时直接切过去，避免重复建立。
+ */
+export async function openFor(params: any): Promise<void> {
+  if (!state.enabled) {
+    toast("SFTP 已关闭，请在「设置 → 功能开关」中启用", "info");
+    return;
+  }
+  setState({ open: true });
+  bindTransferEvents();
+  bindDragDrop();
+  await loadConnections();
+  const existing = state.sessions.filter((s) => sameEndpoint(s, params))[0];
+  if (existing) {
+    await selectSession(existing.id);
+    return;
+  }
+  await connectWith(params, params.connection_id || null);
 }
 
 export async function disconnect(): Promise<void> {

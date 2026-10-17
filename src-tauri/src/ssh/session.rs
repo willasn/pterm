@@ -190,12 +190,7 @@ impl SessionManager {
             .unwrap_or_else(new_session_id);
 
         // 复用同一 id 时先让旧会话退出，避免同 id 双写导致事件错乱
-        if let Some(old) = self.sessions.lock().get(&id).cloned() {
-            log::info!("会话 {id} 已存在，先关闭旧会话");
-            old.cancel.store(true, Ordering::Relaxed);
-            let _ = old.send(SessionCommand::Close);
-            self.wait_gone(&id, REUSE_WAIT);
-        }
+        self.close_existing(&id);
         // 旧会话的结束快照不能留到新会话：同一个 id 只能有一个权威状态
         self.ended.lock().retain(|item| item.id != id);
 
@@ -330,6 +325,26 @@ impl SessionManager {
         Ok(self.require(id)?.recent_text(max_bytes))
     }
 
+    /// 让同一 id 的旧会话退出。
+    ///
+    /// 取旧会话时必须先把锁的临时值绑进局部变量再判断：若写成
+    /// `if let Some(old) = self.sessions.lock().get(&id).cloned()`，`if let` 判值表达式里
+    /// 产生的 `MutexGuard` 会在 Rust 2021 语义下存活到整个 `if let` 块结束，
+    /// 于是下面 `wait_gone` 里再锁同一把锁就会**自锁死**（parking_lot 不可重入），
+    /// 持有者永不释放，主线程上的 `ssh_*` 同步命令随之一并挂住，整个界面冻结。
+    fn close_existing(&self, id: &str) {
+        // 必须先把锁的临时值绑进局部变量：写成 `if let Some(old) = self.sessions.lock()...`
+        // 时，判值表达式里的 MutexGuard 会存活到整个 if let 块结束，
+        // 下面 wait_gone 再锁同一把锁就会自锁死（parking_lot 不可重入）。
+        let existing = self.sessions.lock().get(id).cloned();
+        if let Some(old) = existing {
+            log::info!("会话 {id} 已存在，先关闭旧会话");
+            old.cancel.store(true, Ordering::Relaxed);
+            let _ = old.send(SessionCommand::Close);
+            self.wait_gone(id, REUSE_WAIT);
+        }
+    }
+
     fn wait_gone(&self, id: &str, timeout: Duration) -> bool {
         let deadline = Instant::now() + timeout;
         loop {
@@ -364,7 +379,7 @@ struct RunContext {
 }
 
 impl RunContext {
-    fn run(self, rx: Receiver<SessionCommand>) {
+    fn run(mut self, rx: Receiver<SessionCommand>) {
         // 本地终端不经过网络，也不自动重连：PTY 退出即会话结束
         if self.params.kind == SessionKind::Local {
             self.run_local(rx);
@@ -379,12 +394,21 @@ impl RunContext {
         let mut last_reason = String::new();
 
         while !self.cancel.load(Ordering::Relaxed) {
-            // 断线期间积压的键盘输入不应在重连后补发；丢弃量记日志，避免输入无声消失
+            // 断线期间积压的键盘输入不应在重连后补发；丢弃量记日志，避免输入无声消失。
+            // 尺寸调整例外：要保留最后一次值，否则重连后新 pty 会退回连接时的旧尺寸
+            // （首开标签时是 80x24），apt / dpkg 等按错误尺寸排版会覆盖已输出的行。
             let mut discarded = 0usize;
+            let mut latest_size: Option<(u32, u32)> = None;
             while let Ok(cmd) = rx.try_recv() {
-                if let SessionCommand::Write(data) = cmd {
-                    discarded += data.len();
+                match cmd {
+                    SessionCommand::Write(data) => discarded += data.len(),
+                    SessionCommand::Resize { cols, rows } => latest_size = Some((cols, rows)),
+                    SessionCommand::Close => {}
                 }
+            }
+            if let Some((cols, rows)) = latest_size {
+                self.params.cols = cols;
+                self.params.rows = rows;
             }
             if discarded > 0 {
                 log::warn!("会话 {} 重连前丢弃 {discarded} 字节未送达的输入", self.id);
@@ -672,4 +696,65 @@ fn retryable(err: &AppError) -> bool {
 
 fn new_session_id() -> String {
     format!("s-{}", uuid::Uuid::new_v4())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fake_handle(id: &str) -> Arc<SessionHandle> {
+        let (tx, _rx) = mpsc::channel();
+        Arc::new(SessionHandle {
+            info: Arc::new(Mutex::new(SessionInfo {
+                id: id.to_string(),
+                kind: SessionKind::Ssh,
+                name: "test".into(),
+                host: "127.0.0.1".into(),
+                port: 22,
+                username: "test".into(),
+                state: SessionState::Ready,
+                created_at: String::new(),
+            })),
+            recent: Arc::new(Mutex::new(VecDeque::new())),
+            cancel: Arc::new(AtomicBool::new(false)),
+            tx,
+        })
+    }
+
+    /// 复用同一 id 时，`wait_gone` 等待期间不能还握着 `sessions` 锁：
+    /// 否则 `wait_gone` 里的 `lock()` 会自锁死（parking_lot 不可重入），锁再也放不出来，
+    /// 主线程上的 ssh 命令随之全部挂住，整个界面冻结。
+    ///
+    /// 复现要点：必须等 worker 已经进到 `wait_gone` 再去验锁，否则测试线程会先抢到
+    /// 那把空闲的锁，用例会空过（假通过）。
+    #[test]
+    fn reusing_session_id_does_not_deadlock() {
+        let manager = SessionManager::new();
+        let id = "s-reuse";
+        manager
+            .sessions
+            .lock()
+            .insert(id.to_string(), fake_handle(id));
+
+        {
+            let manager = manager.clone();
+            // 故意不 join：worker 若自锁死，也不能把用例一起拖住
+            let _ = thread::spawn(move || manager.close_existing(id));
+        }
+
+        // worker 只需抢一次空闲锁即可进入 wait_gone；旧会话不会被摘掉，
+        // 所以它会一直停在 wait_gone 里轮询
+        thread::sleep(Duration::from_millis(300));
+
+        for round in 0..6 {
+            assert!(
+                manager
+                    .sessions
+                    .try_lock_for(Duration::from_millis(100))
+                    .is_some(),
+                "第 {round} 轮拿不到 sessions 锁：wait_gone 期间仍持锁（自锁死），主线程会被一起挂死"
+            );
+            thread::sleep(Duration::from_millis(30));
+        }
+    }
 }

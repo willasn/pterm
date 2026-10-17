@@ -62,6 +62,8 @@ let crashBusy = false;
 let vaultState: VaultStatus | null = null;
 /** 已知主机（主机密钥）列表；打开设置时随其它数据一起拉取，可手动刷新。 */
 let knownHosts: any[] = [];
+/** 「已知主机」独立弹窗是否打开（由「设置 → 连接」里的按钮唤起）。 */
+let knownHostsOpen = false;
 
 // ---------------------------------------------------------------------------
 // 响应式外壳（版本号驱动重绘）
@@ -122,6 +124,7 @@ export const getCrashTail = () => crashTail;
 export const getCrashBusy = () => crashBusy;
 export const getVaultState = () => vaultState;
 export const getKnownHosts = () => knownHosts;
+export const getKnownHostsOpen = () => knownHostsOpen;
 
 /** 路径读写：用于非受控输入直接写入 draft。 */
 export function getPath(obj: any, path: string): any {
@@ -206,6 +209,8 @@ export async function open(category?: string): Promise<void> {
 
 export function close(): void {
   opened = false;
+  // 设置面板收起时一并关掉叠在其上的「已知主机」弹窗，避免留下孤儿窗口
+  knownHostsOpen = false;
   rerender();
 }
 
@@ -559,6 +564,20 @@ function crashFileName(): string {
 // ---------------------------------------------------------------------------
 // 主机密钥（known_hosts）
 // ---------------------------------------------------------------------------
+
+/** 打开「已知主机」独立弹窗；顺手拉一次最新列表，保证看到的是当前记录。 */
+export function openKnownHosts(): void {
+  knownHostsOpen = true;
+  rerender();
+  void refreshKnownHosts();
+}
+
+/** 关闭「已知主机」弹窗（不影响设置面板本身）。 */
+export function closeKnownHosts(): void {
+  if (!knownHostsOpen) return;
+  knownHostsOpen = false;
+  rerender();
+}
 
 /** 重新拉取已知主机列表。 */
 export async function refreshKnownHosts(): Promise<void> {

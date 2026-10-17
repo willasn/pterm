@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { hasTabs } from "../tabs/store";
+import { count } from "../tabs/store";
 import { getWidth, subscribeAiEvents, togglePanel, useAiVersion, view } from "./store";
 
 /** 标签栏右侧入口：开启且有会话时才出现；点它开合面板（关闭该功能时整块不渲染）。 */
@@ -8,9 +8,9 @@ export function AiBadge() {
   void version;
   const state = view();
 
-  // 入口只在存在终端会话时出现——对齐原 renderBadge 的 hasTabs 判断。
-  // tabs 变化时会调 store 的 renderBadge（即 bump），触发这里重算。
-  if (!state.enabled || !hasTabs()) return null;
+  // 入口只在存在终端会话时出现——没有会话时面板无从服务，打开也只是一个空壳。
+  // tabs 增删会经 store.renderBadge（即 bump）触发这里重算。
+  if (!state.enabled || count() === 0) return null;
 
   const on = state.panelOpen;
   return (

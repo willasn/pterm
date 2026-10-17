@@ -12,6 +12,7 @@ import {
   setSelectedModel,
   setWidth,
   skipCurrent,
+  toggleContextInject,
   useAiVersion,
   view,
   type AiView,
@@ -320,6 +321,20 @@ export function AiPanel() {
           {state.session.label}
         </span>
         <span className="spacer" />
+        <button
+          className={"icon-btn" + (state.contextInject ? " active" : "")}
+          id="ai-context-inject-btn"
+          type="button"
+          aria-pressed={state.contextInject ? "true" : "false"}
+          title={
+            state.contextInject
+              ? "上下文注入：已开启（点击关闭）——提问时会带上当前主机、目录与最近终端输出"
+              : "上下文注入：已关闭（点击开启）——提问时只发送你的问题"
+          }
+          onClick={toggleContextInject}
+        >
+          📎
+        </button>
         <button className="icon-btn" id="ai-clear-btn" title="清空当前对话" onClick={() => void clearCurrent()}>
           🧹
         </button>

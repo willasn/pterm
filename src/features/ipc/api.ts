@@ -75,6 +75,8 @@ export const ipc = {
   aiAsk: (input: any) => call("ai_ask", { input }),
   aiCancel: (id: string) => call("ai_cancel", { id }),
   aiAgentStep: (input: any) => call("ai_agent_step", { input }),
+  // 上下文注入开关（开关在 AI 助手面板标题栏，不在「设置 → 功能开关」中）
+  aiSetContextInject: (enabled: boolean) => call("ai_set_context_inject", { enabled }),
 
   // ---------- 命令历史（可开关） ----------
   listHistory: (limit: number, query: string | null, dedupe: boolean, order: string) =>
@@ -153,6 +155,10 @@ export const ipc = {
   // ---------- 崩溃日志（可开关） ----------
   crashLogRead: (tailBytes: number) => call("crash_log_read", { tailBytes }),
   crashLogExport: (path: string) => call("crash_log_export", { path }),
+
+  // ---------- 系统剪贴板（核心） ----------
+  clipboardReadText: () => call<string>("clipboard_read_text"),
+  clipboardWriteText: (text: string) => call("clipboard_write_text", { text }),
 
   // ---------- 自动更新（可开关） ----------
   updateCheck: () => call("auto_update_check"),

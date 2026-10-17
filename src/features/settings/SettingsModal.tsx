@@ -22,9 +22,9 @@ import {
   changeMasterPassword,
   clearTested,
   close,
+  closeKnownHosts,
   deleteModel,
   exportCrashLog,
-  forgetKnownHost,
   getActiveCat,
   getAiModels,
   getConfiguredModelIds,
@@ -36,6 +36,7 @@ import {
   getGitCredentialNames,
   getInfo,
   getKnownHosts,
+  getKnownHostsOpen,
   getModules,
   getOpen,
   getPath,
@@ -45,9 +46,9 @@ import {
   markGitPasswordClear,
   markTested,
   normalizeModel,
+  openKnownHosts,
   protocolOptions,
   protocolSpec,
-  refreshKnownHosts,
   removeShortcutBinding,
   rerender,
   reset,
@@ -359,39 +360,27 @@ function TerminalCategory() {
 // 分类：连接
 // ---------------------------------------------------------------------------
 
-/** 主机密钥校验开关 + 已知主机（known_hosts）管理。 */
+/** 主机密钥校验开关 + 「已知主机」弹窗入口。 */
 function KnownHostsSection() {
+  const draft = getDraft();
   const hosts = getKnownHosts();
   return (
     <Section
       title="主机密钥校验"
       desc="记录并比对服务端主机密钥指纹，抵御中间人攻击。首次连接或密钥变更时会弹窗确认；记录为本机私有，不随 Git 同步。"
     >
-      <ToggleField
+      <Field
         label="启用主机密钥校验"
         hint="关闭后不再校验服务端身份，安全性下降，不建议关闭"
-        path="features.connection.host_key_check"
-      />
-      <Field label="已知主机" hint={hosts.length ? `共 ${hosts.length} 台` : null}>
-        <div className="known-hosts">
-          {hosts.length === 0 ? (
-            <Note>尚无记录。成功连接并信任的主机会出现在这里。</Note>
-          ) : (
-            hosts.map((item: any) => (
-              <div className="known-host-row" key={`${item.host}:${item.port}`}>
-                <span className="kh-target">
-                  {item.host}:{item.port}
-                </span>
-                <span className="kh-fp" title={`${item.key_type} ${item.fingerprint}`}>
-                  {item.fingerprint}
-                </span>
-                <Btn onClick={() => forgetKnownHost(item.host, item.port)}>移除</Btn>
-              </div>
-            ))
-          )}
-          <div className="known-host-actions">
-            <Btn onClick={() => refreshKnownHosts()}>刷新</Btn>
-          </div>
+      >
+        <div className="toggle-row">
+          <input
+            type="checkbox"
+            defaultChecked={!!getPath(draft, "features.connection.host_key_check")}
+            onChange={(event) => setPath(draft, "features.connection.host_key_check", event.target.checked)}
+          />
+          <span className="spacer" />
+          <Btn onClick={openKnownHosts}>已知主机{hosts.length ? `（${hosts.length}）` : ""}</Btn>
         </div>
       </Field>
     </Section>
@@ -1229,6 +1218,10 @@ function UpdateSection() {
           </div>
         ) : null}
       </div>
+      <ToggleField
+        label="启动时自动检查更新"
+        path="features.auxiliary.auto_update"
+      />
     </Section>
   );
 }
@@ -1313,7 +1306,14 @@ export function SettingsModal() {
   useEffect(() => {
     if (!getOpen()) return;
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") close();
+      if (event.key === "Escape") {
+        // 「已知主机」弹窗叠在设置面板之上：Escape 先关它，不连带关掉设置
+        if (getKnownHostsOpen()) {
+          closeKnownHosts();
+          return;
+        }
+        close();
+      }
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);

@@ -354,6 +354,12 @@
   background: var(--ok);
 }
 
+/* 面板标题栏里的开关型图标（如上下文注入）：打开时高亮为强调色 */
+.ai-panel-head .icon-btn.active {
+  background: var(--bg-hover);
+  color: var(--accent);
+}
+
 /* 中部内容区：结果 / 步骤 / 历史都在这里滚动 */
 .ai-panel-scroll {
   flex: 1;

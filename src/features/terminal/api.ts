@@ -143,6 +143,39 @@ function hasTabs(): boolean {
   return tabs.hasTabs();
 }
 
+/**
+ * 系统剪贴板读写。
+ *
+ * 优先用 Web 的异步剪贴板 API；macOS 打包后页面运行在 `tauri://` 自定义协议下，
+ * WKWebView 不把它当作安全上下文，`navigator.clipboard` 可能不存在或拒绝读取。
+ * 这种情况下回退到 Rust 命令直接读写系统剪贴板，保证各端行为一致。
+ */
+function writeClipboard(text: string): Promise<void> {
+  const api = navigator.clipboard;
+  if (api && typeof api.writeText === "function") {
+    return api.writeText(text).catch((err) => {
+      if (!ipc.available) throw err;
+      return ipc.clipboardWriteText(text);
+    });
+  }
+  return ipc.available
+    ? ipc.clipboardWriteText(text)
+    : Promise.reject(new Error("当前环境不支持写剪贴板"));
+}
+
+function readClipboard(): Promise<string> {
+  const api = navigator.clipboard;
+  if (api && typeof api.readText === "function") {
+    return api.readText().catch((err) => {
+      if (!ipc.available) throw err;
+      return ipc.clipboardReadText();
+    });
+  }
+  return ipc.available
+    ? ipc.clipboardReadText()
+    : Promise.reject(new Error("当前环境不支持读取剪贴板"));
+}
+
 /** 应用配置变化：字体、主题、滚动缓冲等。 */
 export function setConfig(next: any): void {
   config = next;
@@ -183,13 +216,22 @@ function termOptions(): Record<string, any> {
     cursorBlink: t.cursor_blink !== false,
     bellStyle: t.bell === false ? "none" : "sound",
     allowProposedApi: true,
+    // vim 等全屏程序开启鼠标上报（set mouse=a）后，xterm 会关闭鼠标选中；
+    // macOS 上没有 Shift+drag 的兜底（见 xterm 的 shouldForceSelection），
+    // 打开这个选项后按住 Option 拖动即可强制选中文本，否则内容无法复制。
+    macOptionClickForcesSelection: true,
     theme: xtermTheme(),
   };
 }
 
 export function updateEmptyState(): void {
   const empty = $("empty-state");
-  if (empty) empty.hidden = controllers.size > 0;
+  if (!empty) return;
+  // 以 #panes 里实际存在的终端 pane 为准，而不是只看 controllers：
+  // 开发期热更新会重新执行模块、清空 controllers，但旧的 pane 仍留在 DOM 中，
+  // 只按 map 判断会让空状态的 logo 叠在仍在使用的会话上。
+  const hasPane = !!document.querySelector("#panes .pane");
+  empty.hidden = controllers.size > 0 || hasPane;
 }
 
 /** 终端本地回显是否开启（config.yaml 的 terminal.local_echo，缺省视为开启）。 */
@@ -257,9 +299,28 @@ function createEcho(term: any): Echo {
     return n;
   }
 
+  /**
+   * 当前是否处于全屏程序（vim / less / top 等）使用的备用屏幕。
+   *
+   * 这些程序自己管理整屏内容，也自己决定在哪里画什么：本地预测的字符会盖掉
+   * 它们已经画好的界面，而撤回时的“清到行尾”更会抹掉整行剩余内容
+   * （典型表现：vim 里按 i 进入编辑模式后，光标后面的文字被删掉）。
+   */
+  function inAlternateScreen(): boolean {
+    const buf = term.buffer && term.buffer.active;
+    return !!buf && buf.type !== "normal";
+  }
+
   /** 撤回全部未确认内容：光标移回预测起点并清到行尾（预测限制在单行内，这样就够）。 */
   function undo(): void {
     if (!pending) return;
+    // 备用屏幕里没有可安全清理的“行尾”：只丢弃本地预测，交给全屏程序自己重画，
+    // 否则清到行尾会把它的界面擦掉。
+    if (inAlternateScreen()) {
+      pending = "";
+      visual = 0;
+      return;
+    }
     writeTracked("\x1b[" + (startCol + 1) + "G\x1b[K");
     pending = "";
     visual = 0;
@@ -270,6 +331,8 @@ function createEcho(term: any): Echo {
    * 返回空串表示可以继续，否则返回被拒原因。
    */
   function canExtend(): string {
+    // 全屏程序不预测：它的回显与按键不是一一对应的，预测只会破坏界面
+    if (inAlternateScreen()) return "altscreen";
     const buf = term.buffer.active;
     if (!pending) {
       // 终端还在解析远端数据，此刻读到的光标位置不可信
@@ -523,8 +586,13 @@ export function open(info: SessionInfo, options?: any): TerminalController {
       if (kind !== "ready") echo.reset();
       pane.dataset.state = kind;
       renderBanner(this, state);
-      // 分屏时可能同时有多个会话在连接，只把焦点给当前活跃的那个
-      if (kind === "ready" && tabs.activeIdOf() === info.id) term.focus();
+      // 会话就绪时重新对齐尺寸：自动重连会按连接参数重建 pty（首开标签时是 80x24），
+      // 若不再推一次真实尺寸，apt / dpkg 等会按错误尺寸排版并覆盖已输出的行。
+      if (kind === "ready") {
+        this.fit();
+        // 分屏时可能同时有多个会话在连接，只把焦点给当前活跃的那个
+        if (tabs.activeIdOf() === info.id) term.focus();
+      }
       tabs.touch(this);
       // 回写侧栏连接点的状态色：仅带连接 id 的会话会被登记
       if (connections) connections.noteSession(this.params && this.params.connection_id, info.id, kind);
@@ -613,28 +681,32 @@ export function open(info: SessionInfo, options?: any): TerminalController {
   // 已知限制：命令模式下用户若手动把输入源切回拼音，漏字问题会重现——此时应切到
   // 输入法模式（角标或 Cmd/Ctrl+Shift+I），或在设置里关掉自动切换。
 
-  // 选中即复制
+  // 选中即复制。拖动选择会连续触发 change，合并成一次写入：
+  // 没有 navigator.clipboard 时会走 Rust 剪贴板命令，逐个事件写会白白产生大量 IPC。
+  let copyOnSelectTimer: any = null;
   term.onSelectionChange(() => {
     // 查找条打开时的高亮来自 term.select()，不是用户的复制意图，跳过
     if (searchOpen) return;
     const t = (config && config.terminal) || {};
     if (!t.copy_on_select) return;
-    const selection = term.getSelection();
-    if (selection) {
-      navigator.clipboard && navigator.clipboard.writeText(selection).catch(() => {});
-    }
+    if (copyOnSelectTimer) clearTimeout(copyOnSelectTimer);
+    copyOnSelectTimer = setTimeout(() => {
+      copyOnSelectTimer = null;
+      const selection = term.getSelection();
+      if (selection) writeClipboard(selection).catch(() => {});
+    }, 120);
+  });
+  detachHandlers.push(() => {
+    if (copyOnSelectTimer) clearTimeout(copyOnSelectTimer);
   });
 
   // 复制 / 粘贴的统一入口：快捷键（shortcuts 的 terminal.copy / .paste）与右击菜单都走这里
-  const clipboardApi = () => navigator.clipboard || null;
 
-  /** 把选中文本写入剪贴板。无选中、或本环境没有剪贴板 API 时返回 false，让按键原样落到终端。 */
+  /** 把选中文本写入剪贴板。无选中时返回 false，让按键原样落到终端。 */
   function copyToClipboard(): boolean {
     const text = term.getSelection();
     if (!text) return false;
-    const api = clipboardApi();
-    if (!api || typeof api.writeText !== "function") return false;
-    api.writeText(text).catch(() => toast("写入剪贴板失败", "error"));
+    writeClipboard(text).catch(() => toast("写入剪贴板失败", "error"));
     return true;
   }
 
@@ -643,20 +715,14 @@ export function open(info: SessionInfo, options?: any): TerminalController {
    * 都与系统粘贴键一致，因此粘贴进来的危险命令同样会被拦下确认。
    */
   function pasteFromClipboard(): boolean {
-    const api = clipboardApi();
-    if (!api || typeof api.readText !== "function") {
-      toast("当前环境不支持读取剪贴板，请使用系统粘贴键", "warn");
-      return false;
-    }
-    api
-      .readText()
+    readClipboard()
       .then((text) => {
         if (!text) return;
         // 可能是右击菜单发起的粘贴，焦点不在终端：仍写进这个会话，并把焦点收回来
         term.paste(text);
         ctrl.focus();
       })
-      .catch(() => toast("读取剪贴板失败：请授予剪贴板权限，或使用系统粘贴键", "warn"));
+      .catch(() => toast("读取剪贴板失败，请检查系统剪贴板权限", "warn"));
     return true;
   }
 

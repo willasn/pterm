@@ -11,20 +11,19 @@ interface OpenableModule {
   open(): void;
 }
 
-let sftp: OpenableModule;
+/** SFTP 模块额外提供「跳过选择框、直连指定连接」的入口。 */
+interface SftpModule extends OpenableModule {
+  openFor(params: any): void;
+}
+
+let sftp: SftpModule;
 let portForward: OpenableModule;
-let sessionLog: OpenableModule;
-let snippets: OpenableModule;
-let history: OpenableModule;
 
 export function wireDependencies(deps: {
-  sftp: typeof sftp;
-  portForward: typeof portForward;
-  sessionLog: typeof sessionLog;
-  snippets: typeof snippets;
-  history: typeof history;
+  sftp: SftpModule;
+  portForward: OpenableModule;
 }): void {
-  ({ sftp, portForward, sessionLog, snippets, history } = deps);
+  ({ sftp, portForward } = deps);
 }
 
 /**
@@ -255,7 +254,6 @@ export function connectionFlags(): any {
 /** 连接项的右键菜单条目（沿用 legacy menu.open 的形状）。 */
 export function connMenu(conn: any): any[] {
   const flags = connFlags();
-  const aux = (config && config.features && config.features.auxiliary) || {};
   const rdp = isRdp(conn);
   const port = conn.port || (rdp ? 3389 : 22);
   const address = `${conn.username}@${conn.host}:${port}`;
@@ -277,16 +275,19 @@ export function connMenu(conn: any): any[] {
   }
 
   const modules = [
-    flags.sftp ? { label: "打开 SFTP", icon: "⇅", run: () => openModule(sftp) } : null,
+    flags.sftp ? { label: "打开 SFTP", icon: "⇅", run: () => openSftpFor(conn) } : null,
     flags.port_forward ? { label: "端口转发", icon: "⇄", run: () => openModule(portForward) } : null,
-    flags.session_log ? { label: "会话日志", icon: "▤", run: () => openModule(sessionLog) } : null,
-    aux.snippets ? { label: "命令片段", icon: "⌘", run: () => openModule(snippets) } : null,
-    aux.command_history ? { label: "命令历史", icon: "⟲", run: () => openModule(history) } : null,
   ].filter(Boolean);
   if (modules.length) items.push({ sep: true }, ...modules);
 
   items.push({ sep: true }, { label: "删除连接…", icon: "✕", danger: true, run: () => removeById(conn) });
   return items;
+}
+
+/** 打开 SFTP 并直连该连接（跳过面板中的连接选择框）。 */
+function openSftpFor(conn: any): void {
+  if (sftp && typeof sftp.openFor === "function") sftp.openFor(paramsFor(conn));
+  else openModule(sftp);
 }
 
 /** 模块可能未启用或未加载，open 不可用时静默跳过。 */

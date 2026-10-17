@@ -3,7 +3,7 @@ import { errorText, pt, toast } from "../../lib/legacy";
 import { inspect } from "../danger/rules";
 import { ipc } from "../ipc/api";
 import { recentOutput, write } from "../ssh/api";
-import { active, refitAll } from "../terminal/api";
+import { active, list as terminalList, refitAll } from "../terminal/api";
 import { ask, confirmDialog } from "../util/util";
 import type {
   AgentState,
@@ -196,6 +196,22 @@ export function setMode(next: "ask" | "agent"): void {
   mode = next;
   // 消息流是两种模式共用的，切模式只换底部输入语义，不清空、也不打断在跑的 Agent
   bump();
+}
+
+/**
+ * 切换「上下文注入」开关。原先在「设置 → 功能开关」中，现已挪到面板标题栏。
+ *
+ * 先改本地状态让图标立即反馈，再落盘；落盘失败则回滚，避免界面与实际配置不一致。
+ */
+export function toggleContextInject(): void {
+  const next = !flags.ai_context_inject;
+  flags.ai_context_inject = next;
+  bump();
+  ipc.aiSetContextInject(next).catch((err) => {
+    flags.ai_context_inject = !next;
+    bump();
+    toast(errorText(err), "error");
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -875,6 +891,12 @@ export function forget(id: string): void {
   const view = sessionViews.get(id);
   if (view) stopSessionWork(view);
   sessionViews.delete(id);
+  // 会话窗口关闭后若已无任何终端会话，AI 面板随之收起：它已无会话可服务，
+  // 入口按钮也一并消失，留着只会是一个既无内容又难以察觉的死面板。
+  if (panelOpen && terminalList().length === 0) {
+    close();
+    return;
+  }
   bump();
 }
 
@@ -951,6 +973,8 @@ export interface AiView {
   compose: ComposeState;
   empty: EmptyState | null;
   meter: MeterData | null;
+  /** 上下文注入开关当前是否打开（面板标题栏图标据此高亮）。 */
+  contextInject: boolean;
   /** 消息流里是否有需要展示的「待确认」命令按钮（交给消息组件自行判断）。 */
   key: string;
 }
@@ -1020,6 +1044,7 @@ export function view(): AiView {
     compose,
     empty,
     meter: meterData(),
+    contextInject: !!flags.ai_context_inject,
     key,
   };
 }

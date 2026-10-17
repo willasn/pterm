@@ -48,6 +48,10 @@ getrandom = "0.2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 futures-util = "0.3"
 
+# 系统剪贴板：macOS 的 WKWebView 在自定义协议下不提供 navigator.clipboard，
+# 复制 / 粘贴统一由 Rust 侧读写系统剪贴板兜底（只用到纯文本，不启用图片支持）
+arboard = { version = "3.6", default-features = false }
+
 base64 = "0.22"
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }

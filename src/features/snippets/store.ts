@@ -301,6 +301,7 @@ export async function insert(): Promise<void> {
     const text = await ipc.snippetRender(draft.content || "", state.values);
     await write(ctrl.id, text);
     toast("已插入到终端", "ok");
+    closePanel();
   } catch (err) {
     toast(errorText(err), "error");
   }
