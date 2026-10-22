@@ -5,6 +5,12 @@ import { useT } from "../../hooks/useLocale";
 import { errorText, toast } from "../../lib/legacy";
 import { check as checkUpdate, install as installUpdate, progressPercent, useAutoUpdate } from "../auto-update/store";
 import { setLocale } from "../i18n/store";
+import {
+  closePanel as closeImportExport,
+  getState as getImportExportState,
+  openPanel as openImportExport,
+  useImportExport,
+} from "../import-export/store";
 import { ask } from "../util/util";
 import {
   CATEGORIES,
@@ -1242,6 +1248,7 @@ function copyContactEmail(): void {
 
 function AboutCategory() {
   const source = (getInfo() || {}) as any;
+  const ie = useImportExport();
   const rows: [string, string][] = [
     ["应用版本", `${source.name || "pterm"} ${source.version || "—"}`],
     ["配置文件", source.config_file || "—"],
@@ -1261,6 +1268,18 @@ function AboutCategory() {
             {CONTACT_EMAIL}
           </button>
         </Field>
+      </Section>
+      <Section
+        title="配置导入导出"
+        desc="导入 pterm 导出文件或 OpenSSH 配置；导出仅含主机、端口、用户名等非敏感字段，不含密码。"
+      >
+        {ie.enabled ? (
+          <Btn kind="primary" onClick={openImportExport}>
+            打开配置导入导出…
+          </Btn>
+        ) : (
+          <Note>配置导入导出已关闭，请在「功能开关」中启用。</Note>
+        )}
       </Section>
       <CrashLogSection />
       <UpdateSection />
@@ -1307,9 +1326,13 @@ export function SettingsModal() {
     if (!getOpen()) return;
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
-        // 「已知主机」弹窗叠在设置面板之上：Escape 先关它，不连带关掉设置
+        // 「已知主机」/「配置导入导出」弹窗叠在设置面板之上：Escape 先关它们，不连带关掉设置
         if (getKnownHostsOpen()) {
           closeKnownHosts();
+          return;
+        }
+        if (getImportExportState().open) {
+          closeImportExport();
           return;
         }
         close();

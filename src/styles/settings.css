@@ -1074,9 +1074,6 @@
 .foot-badges--tiles #pf-status {
   --chip-h: 272; /* 端口转发：紫 */
 }
-.foot-badges--tiles #ie-status {
-  --chip-h: 26; /* 配置导入导出：橙 */
-}
 .foot-badges--tiles #snip-status {
   --chip-h: 336; /* 命令片段：粉 */
 }

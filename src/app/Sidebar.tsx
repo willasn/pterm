@@ -1,7 +1,6 @@
 import { ConnectionList } from "../features/connections/ConnectionList";
 import { GitSyncBadge } from "../features/git-sync/GitSyncBadge";
 import { HistoryBadge } from "../features/history/HistoryBadge";
-import { ImportExportBadge } from "../features/import-export/ImportExportBadge";
 import { PortForwardBadge } from "../features/port-forward/PortForwardBadge";
 import { SearchBadge } from "../features/search/SearchBadge";
 import { SessionLogBadge } from "../features/session-log/SessionLogBadge";
@@ -117,7 +116,6 @@ export function Sidebar() {
           <SessionLogBadge />
           <SftpBadge />
           <PortForwardBadge />
-          <ImportExportBadge />
           <SnippetsBadge />
           <HistoryBadge />
         </div>
