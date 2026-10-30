@@ -32,6 +32,9 @@ pub struct StoredConnection {
     pub key_path: Option<String>,
     /// 分组名（connection_group 开关打开时可见）
     pub group_name: Option<String>,
+    /// 备注：纯文本说明，留空为 None。旧记录缺该字段时按 None 处理。
+    #[serde(default)]
+    pub note: Option<String>,
     /// 是否已保存密码（存于加密保险库）
     pub has_password: bool,
     /// 是否已保存私钥 passphrase（存于加密保险库）
@@ -200,6 +203,7 @@ impl Store {
                 auth_kind     TEXT NOT NULL,
                 key_path      TEXT,
                 group_name    TEXT,
+                note          TEXT,
                 has_password  INTEGER NOT NULL DEFAULT 0,
                 has_passphrase INTEGER NOT NULL DEFAULT 0,
                 jump_json     TEXT,
@@ -250,7 +254,7 @@ impl Store {
             .prepare(
                 "SELECT id, name, host, port, username, auth_kind, key_path, group_name,
                         has_password, has_passphrase, jump_json, color, created_at, updated_at,
-                        protocol, domain
+                        protocol, domain, note
                  FROM connections ORDER BY group_name, name",
             )
             .map_err(|e| AppError::Db(e.to_string()))?;
@@ -268,6 +272,7 @@ impl Store {
                     auth_kind: r.get(5)?,
                     key_path: r.get(6)?,
                     group_name: r.get(7)?,
+                    note: r.get(16)?,
                     has_password: r.get::<_, i64>(8)? != 0,
                     has_passphrase: r.get::<_, i64>(9)? != 0,
                     jump: jump_json.and_then(|j| serde_json::from_str(&j).ok()),
@@ -285,6 +290,46 @@ impl Store {
         Ok(out)
     }
 
+    /// 按 id 读取单条连接配置。不存在时返回配置错误。
+    pub fn get_connection(&self, id: &str) -> AppResult<StoredConnection> {
+        use rusqlite::OptionalExtension;
+        let conn = self.conn.lock();
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, name, host, port, username, auth_kind, key_path, group_name,
+                        has_password, has_passphrase, jump_json, color, created_at, updated_at,
+                        protocol, domain, note
+                 FROM connections WHERE id = ?1",
+            )
+            .map_err(|e| AppError::Db(e.to_string()))?;
+        let row = stmt
+            .query_row([id], |r| {
+                let jump_json: Option<String> = r.get(10)?;
+                Ok(StoredConnection {
+                    id: r.get(0)?,
+                    name: r.get(1)?,
+                    host: r.get(2)?,
+                    port: r.get::<_, i64>(3)? as u16,
+                    username: r.get(4)?,
+                    protocol: r.get(14)?,
+                    domain: r.get(15)?,
+                    auth_kind: r.get(5)?,
+                    key_path: r.get(6)?,
+                    group_name: r.get(7)?,
+                    note: r.get(16)?,
+                    has_password: r.get::<_, i64>(8)? != 0,
+                    has_passphrase: r.get::<_, i64>(9)? != 0,
+                    jump: jump_json.and_then(|j| serde_json::from_str(&j).ok()),
+                    color: r.get(11)?,
+                    created_at: r.get(12)?,
+                    updated_at: r.get(13)?,
+                })
+            })
+            .optional()
+            .map_err(|e| AppError::Db(e.to_string()))?;
+        row.ok_or_else(|| AppError::Config(format!("连接不存在：{id}")))
+    }
+
     pub fn upsert_connection(&self, c: &StoredConnection) -> AppResult<()> {
         let jump_json = match &c.jump {
             Some(j) => Some(serde_json::to_string(j).map_err(|e| AppError::Other(e.to_string()))?),
@@ -294,8 +339,8 @@ impl Store {
         conn.execute(
             "INSERT INTO connections
                 (id, name, host, port, username, protocol, domain, auth_kind, key_path, group_name,
-                 has_password, has_passphrase, jump_json, color, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+                 note, has_password, has_passphrase, jump_json, color, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
              ON CONFLICT(id) DO UPDATE SET
                 name = excluded.name,
                 host = excluded.host,
@@ -306,6 +351,7 @@ impl Store {
                 auth_kind = excluded.auth_kind,
                 key_path = excluded.key_path,
                 group_name = excluded.group_name,
+                note = excluded.note,
                 has_password = excluded.has_password,
                 has_passphrase = excluded.has_passphrase,
                 jump_json = excluded.jump_json,
@@ -322,6 +368,7 @@ impl Store {
                 c.auth_kind,
                 c.key_path,
                 c.group_name,
+                c.note,
                 c.has_password as i64,
                 c.has_passphrase as i64,
                 jump_json,
@@ -571,6 +618,7 @@ fn add_connection_columns(conn: &Connection) -> AppResult<()> {
     for (column, ddl) in [
         ("protocol", "protocol TEXT NOT NULL DEFAULT 'ssh'"),
         ("domain", "domain TEXT"),
+        ("note", "note TEXT"),
     ] {
         if existing.contains(column) {
             continue;
@@ -690,6 +738,7 @@ mod tests {
             auth_kind: "auto".into(),
             key_path: None,
             group_name: None,
+            note: None,
             has_password: false,
             has_passphrase: false,
             jump: None,
@@ -706,12 +755,14 @@ mod tests {
         let mut conn = sample_connection("rdp-1");
         conn.protocol = PROTOCOL_RDP.into();
         conn.domain = Some("CORP".into());
+        conn.note = Some("财务专用机".into());
         store.upsert_connection(&conn).unwrap();
 
         let listed = store.list_connections().unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].protocol, PROTOCOL_RDP);
         assert_eq!(listed[0].domain.as_deref(), Some("CORP"));
+        assert_eq!(listed[0].note.as_deref(), Some("财务专用机"));
     }
 
     /// 老库没有 protocol / domain 列：打开时应自动补列，旧记录读出即 SSH。

@@ -20,6 +20,7 @@ pub mod module_id {
     pub const AUTO_UPDATE: &str = "auto_update";
     pub const IME_SWITCH: &str = "ime_switch";
     pub const LOCAL_TERMINAL: &str = "local_terminal";
+    pub const MCP: &str = "mcp";
 }
 
 /// 可插拔模块统一接口。
@@ -88,6 +89,9 @@ pub struct ConnectionFlags {
     pub local_terminal: bool,
     /// 快捷连接（user@host:port 一行直达）
     pub quick_connect: bool,
+    /// 一键生成并部署 SSH 密钥：本地生成 ed25519 密钥对，把公钥追加到远端
+    /// `~/.ssh/authorized_keys`，并写入本机 `~/.ssh/config`
+    pub key_setup: bool,
     /// 同步输入：把一台终端上的输入广播到同步组内的标签（或全局所有会话）
     pub sync_input: bool,
     /// 终端获得焦点时自动把系统输入源切到英文、失焦时还原（仅 macOS）。
@@ -119,6 +123,7 @@ impl Default for ConnectionFlags {
             rdp: true,
             local_terminal: true,
             quick_connect: true,
+            key_setup: true,
             sync_input: true,
             ime_auto_switch: true,
             session_log_retention_days: 10,
@@ -252,6 +257,33 @@ impl Default for AiFlags {
 }
 
 // ---------------------------------------------------------------------------
+// MCP（FEATURES.md §5.1）
+// ---------------------------------------------------------------------------
+
+/// MCP 服务开关。
+///
+/// 开启后在本机 `127.0.0.1` 上启动一个 Streamable HTTP 端点，外部 AI 客户端
+/// 携带本地令牌调用工具，由 pterm 代为完成 SSH 认证与命令执行。
+/// 默认关闭：该端点等价于一条受限的执行通道，不应默认对外暴露。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, rename_all = "snake_case")]
+pub struct McpFlags {
+    /// MCP 服务总开关
+    pub enabled: bool,
+    /// 监听端口（仅绑定 127.0.0.1）
+    pub port: u16,
+}
+
+impl Default for McpFlags {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            port: 39217,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // 辅助（FEATURES.md §6）
 // ---------------------------------------------------------------------------
 
@@ -304,6 +336,7 @@ pub struct FeatureFlags {
     pub connection: ConnectionFlags,
     pub sync: SyncFlags,
     pub ai: AiFlags,
+    pub mcp: McpFlags,
     pub auxiliary: AuxiliaryFlags,
 }
 
@@ -328,6 +361,7 @@ impl FeatureFlags {
             module_id::QUICK_PANEL => self.auxiliary.quick_panel,
             module_id::AUTO_UPDATE => self.auxiliary.auto_update,
             module_id::IME_SWITCH => self.connection.ime_auto_switch,
+            module_id::MCP => self.mcp.enabled,
             // 未登记的标识视为可用，避免误伤核心功能
             _ => true,
         }
@@ -397,6 +431,7 @@ impl FeatureFlags {
             "rdp" => self.connection.rdp,
             "local_terminal" => self.connection.local_terminal,
             "quick_connect" => self.connection.quick_connect,
+            "key_setup" => self.connection.key_setup,
             "sync_input" => self.connection.sync_input,
             "ime_auto_switch" => self.connection.ime_auto_switch,
         ]));
@@ -541,5 +576,16 @@ mod tests {
 
         flags.ai.ai_assistant = true;
         assert!(flags.module_enabled(module_id::AI_ASSISTANT));
+    }
+
+    /// MCP 端点等价于一条执行通道，默认必须关闭；开关需真实生效
+    #[test]
+    fn mcp_follows_its_flag_and_is_off_by_default() {
+        let mut flags = FeatureFlags::default();
+        assert!(!flags.mcp.enabled, "MCP 不应默认开启");
+        assert!(!flags.module_enabled(module_id::MCP));
+
+        flags.mcp.enabled = true;
+        assert!(flags.module_enabled(module_id::MCP));
     }
 }

@@ -39,14 +39,21 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 # 主机密钥指纹（known_hosts，OpenSSH 风格 SHA256 指纹）
 sha2 = "0.10"
 
+# 一键生成 SSH 密钥对：纯 Rust 生成 ed25519（不依赖系统 ssh-keygen）
+ssh-key = { version = "0.6", features = ["ed25519"] }
+rand = "0.8"
+
 # 保险库加密（主密码 Argon2id 派生 + AES-256-GCM）
 argon2 = "0.5"
 aes-gcm = "0.10"
 getrandom = "0.2"
 
 # 运行时
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net"] }
 futures-util = "0.3"
+
+# MCP 服务（可开关）：本地 127.0.0.1 上的 Streamable HTTP 端点，供外部 AI 调用
+axum = "0.8"
 
 # 系统剪贴板：macOS 的 WKWebView 在自定义协议下不提供 navigator.clipboard，
 # 复制 / 粘贴统一由 Rust 侧读写系统剪贴板兜底（只用到纯文本，不启用图片支持）

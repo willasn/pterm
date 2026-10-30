@@ -14,12 +14,19 @@ import { ask, b64ToBytes, errorText, promptPassword, toast } from "../util/util"
 /** id -> 取消订阅函数数组 */
 const subscriptions = new Map<string, (() => void)[]>();
 
-function eventsFor(id: string): { data: string; status: string; closed: string; prompt: string } {
+function eventsFor(id: string): {
+  data: string;
+  status: string;
+  closed: string;
+  prompt: string;
+  latency: string;
+} {
   return {
     data: `ssh:data:${id}`,
     status: `ssh:status:${id}`,
     closed: `ssh:closed:${id}`,
     prompt: `ssh:auth-prompt:${id}`,
+    latency: `ssh:latency:${id}`,
   };
 }
 
@@ -99,6 +106,12 @@ async function subscribe(id: string): Promise<void> {
     // 键盘交互认证提示：会话线程阻塞等待，这里弹窗收集答案再回填
     ipc.listen(names.prompt, (prompt: any) => {
       if (prompt) showAuthPrompt(id, prompt);
+    }),
+    // 延迟探测结果：后端按会话保持间隔旁路探测，这里只更新标签上的信号条
+    ipc.listen(names.latency, (payload: any) => {
+      const target = terminalApi.get(id);
+      if (!target || !payload) return;
+      target.setLatency(typeof payload.ms === "number" ? payload.ms : null);
     }),
   ]);
   subscriptions.set(id, unlisten);

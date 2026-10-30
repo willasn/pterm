@@ -86,6 +86,7 @@ impl AppState {
             store: self.store.clone(),
             paths: self.paths.clone(),
             sessions: self.sessions.clone(),
+            auth_hub: self.auth_hub.clone(),
         }
     }
 

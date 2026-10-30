@@ -73,8 +73,10 @@ let activeGroupId: string | null = null;
 let activeId: string | null = null;
 let config: any = null;
 let seq = 0;
-/** 正在拖拽排序的 groupId */
-let dragging: string | null = null;
+/** 拖动排序后紧跟着的 click 需要吞掉，避免误激活标签 */
+let suppressClick = false;
+/** 指针移动超过该距离才视为拖动，否则按点击处理 */
+const DRAG_THRESHOLD = 4;
 
 // ---------------------------------------------------------------------------
 // 状态查询
@@ -175,10 +177,12 @@ function tabHost(): HTMLElement | null {
 function buildTab(group: PaneGroup): HTMLElement {
   const tab = el(
     "div",
-    { class: "tab", dataset: { group: group.id, state: "connecting" }, draggable: "true" },
+    { class: "tab", dataset: { group: group.id, state: "connecting" } },
     [
       el("span", { class: "dot" }),
       el("span", { class: "name" }),
+      // 延迟信号条：3 格，hover 显示具体毫秒数（数值由 syncTab 填充）
+      el("span", { class: "rtt", hidden: true }, [el("i"), el("i"), el("i")]),
       el("span", { class: "count", hidden: true }),
       el("button", {
         class: "close",
@@ -191,7 +195,15 @@ function buildTab(group: PaneGroup): HTMLElement {
       }),
     ]
   );
-  tab.addEventListener("click", () => activateGroup(group.id));
+  tab.addEventListener("click", (event: MouseEvent) => {
+    if (suppressClick) {
+      suppressClick = false;
+      event.stopPropagation();
+      event.preventDefault();
+      return;
+    }
+    activateGroup(group.id);
+  });
   tab.addEventListener("dblclick", (event: Event) => {
     event.stopPropagation();
     startRename(group, tab, tab.querySelector(".name") as HTMLElement);
@@ -203,7 +215,7 @@ function buildTab(group: PaneGroup): HTMLElement {
     activateGroup(group.id);
     openMenu(event.clientX, event.clientY, tabMenu(group, tab));
   });
-  bindDrag(group, tab);
+  bindDrag(tab);
   return tab;
 }
 
@@ -330,6 +342,20 @@ function syncTab(group: PaneGroup): void {
   if (countNode) {
     countNode.textContent = String(size);
     countNode.hidden = size < 2;
+  }
+
+  // 延迟信号条只对已就绪的 SSH 会话显示；本地终端没有远端往返，保持隐藏
+  const rttNode = tab.querySelector(".rtt") as HTMLElement | null;
+  if (rttNode) {
+    const ms = ctrl && ctrl.info && typeof ctrl.info.latency === "number" ? ctrl.info.latency : null;
+    const show = ms != null && state === "ready";
+    rttNode.hidden = !show;
+    if (show && ms != null) {
+      const level = ms < 80 ? 3 : ms < 200 ? 2 : 1;
+      rttNode.dataset.level = String(level);
+      Array.from(rttNode.children).forEach((bar, i) => bar.classList.toggle("on", i < level));
+      rttNode.title = `延迟 ${ms} ms`;
+    }
   }
 
   applySyncStyle(tab, group);
@@ -628,7 +654,6 @@ function enforcePolicies(): void {
 function startRename(group: PaneGroup, tab: HTMLElement, nameNode: HTMLElement | null): void {
   if (!nameNode || nameNode.dataset.renaming) return;
   nameNode.dataset.renaming = "1";
-  tab.draggable = false;
 
   const input = el("input", { class: "rename", type: "text", spellcheck: "false" }) as HTMLInputElement;
   input.value = nameNode.textContent || "";
@@ -646,7 +671,6 @@ function startRename(group: PaneGroup, tab: HTMLElement, nameNode: HTMLElement |
     }
     delete nameNode.dataset.renaming;
     input.replaceWith(nameNode);
-    tab.draggable = true;
     syncTab(group);
   };
 
@@ -662,37 +686,144 @@ function startRename(group: PaneGroup, tab: HTMLElement, nameNode: HTMLElement |
   input.addEventListener("blur", () => finish(true));
 }
 
-function bindDrag(group: PaneGroup, tab: HTMLElement): void {
-  tab.addEventListener("dragstart", (event: DragEvent) => {
-    dragging = group.id;
-    if (event.dataTransfer) {
-      event.dataTransfer.effectAllowed = "move";
-      event.dataTransfer.setData("text/plain", group.id);
+function bindDrag(tab: HTMLElement): void {
+  tab.addEventListener("pointerdown", (event: PointerEvent) => {
+    if (event.button !== 0) return;
+    // 关闭按钮与重命名输入框不参与拖动
+    const target = event.target as HTMLElement | null;
+    if (target && target.closest(".close, .rename")) return;
+    startTabDrag(tab, event);
+  });
+}
+
+/** 拖动排序时给其余标签做 FLIP 让位动画用的自增令牌。 */
+let flipSeq = 0;
+
+/**
+ * 指针拖动排序：被拖标签浮起并跟随指针，越过相邻标签中点即交换位置，其余标签平滑让位；
+ * 指针靠近标签栏左右边缘时持续自动滚动。不用 HTML5 draggable，避免 macOS WKWebView 下拖拽不可靠。
+ */
+function startTabDrag(tab: HTMLElement, down: PointerEvent): void {
+  const list = tabHost();
+  if (!list) return;
+
+  const startX = down.clientX;
+  const startY = down.clientY;
+  // 按下时指针在标签内的偏移，拖动过程中保持标签与指针的相对位置不变
+  const grabOffset = startX - tab.getBoundingClientRect().left;
+  let active = false;
+  let offset = 0;
+  let pointerX = startX;
+  let rafId = 0;
+
+  /** 让浮起的标签始终停在指针下方；滚动与换序都会改变其 layout 位置，这里按差值重算。 */
+  const followPointer = () => {
+    const baseLeft = tab.getBoundingClientRect().left - offset;
+    offset = pointerX - grabOffset - baseLeft;
+    tab.style.transform = offset ? `translateX(${offset}px)` : "";
+  };
+
+  /** 与左右相邻标签按中点比较后交换位置，并让其余标签从旧位置滑到新位置。 */
+  const reorder = () => {
+    const prev = tab.previousElementSibling as HTMLElement | null;
+    const next = tab.nextElementSibling as HTMLElement | null;
+    // 只和邻居比较：同一阈值下交换后不会立刻换回，避免拖动时来回抖动
+    let move: (() => void) | null = null;
+    if (prev && prev.classList.contains("tab")) {
+      const rect = prev.getBoundingClientRect();
+      if (pointerX < rect.left + rect.width / 2) move = () => prev.before(tab);
     }
-  });
+    if (!move && next && next.classList.contains("tab")) {
+      const rect = next.getBoundingClientRect();
+      if (pointerX > rect.left + rect.width / 2) move = () => next.after(tab);
+    }
+    if (!move) return;
 
-  tab.addEventListener("dragover", (event: DragEvent) => {
-    if (!dragging || dragging === group.id) return;
-    const moved = groups.get(dragging);
-    if (!moved || !moved.tab) return;
+    const nodes = Array.from(list.querySelectorAll<HTMLElement>(".tab"));
+    const before = new Map<HTMLElement, number>();
+    nodes.forEach((node) => before.set(node, node.offsetLeft));
+    move();
+
+    nodes.forEach((node) => {
+      if (node === tab) return;
+      const dx = (before.get(node) || 0) - node.offsetLeft;
+      if (!dx) return;
+      const token = String(++flipSeq);
+      node.dataset.flip = token;
+      node.style.transition = "none";
+      node.style.transform = `translateX(${dx}px)`;
+      requestAnimationFrame(() => {
+        if (node.dataset.flip !== token) return;
+        node.style.transition = "transform 160ms cubic-bezier(0.2, 0.7, 0.3, 1)";
+        node.style.transform = "";
+        setTimeout(() => {
+          if (node.dataset.flip !== token) return;
+          node.style.transition = "";
+          delete node.dataset.flip;
+        }, 220);
+      });
+    });
+  };
+
+  /** 靠近左右边缘时逐帧自动滚动，越靠边越快；滚动后继续让标签跟随指针。 */
+  const autoScroll = () => {
+    rafId = 0;
+    if (!active) return;
+    const rect = list.getBoundingClientRect();
+    const edge = 56;
+    let speed = 0;
+    if (pointerX < rect.left + edge) speed = -Math.min(18, 5 + (rect.left + edge - pointerX) * 0.6);
+    else if (pointerX > rect.right - edge) speed = Math.min(18, 5 + (pointerX - rect.right + edge) * 0.6);
+    if (!speed) return;
+    const before = list.scrollLeft;
+    list.scrollLeft += speed;
+    if (list.scrollLeft === before) return;
+    followPointer();
+    rafId = requestAnimationFrame(autoScroll);
+  };
+
+  const onMove = (event: PointerEvent) => {
+    pointerX = event.clientX;
+    if (!active) {
+      if (Math.abs(pointerX - startX) < DRAG_THRESHOLD && Math.abs(event.clientY - startY) < DRAG_THRESHOLD) {
+        return;
+      }
+      active = true;
+      tab.classList.add("dragging");
+      list.classList.add("dragging");
+      // 拖动期间禁止全局文本选中，避免划过其他标签文字时出现选区
+      document.body.classList.add("tab-dragging");
+      const selection = window.getSelection();
+      if (selection) selection.removeAllRanges();
+    }
     event.preventDefault();
-    if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
-    const rect = tab.getBoundingClientRect();
-    if (event.clientX > rect.left + rect.width / 2) tab.after(moved.tab);
-    else tab.before(moved.tab);
-    syncOrder();
-  });
+    reorder();
+    followPointer();
+    if (!rafId) rafId = requestAnimationFrame(autoScroll);
+  };
 
-  tab.addEventListener("drop", (event: DragEvent) => {
-    event.preventDefault();
-    dragging = null;
+  const onEnd = () => {
+    window.removeEventListener("pointermove", onMove, true);
+    window.removeEventListener("pointerup", onEnd, true);
+    window.removeEventListener("pointercancel", onEnd, true);
+    if (rafId) cancelAnimationFrame(rafId);
+    rafId = 0;
+    tab.classList.remove("dragging");
+    list.classList.remove("dragging");
+    document.body.classList.remove("tab-dragging");
+    tab.style.transform = "";
+    if (!active) return;
     syncOrder();
-  });
+    // click 在 pointerup 之后派发，先置位再由 click 处理器吞掉
+    suppressClick = true;
+    setTimeout(() => {
+      suppressClick = false;
+    }, 0);
+  };
 
-  tab.addEventListener("dragend", () => {
-    dragging = null;
-    syncOrder();
-  });
+  window.addEventListener("pointermove", onMove, true);
+  window.addEventListener("pointerup", onEnd, true);
+  window.addEventListener("pointercancel", onEnd, true);
 }
 
 /** 从 DOM 回读标签顺序，保持 order 与界面一致。 */

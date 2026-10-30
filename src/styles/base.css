@@ -217,6 +217,16 @@ body {
   white-space: nowrap;
 }
 
+.conn-item .note {
+  grid-column: 1 / -1;
+  min-width: 0;
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* 协议徽标：RDP 连接在名称后标注，避免与 SSH 混淆 */
 .conn-item .proto {
   grid-column: 2;

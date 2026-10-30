@@ -19,13 +19,14 @@ function ConnItem({ conn }: { conn: any }) {
   const title = isRdp(conn)
     ? `${conn.domain ? conn.domain + "\\" : ""}${conn.username} → ${conn.host}:${conn.port}`
     : `${conn.username}@${conn.host}:${conn.port}`;
+  const titleWithNote = conn.note ? `${title} · ${conn.note}` : title;
 
   return (
     <div
       className="conn-item"
       // 有会话在跑时带上状态，让状态点沿用标签栏那套状态色（见 styles/terminal.css 的 [data-state]）
       data-state={connectionState(conn.id) || undefined}
-      title={title}
+      title={titleWithNote}
       onClick={() => void connectTo(conn)}
       onContextMenu={(event) => {
         event.preventDefault();
@@ -43,6 +44,8 @@ function ConnItem({ conn }: { conn: any }) {
           </span>
         ) : null}
         <span className="sub">{address}</span>
+        {/* 备注：留空不占位；有备注时在地址下方多显示一行 */}
+        {conn.note ? <span className="note">{conn.note}</span> : null}
       </span>
       <button
         className="icon-btn edit"

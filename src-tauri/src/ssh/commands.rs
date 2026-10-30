@@ -6,6 +6,7 @@ use crate::state::AppState;
 use super::auth;
 use super::interactive::AuthPrompt;
 use super::jump::JumpTunnel;
+use super::key_setup::{self, KeySetupOptions, KeySetupResult};
 use super::known_hosts::KnownHostEntry;
 use super::session::open_transport;
 use super::types::{ConnectParams, SessionInfo};
@@ -67,6 +68,26 @@ pub async fn ssh_test_connection(params: ConnectParams) -> AppResult<String> {
     tauri::async_runtime::spawn_blocking(move || test_connection(&params))
         .await
         .map_err(|e| AppError::Ssh(format!("测试连接任务异常结束：{e}")))?
+}
+
+/// 一键生成并部署 SSH 密钥：本地生成 ed25519 密钥对，把公钥追加到远端
+/// `~/.ssh/authorized_keys`，验证密钥登录，并写入本机 `~/.ssh/config`。
+///
+/// 连接凭据由后端按 `connection_id` 从保险库读取，前端不传明文。
+#[tauri::command]
+pub async fn ssh_setup_key(
+    state: State<'_, AppState>,
+    connection_id: String,
+    options: KeySetupOptions,
+) -> AppResult<KeySetupResult> {
+    if !state.flags().connection.key_setup {
+        return Err(AppError::ModuleDisabled("生成并部署 SSH 密钥".into()));
+    }
+    let conn = state.store.get_connection(&connection_id)?;
+    let jump_enabled = state.flags().connection.jump_host;
+    tauri::async_runtime::spawn_blocking(move || key_setup::run(&conn, jump_enabled, &options))
+        .await
+        .map_err(|e| AppError::Ssh(format!("密钥部署任务异常结束：{e}")))?
 }
 
 /// 已知主机（主机密钥）列表。供设置界面展示与删除。

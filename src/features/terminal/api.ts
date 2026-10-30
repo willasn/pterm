@@ -84,6 +84,8 @@ export interface TerminalController {
   writeBytes(bytes: Uint8Array): void;
   /** 根据状态事件更新提示条与标签上的指示灯。 */
   setState(state: SessionState): void;
+  /** 根据延迟探测结果更新标签上的信号条。 */
+  setLatency(ms: number | null): void;
   fit(): void;
   focus(): void;
   /** 复制选中内容到剪贴板；返回 false 表示本次不接管（无选中）。 */
@@ -596,6 +598,12 @@ export function open(info: SessionInfo, options?: any): TerminalController {
       tabs.touch(this);
       // 回写侧栏连接点的状态色：仅带连接 id 的会话会被登记
       if (connections) connections.noteSession(this.params && this.params.connection_id, info.id, kind);
+    },
+
+    /** 延迟探测结果：只刷新标签上的信号条，不重放状态逻辑。 */
+    setLatency(ms: number | null) {
+      info.latency = typeof ms === "number" && ms >= 0 ? ms : null;
+      tabs.touch(this);
     },
 
     fit() {

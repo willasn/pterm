@@ -42,6 +42,9 @@ export const ipc = {
   moduleStatus: () => call("module_status"),
   resetConfig: () => call("reset_config"),
 
+  // ---------- MCP 服务（可开关） ----------
+  mcpInfo: () => call<{ enabled: boolean; port: number; endpoint: string; token: string | null; running: boolean }>("mcp_info"),
+
   // ---------- 连接配置 ----------
   listConnections: () => call("list_connections"),
   saveConnection: (input: any) => call("save_connection", { input }),
@@ -92,6 +95,10 @@ export const ipc = {
   sshSessions: () => call("ssh_sessions"),
   sshRecentOutput: (id: string, maxBytes: number) => call("ssh_recent_output", { id, maxBytes }),
   sshTestConnection: (params: any) => call("ssh_test_connection", { params }),
+  // 一键生成并部署 SSH 密钥：本地生成 ed25519，公钥追加到远端 authorized_keys，
+  // 验证密钥登录并写入本机 ~/.ssh/config
+  sshSetupKey: (connectionId: string, options: any) =>
+    call("ssh_setup_key", { connectionId, options }),
   // 主机密钥校验（known_hosts / TOFU）
   sshKnownHostsList: () => call("ssh_known_hosts_list"),
   sshKnownHostsForget: (host: string, port: number) => call("ssh_known_hosts_forget", { host, port }),

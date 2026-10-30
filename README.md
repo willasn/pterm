@@ -28,6 +28,7 @@
 ```
 pterm/
 ├── FEATURES.md                  # 功能索引（唯一事实来源）
+├── MCP.md                       # MCP 服务开发记录（外部 AI 接入）
 ├── README.md
 ├── .github/workflows/ci.yml     # CI：安装依赖 + 测试 + 类型检查 + 构建
 ├── .github/workflows/release.yml # Release：打 v* 标签时打包 macOS / Windows 并发布（需配签名密钥 Secrets 以产出更新包）
@@ -56,6 +57,7 @@ pterm/
 │       │   │   ├── auth.rs      # SSH agent / 密钥 / 凭据链
 │       │   │   └── fallback.rs  # 系统 git CLI 回退（边缘场景）
 │       │   ├── ai_assistant/    # AI 助手（可开关）
+│       │   ├── mcp/             # MCP 服务（可开关，127.0.0.1 上的 HTTP 端点，供外部 AI 连接 SSH）
 │       │   ├── snippets/        # 命令片段（可开关）
 │       │   ├── global_search/   # 全局搜索（可开关，检索逻辑在前端）
 │       │   ├── command_history/ # 命令历史（可开关）

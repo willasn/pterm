@@ -81,7 +81,7 @@ function connectionHits(sources: SearchSources): SearchHit[] {
   return sources.connections.map((conn) => ({
     title: conn.name || conn.host,
     meta: [conn.group_name, `${conn.host}:${conn.port || 22}`, conn.username].filter(Boolean).join(" · "),
-    hay: [conn.name, conn.host, conn.username, conn.group_name, conn.port]
+    hay: [conn.name, conn.host, conn.username, conn.group_name, conn.note, conn.port]
       .filter(Boolean)
       .join(" ")
       .toLowerCase(),

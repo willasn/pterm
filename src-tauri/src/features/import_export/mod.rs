@@ -59,6 +59,9 @@ pub struct ExportedConnection {
     pub key_path: Option<String>,
     #[serde(default)]
     pub group_name: Option<String>,
+    /// 备注（纯文本说明）
+    #[serde(default)]
+    pub note: Option<String>,
     #[serde(default)]
     pub jump: Option<JumpRecord>,
     #[serde(default)]
@@ -133,6 +136,7 @@ pub fn exportable(connections: &[StoredConnection]) -> Vec<ExportedConnection> {
             auth_kind: c.auth_kind.clone(),
             key_path: c.key_path.clone(),
             group_name: c.group_name.clone(),
+            note: c.note.clone(),
             jump: c.jump.clone(),
             color: c.color.clone(),
         })
@@ -429,6 +433,7 @@ fn flush_block(
         auth_kind,
         key_path,
         group_name: None,
+        note: None,
         jump,
         color: None,
     });
@@ -523,6 +528,7 @@ fn into_stored(candidate: ExportedConnection, now: &str) -> StoredConnection {
         auth_kind: normalize_auth(&candidate.auth_kind),
         key_path: candidate.key_path,
         group_name: candidate.group_name,
+        note: candidate.note,
         has_password: false,
         has_passphrase: false,
         jump: candidate.jump,
@@ -584,6 +590,7 @@ mod tests {
             auth_kind: "password".into(),
             key_path: None,
             group_name: None,
+            note: None,
             has_password: true,
             has_passphrase: true,
             jump: None,
@@ -603,6 +610,18 @@ mod tests {
         assert!(!json.contains("existing-id"));
         assert_eq!(file.connections.len(), 1);
         assert_eq!(file.connections[0].host, "10.0.0.1");
+    }
+
+    /// 备注属于非敏感配置字段，导出后必须保留，重新导入时也要原样带回。
+    #[test]
+    fn export_and_import_keep_note() {
+        let mut conn = stored("生产", "10.0.0.1");
+        conn.note = Some("机房 A · 仅内网".into());
+        let file = export_file(&[conn]);
+        assert_eq!(file.connections[0].note.as_deref(), Some("机房 A · 仅内网"));
+
+        let saved = into_stored(file.connections.into_iter().next().unwrap(), "t");
+        assert_eq!(saved.note.as_deref(), Some("机房 A · 仅内网"));
     }
 
     #[test]
@@ -689,6 +708,7 @@ Host web prod=web
                 auth_kind: "password".into(),
                 key_path: None,
                 group_name: None,
+                note: None,
                 jump: None,
                 color: None,
             },
@@ -703,6 +723,7 @@ Host web prod=web
                 auth_kind: "不存在的类型".into(),
                 key_path: None,
                 group_name: None,
+                note: None,
                 jump: None,
                 color: None,
             },
@@ -739,6 +760,7 @@ Host web prod=web
             auth_kind: "password".into(),
             key_path: None,
             group_name: None,
+            note: None,
             jump: None,
             color: None,
         };
@@ -761,6 +783,7 @@ Host web prod=web
             auth_kind: "auto".into(),
             key_path: None,
             group_name: None,
+            note: None,
             jump: None,
             color: None,
         };

@@ -11,6 +11,7 @@ export const CATEGORIES = [
   { id: "connection", label: "连接" },
   { id: "flags", label: "功能开关" },
   { id: "ai", label: "AI 助手" },
+  { id: "mcp", label: "MCP 服务" },
   { id: "git", label: "Git 同步" },
   { id: "shortcuts", label: "快捷键" },
   { id: "about", label: "关于" },
@@ -63,6 +64,10 @@ export const FLAG_META: Record<string, { label: string; hint?: string }> = {
     hint: "新建连接时可选 RDP 协议打开 Windows 远程桌面：Windows 调用系统 mstsc，macOS 调用微软「Windows App」（需自行安装）",
   },
   "connection.quick_connect": { label: "快捷连接", hint: "侧栏直接输入 user@host:port" },
+  "connection.key_setup": {
+    label: "生成并部署 SSH 密钥",
+    hint: "连接右键菜单可一键生成 ed25519 密钥、追加公钥到远端并写入本机 ~/.ssh/config",
+  },
   "connection.local_terminal": {
     label: "本地终端",
     hint: "在本机 PTY 上打开一个 shell 标签（不经过网络），入口在侧栏与快捷键",

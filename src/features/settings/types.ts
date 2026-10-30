@@ -52,6 +52,15 @@ export interface AiModelConfig {
   context_bytes: number | null;
 }
 
+/** MCP 服务状态（mcp_info 返回）。 */
+export interface McpInfo {
+  enabled: boolean;
+  port: number;
+  endpoint: string;
+  token: string | null;
+  running: boolean;
+}
+
 /** 协议元信息（ai_protocols 返回）。 */
 export interface ProtocolSpec {
   value: string;

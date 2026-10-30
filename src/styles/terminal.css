@@ -91,13 +91,43 @@
   max-width: 220px;
   flex: none;
   font-size: var(--fs-sm);
-  cursor: pointer;
+  cursor: grab;
   user-select: none;
   white-space: nowrap;
 }
 
 .tab:hover {
   background: var(--bg-hover);
+}
+
+.tab:active {
+  cursor: grabbing;
+}
+
+/* 拖动排序：被拖标签浮起跟随指针（位置由 JS 用 transform 控制），
+   抬升的阴影 + 圆角让「抓起一张卡片」的感觉更明确 */
+.tab.dragging {
+  position: relative;
+  z-index: 3;
+  opacity: 0.95;
+  pointer-events: none;
+  cursor: grabbing;
+  transition: none;
+  background: var(--bg);
+  border-radius: 6px;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.28), 0 0 0 1px var(--border);
+  will-change: transform;
+}
+
+.tab-list.dragging {
+  cursor: grabbing;
+}
+
+/* 拖动标签期间全局禁止选中文字，避免指针划过其他标签 / 终端时出现选区 */
+body.tab-dragging,
+body.tab-dragging * {
+  user-select: none !important;
+  cursor: grabbing;
 }
 
 .tab.active {
@@ -148,6 +178,56 @@
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* 延迟信号条：3 格，格数与颜色表示强度，hover 的毫秒数写在元素 title 上 */
+.tab .rtt {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 11px;
+  flex: none;
+  cursor: default;
+}
+
+.tab .rtt[hidden] {
+  display: none;
+}
+
+.tab .rtt i {
+  display: block;
+  width: 3px;
+  border-radius: 1px;
+  background: currentColor;
+  opacity: 0.22;
+}
+
+.tab .rtt i:nth-child(1) {
+  height: 4px;
+}
+
+.tab .rtt i:nth-child(2) {
+  height: 7px;
+}
+
+.tab .rtt i:nth-child(3) {
+  height: 10px;
+}
+
+.tab .rtt i.on {
+  opacity: 1;
+}
+
+.tab .rtt[data-level="1"] {
+  color: var(--danger);
+}
+
+.tab .rtt[data-level="2"] {
+  color: var(--warn);
+}
+
+.tab .rtt[data-level="3"] {
+  color: var(--ok);
 }
 
 /* 关闭按钮与侧栏的「编辑」同样处理：静止时隐去，hover / 选中才显形，

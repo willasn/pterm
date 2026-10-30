@@ -160,6 +160,10 @@ pub fn save_connection(
         .domain
         .map(|d| d.trim().to_string())
         .filter(|d| !d.is_empty());
+    conn.note = conn
+        .note
+        .map(|n| n.trim().to_string())
+        .filter(|n| !n.is_empty());
     if conn.protocol == store::PROTOCOL_RDP {
         // RDP 不使用 SSH 专属字段，避免脏数据被导出 / 同步到别处
         conn.jump = None;

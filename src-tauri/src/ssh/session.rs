@@ -611,6 +611,7 @@ impl RunContext {
                 term,
                 self.params.cols,
                 self.params.rows,
+                keepalive,
                 rx,
                 &self.cancel,
                 &self.recent,

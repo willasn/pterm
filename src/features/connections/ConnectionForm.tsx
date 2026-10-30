@@ -3,6 +3,7 @@ import { Btn, Field, Section } from "../../components/form";
 import { Portal } from "../../components/Portal";
 import { useT } from "../../hooks/useLocale";
 import { errorText, pt, toast } from "../../lib/legacy";
+import { ipc } from "../ipc/api";
 import {
   AUTH_KINDS,
   PROTOCOLS,
@@ -104,6 +105,41 @@ function SecretField({
   );
 }
 
+/** 把 `~` 展开为本机 home，并返回其所在目录；无法定位时返回 null。 */
+function keyDirOf(rawValue: string, home: string): string | null {
+  const raw = String(rawValue || "").trim();
+  if (!raw) return null;
+  if (raw === "~") return home || null;
+  let path = raw;
+  if (raw.startsWith("~/") || raw.startsWith("~\\")) {
+    if (!home) return null;
+    path = home + raw.slice(1);
+  }
+  const absolute = path.startsWith("/") || /^[A-Za-z]:[\\/]/.test(path) || path.startsWith("\\\\");
+  if (!absolute) return null;
+  const trimmed = path.replace(/[\\/]+$/, "");
+  const index = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
+  if (index <= 0) return null;
+  const parent = trimmed.slice(0, index);
+  // 盘符根目录保留分隔符，避免把 "C:" 当成当前盘工作目录
+  return /^[A-Za-z]:$/.test(parent) ? parent + "\\" : parent;
+}
+
+/** 选择私钥时的默认目录：当前私钥所在文件夹，没有则本机 ~/.ssh。 */
+async function defaultKeyDir(): Promise<string | undefined> {
+  try {
+    const defaults: any = await ipc.importExportDefaults();
+    const home = String(defaults?.home_dir || "").replace(/[\\/]+$/, "");
+    const dir = keyDirOf(String(getDraftValue("key_path") || ""), home);
+    if (dir) return dir;
+    if (!home) return undefined;
+    const sep = home.includes("\\") && !home.includes("/") ? "\\" : "/";
+    return home + sep + ".ssh";
+  } catch {
+    return undefined;
+  }
+}
+
 /** 私钥路径：文本 + 原生文件选择。 */
 function KeyPathField() {
   const dialog = (window as any).__TAURI__?.dialog;
@@ -122,7 +158,12 @@ function KeyPathField() {
             type="button"
             onClick={async () => {
               try {
-                const picked = await dialog.open({ multiple: false, directory: false, title: "选择私钥文件" });
+                const picked = await dialog.open({
+                  multiple: false,
+                  directory: false,
+                  title: "选择私钥文件",
+                  defaultPath: await defaultKeyDir(),
+                });
                 if (typeof picked === "string" && picked) {
                   setDraftValue("key_path", picked);
                   rerenderForm();
@@ -246,6 +287,16 @@ export function ConnectionForm() {
           </header>
           <div className="modal-body" id="conn-form" key={state.formKey}>
             <Section title="基础">{basics}</Section>
+
+            <Section title="备注">
+              <textarea
+                rows={1}
+                style={{ width: "100%", resize: "none" }}
+                placeholder="例如：生产环境跳板，仅限内网访问"
+                defaultValue={draft.note == null ? "" : String(draft.note)}
+                onChange={(event) => setDraftValue("note", event.target.value)}
+              />
+            </Section>
 
             {rdp ? (
               <Section

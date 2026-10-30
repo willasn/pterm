@@ -23,6 +23,7 @@ use modules::command_history::CommandHistoryModule;
 use modules::git_sync::{GitSync, GitSyncModule};
 use modules::global_search::GlobalSearchModule;
 use modules::local_terminal::LocalTerminalModule;
+use modules::mcp::McpModule;
 use modules::quick_panel::QuickPanelModule;
 use modules::shortcuts::ShortcutsModule;
 use modules::snippets::SnippetsModule;
@@ -104,6 +105,8 @@ pub fn run() {
             // AI 助手服务与模块共用同一实例：命令层与后台流式任务共用一个 HTTP 客户端
             let ai = AiService::new();
             registry.register(Arc::new(AiAssistantModule::new(ai.clone())));
+            // MCP 服务：本机 Streamable HTTP 端点，供外部 AI 经 pterm 认证后连接 SSH
+            registry.register(McpModule::new());
 
             let state = AppState::new(
                 config,
@@ -173,6 +176,8 @@ pub fn run() {
             ssh::commands::ssh_sessions,
             ssh::commands::ssh_recent_output,
             ssh::commands::ssh_test_connection,
+            // 一键生成并部署 SSH 密钥（可开关）
+            ssh::commands::ssh_setup_key,
             // 主机密钥校验（known_hosts / TOFU）
             ssh::commands::ssh_known_hosts_list,
             ssh::commands::ssh_known_hosts_forget,
@@ -246,6 +251,8 @@ pub fn run() {
             modules::ai_assistant::commands::ai_save_model,
             modules::ai_assistant::commands::ai_delete_model,
             modules::ai_assistant::commands::ai_protocols,
+            // MCP 服务（可开关）：本地端点状态查询，供设置界面展示与复制令牌
+            modules::mcp::commands::mcp_info,
             // 崩溃日志（可开关）
             utils::commands::crash_log_read,
             utils::commands::crash_log_export,

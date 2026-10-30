@@ -36,6 +36,7 @@
 | [x] | 密钥认证 | 私钥文件 + 可选 passphrase，支持 key 探测 | `src-tauri/src/ssh/auth.rs` |
 | [x] | 键盘交互认证 | 支持 keyboard-interactive：建连时服务端下发提示（`Password:` / 动态验证码等），弹窗逐条应答后继续认证，覆盖 PAM / 多因素（MFA / OTP）服务器。连接认证方式可选「键盘交互」；`auto` 模式在其它方式失败后也会自动尝试。跳板机提示复用同一会话界面。弹窗全局串行（多会话同时要求输入时排队，不互相顶掉）；**用户取消 / 超时会给出「已取消键盘交互认证」/「等待超时」的明确提示，且不触发补录密码**。SFTP / 端口转发等无界面连接用保险库中保存的密码作为静态应答 | `src-tauri/src/ssh/auth.rs`、`src-tauri/src/ssh/interactive.rs`、`src/features/ssh/api.ts` |
 | [x] | 终端渲染 | xterm.js 渲染 ANSI/VT，自适应尺寸（fit addon） | `src/features/terminal/` |
+| [x] | 会话延迟显示 | 标签名右侧 3 格信号条，按 `terminal.keepalive_secs` 间隔在同一条 SSH 会话上旁路 exec 探测往返耗时（libssh2 的 keepalive 不回传耗时，因此单独计时）：<80ms 三格绿、<200ms 两格黄、其余一格红，鼠标悬停显示毫秒数；本地终端 / RDP 不显示。探测同时驱动保活发送，间隔为 0 时两者都关闭；连续 3 次失败（如远端禁用 exec）自动停止探测 | `src-tauri/src/ssh/latency.rs`、`src-tauri/src/ssh/channel.rs`、`src/features/tabs/store.ts` |
 | [x] | 复制 / 粘贴 | 选中即复制可选（`terminal.copy_on_select`）；终端内右击弹出「复制 / 粘贴」菜单（`terminal.right_click_menu`）；复制 / 粘贴可绑定快捷键（动作 `terminal.copy` / `terminal.paste`），无选中文本时复制键原样落到终端；粘贴走 xterm 原生 paste，同样经过危险命令检测。WebView 不提供 `navigator.clipboard` 时（macOS 打包后的 `tauri://` 自定义协议、部分 Linux WebKitGTK）自动回退到 Rust 命令读写系统剪贴板。vim 等开启鼠标上报（`set mouse=a`）的程序中，按住 Option（macOS）/ Shift（Windows / Linux）拖动可强制选中文本 | `src/features/terminal/`、`src/features/shortcuts/`、`src-tauri/src/utils/commands.rs` |
 | [x] | 终端内搜索 | 终端内 `Cmd/Ctrl+F` 打开查找条，在回滚缓冲中查找：输入即从当前视口向下定位，Enter 下一个 / Shift+Enter 上一个（环形），`Aa` 切换区分大小写，Esc 关闭。**全部命中项用鲜艳底色高亮**（xterm decoration 半透明色块，不遮字），当前项换橙色并加描边；同时滚动到可视区中部。快捷动作 `terminal.find` | `src/features/terminal/`（`search.ts` + `api.ts`） |
 | [x] | 本地即时回显 | 预测性回显：按键先本地上屏，远端回显到达后逐字节比对对齐，不一致则整段撤回重画；回车、Tab、方向键、粘贴不预测。可用 `terminal.local_echo` 关闭 | `src/features/terminal/` |
@@ -100,11 +101,13 @@ features:
 | [x] | SFTP | `sftp` | 文件浏览、上传、下载、删除、重命名、权限修改；支持文件夹递归传输、拖拽上传、传输进度与中断 | `src/features/sftp/`、`src-tauri/src/features/sftp/` |
 | [x] | 端口转发 | `port_forward` | 本地转发 / 远程转发 / 动态转发（SOCKS5），支持启停与状态查看 | `src/features/port-forward/`、`src-tauri/src/features/port_forward/` |
 | [x] | 跳板机 | `jump_host` | 通过 ProxyJump 链式连接（支持多级） | `src-tauri/src/ssh/jump.rs` |
+| [x] | 一键生成密钥 | `key_setup` | 连接右键「生成并部署密钥…」：本地纯 Rust 生成 ed25519 密钥对（无口令，私钥 0600），认证后把公钥经 SSH exec 幂等追加到远端 `~/.ssh/authorized_keys`（只追加不覆盖，写前备份并修正 700/600 权限），再另起一条仅私钥认证的会话验证登录，最后写入本机 `~/.ssh/config`（按 Host 段匹配，冲突时用户选择覆盖 / 另加别名 / 跳过，写前备份、原子替换）。跳板机复用同一隧道；RDP 连接不适用 | `src-tauri/src/ssh/key_setup.rs`、`src/features/connections/` |
 | [x] | 主机密钥校验 | `host_key_check` | 建连握手后、认证前比对服务端主机密钥：首次连接弹窗确认指纹（TOFU），密钥变更时以危险样式二次确认，确认后写入配置目录下的 `known_hosts.json`（本机私有、不随 Git 同步）；未确认一律拒绝，抵御中间人攻击。**校验覆盖终端 / SFTP / 端口转发 / 跳板机**：后三者无法弹窗，未确认或已变更时提示「先在终端中连接该主机完成首次信任」。设置「连接 → 主机密钥校验」可关闭开关，开关右侧「已知主机」按钮打开独立弹窗查看 / 移除已知主机；「测试连接」不校验也不写入 | `src-tauri/src/ssh/known_hosts.rs`、`src-tauri/src/ssh/session.rs`、`src/features/ssh/api.ts`、`src/features/settings/` |
 | [x] | 本地终端 | `local_terminal` | 在本机 PTY（Unix pty / Windows ConPTY）上打开一个 shell 标签，不经过网络；复用 SSH 的会话表、事件通道与标签 / 分屏体系，读写 / 改尺寸 / 断开走同一组命令。入口：侧栏按钮与快捷键（默认 `Cmd/Ctrl+Shift+T`）。Windows 优先 PowerShell、回退 cmd | `src-tauri/src/ssh/local.rs`、`src-tauri/src/modules/local_terminal/`、`src/features/local-terminal/` |
 | [x] | 会话日志 | `session_log` | 按会话落盘完整终端输出，支持开关、保留天数（默认 10 天）、保留条数（默认 20 条）与单文件大小上限（默认 100 KB，超出丢弃最旧内容）；天数 / 条数 / 上限任一置 0 表示该项不限制。预览按「单个文件」截取末尾 10 KB | `src/features/session-log/`、`src-tauri/src/features/session_log/` |
 | [x] | 自动重连 | `auto_reconnect` | 断线后指数退避重连，可配置最大次数与间隔 | `src-tauri/src/ssh/session.rs` |
 | [x] | 连接分组 | `connection_group` | 连接按文件夹/标签分组，支持折叠与搜索 | `src-tauri/src/config/app_config.rs` |
+| [x] | 连接备注 | — | 每个连接可填写纯文本备注（用途 / 机房位置等），显示在侧栏连接地址下方并纳入全局搜索；备注随导出文件与 Git 同步保存，不含凭据 | `src/features/connections/`、`src-tauri/src/config/store.rs` |
 | [x] | 导入导出 | `import_export` | 导入/导出连接配置（含 `~/.ssh/config` 解析），导出时排除凭据 | `src/features/import-export/`、`src-tauri/src/features/import_export/` |
 | [x] | 快捷连接 | `quick_connect` | `user@host:port` 一行直达，无需先保存配置 | `src/features/connections/` |
 | [x] | 同步输入 | `sync_input` | 只在一台终端输入，输入同步广播到**同一同步组**内的其它标签。右键标签菜单：`当前添加到组` / `全部添加到组`（加入组后用同色轮廓 + 组序号徽标标识分组）、`开启 / 关闭组内同步输入`（**每组独立开关**，开启后组内才互相广播，成员标签加同色高亮以区别于普通状态）、`移出同步组`、`移除全部组`（解散所有组）。加入组后组内标签自动聚拢、当前标签移到组的最右侧。分组为会话期临时状态、不落库 | `src/features/sync-input/`、`src/features/tabs/`、`src/features/terminal/` |
@@ -170,6 +173,28 @@ features:
 | [x] | 单模型保存 | — | 每个模型卡片自带「保存到模型列表」，新增或覆盖单条，不必等设置里其它分类一起提交；Key 仍只进加密保险库 | `src-tauri/src/modules/ai_assistant/commands.rs`（`ai_save_model`） |
 | [x] | 危险提示 | `ai_danger_warning` | Agent 请求执行的命令命中危险模式时高亮警告并二次确认。**必开项**，界面不暴露开关 | `src-tauri/src/modules/ai_assistant/danger.rs` |
 | [x] | 上下文注入 | `ai_context_inject` | 注入当前主机、目录、最近终端输出作为上下文。开关在主界面右侧 **AI 助手面板标题栏**（清理图标左侧的 📎 图标），设置「功能开关」中不再展示；切换后由 `ai_set_context_inject` 单独落盘 | `src-tauri/src/modules/ai_assistant/context.rs`、`src/features/ai/AiPanel.tsx` |
+
+---
+
+## 5.1 MCP 服务（外部 AI 接入）
+
+> 让外部 AI 客户端（TRAE / CodeBuddy 等）通过 MCP 调用 pterm 的 SSH 能力。
+> **凭据始终留在本机加密保险库**，工具参数与返回值都不含密码 / 私钥。
+> 详细设计、客户端配置与已知限制见 [MCP.md](./MCP.md)。
+
+```yaml
+features:
+  mcp:
+    enabled: false   # 默认关闭；等价于一条执行通道，需显式开启
+    port: 39217      # 仅绑定 127.0.0.1，需与客户端配置一致
+```
+
+| 状态 | 功能 | FLAG | 说明 | 代码位置 |
+| --- | --- | --- | --- | --- |
+| [x] | MCP 服务 | `mcp` | 本机 `127.0.0.1` 上的 Streamable HTTP 端点（`POST /mcp`，无状态 JSON-RPC），所有请求需携带配置目录下 `mcp.token`（0600）对应的 Bearer 令牌；关闭时不监听端口、不产生后台任务 | `src-tauri/src/modules/mcp/server.rs`、`src-tauri/src/modules/mcp/mod.rs` |
+| [x] | MCP 工具集 | `mcp` | 最小闭环 5 个工具：`list_connections` / `connect` / `exec` / `read_output` / `disconnect`。`connect` 复用现有 SSH 核心完成认证与主机密钥严格校验（不接受静默信任新主机），`exec` 通过会话输出环形缓冲解析退出码与输出（约 32 KB 上限） | `src-tauri/src/modules/mcp/tools.rs`、`src-tauri/src/modules/mcp/rpc.rs` |
+| [x] | MCP 设置界面 | `mcp` | 「设置 → MCP 服务」：开关、运行状态、端点地址、访问令牌复制、一键复制客户端 JSON 配置；端口暂只能在 config.yaml 修改并重启生效 | `src-tauri/src/modules/mcp/commands.rs`、`src/features/settings/` |
+| [ ] | stdio 传输 | `mcp` | 需先把 SSH 核心与 `AppHandle` 解耦；当前仅 HTTP | — |
 
 ---
 

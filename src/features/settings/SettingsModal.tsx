@@ -12,6 +12,7 @@ import {
   useImportExport,
 } from "../import-export/store";
 import { ask } from "../util/util";
+import { ipc } from "../ipc/api";
 import {
   CATEGORIES,
   CURSOR_STYLES,
@@ -71,7 +72,7 @@ import {
   useSettingsVersion,
   viewCrashLog,
 } from "./store";
-import type { AiModelConfig, ModuleStatus, ShortcutIssue, ShortcutRow, VaultStatus } from "./types";
+import type { AiModelConfig, McpInfo, ModuleStatus, ShortcutIssue, ShortcutRow, VaultStatus } from "./types";
 
 // ---------------------------------------------------------------------------
 // 基础元素
@@ -1288,6 +1289,109 @@ function AboutCategory() {
 }
 
 // ---------------------------------------------------------------------------
+// 分类：MCP 服务
+// ---------------------------------------------------------------------------
+
+/** MCP 服务：开关、端点、令牌与一键复制的客户端配置。 */
+function McpCategory() {
+  const version = useSettingsVersion();
+  const [info, setInfo] = useState<McpInfo | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    ipc
+      .mcpInfo()
+      .then((next) => {
+        if (alive) setInfo(next);
+      })
+      .catch(() => {
+        if (alive) setInfo(null);
+      });
+    return () => {
+      alive = false;
+    };
+    // 保存配置或切换分类后重新拉取一次运行状态
+  }, [version]);
+
+  const copy = (text: string, okText: string) => {
+    ipc
+      .clipboardWriteText(text)
+      .then(() => toast(okText, "ok"))
+      .catch(() => toast("复制失败", "error"));
+  };
+
+  const endpoint = info?.endpoint || "—";
+  const token = info?.token || "";
+  const clientConfig = token
+    ? JSON.stringify(
+        {
+          mcpServers: {
+            pterm: {
+              type: "http",
+              url: info?.endpoint,
+              headers: { Authorization: `Bearer ${token}` },
+            },
+          },
+        },
+        null,
+        2
+      )
+    : "";
+  const status = info?.running ? "运行中" : info?.enabled ? "已启用 · 未监听" : "未启用";
+
+  return (
+    <>
+      <Section
+        title="MCP 服务"
+        desc="让外部 AI 客户端（TRAE / CodeBuddy 等）通过 MCP 调用 pterm 的 SSH 能力。凭据始终留在本机加密保险库，不会进入模型上下文。"
+      >
+        <ToggleField
+          label="启用 MCP 服务"
+          hint="保存后在本机 127.0.0.1 监听，关闭后立即释放端口"
+          path="features.mcp.enabled"
+        />
+        <Field label="服务状态">
+          <span className={"badge " + (info?.running ? "on" : "off")}>{status}</span>
+        </Field>
+        <Field label="服务地址" hint="仅绑定本机回环地址">
+          <span className="muted">{endpoint}</span>
+        </Field>
+        <Field
+          label="访问令牌"
+          hint={token ? "等同于本机执行权限，请勿外泄或提交到仓库" : "启用并保存后自动生成"}
+        >
+          {token ? (
+            <div style={{ display: "flex", gap: 8, alignItems: "center", minWidth: 0 }}>
+              <span className="muted" style={{ wordBreak: "break-all", flex: 1 }}>
+                {token}
+              </span>
+              <Btn onClick={() => copy(token, "已复制访问令牌")}>复制</Btn>
+            </div>
+          ) : (
+            <span className="muted">尚未生成</span>
+          )}
+        </Field>
+        <Field label="客户端配置" hint="复制后粘贴到 TRAE 的 MCP 配置，或作为 CodeBuddy 的 mcp add-json 参数">
+          <Btn kind="primary" disabled={!clientConfig} onClick={() => copy(clientConfig, "已复制 MCP 客户端配置")}>
+            复制 JSON 配置
+          </Btn>
+        </Field>
+      </Section>
+      <Section title="说明">
+        <Note>
+          端口默认为 {info?.port ?? 39217}；如需修改，请编辑配置目录下 config.yaml 的
+          features.mcp.port 并重启应用。
+        </Note>
+        <Note>
+          安全边界：只监听 127.0.0.1，所有请求需携带上面的令牌；目标主机必须已在终端中完成首次指纹信任；
+          MCP 建立的会话不会出现在标签页里。
+        </Note>
+      </Section>
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // 面板
 // ---------------------------------------------------------------------------
 
@@ -1301,6 +1405,8 @@ function CategoryBody() {
       return <FlagsCategory />;
     case "ai":
       return <AiCategory />;
+    case "mcp":
+      return <McpCategory />;
     case "git":
       return <GitCategory />;
     case "shortcuts":

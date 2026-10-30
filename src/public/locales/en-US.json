@@ -95,6 +95,7 @@
   "flags.connection.import_export": "Import / Export",
   "flags.connection.rdp": "Remote Desktop (RDP)",
   "flags.connection.quick_connect": "Quick Connect",
+  "flags.connection.key_setup": "Generate & Deploy SSH Key",
   "flags.connection.local_terminal": "Local Terminal",
   "flags.connection.sync_input": "Synchronized Input",
 

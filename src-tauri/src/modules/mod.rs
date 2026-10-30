@@ -4,6 +4,7 @@ pub mod command_history;
 pub mod git_sync;
 pub mod global_search;
 pub mod local_terminal;
+pub mod mcp;
 pub mod quick_panel;
 pub mod shortcuts;
 pub mod snippets;
@@ -21,6 +22,7 @@ use crate::config::feature_flags::{FeatureFlags, ModuleStatus, PluggableModule};
 use crate::config::store::SharedStore;
 use crate::config::ConfigManager;
 use crate::error::AppResult;
+use crate::ssh::interactive::AuthPromptHub;
 use crate::ssh::session::SessionManager;
 use crate::utils::Paths;
 
@@ -33,6 +35,9 @@ pub struct ModuleContext {
     pub store: SharedStore,
     pub paths: Paths,
     pub sessions: SessionManager,
+    /// 键盘交互认证应答中枢：模块建立的会话与界面共用同一实例，
+    /// 便于外部 AI 触发的连接在需要人工应答时复用同一套提示通道。
+    pub auth_hub: Arc<AuthPromptHub>,
 }
 
 /// 可插拔模块注册表。

@@ -3,7 +3,7 @@ use std::io::{ErrorKind, Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
@@ -13,6 +13,7 @@ use tauri::{AppHandle, Emitter};
 
 use crate::error::{AppError, AppResult};
 
+use super::latency;
 use super::session::OutputSink;
 use super::types::{SessionCommand, SessionState, ShellEnd};
 
@@ -25,6 +26,8 @@ const ERR_BUF: usize = 8 * 1024;
 const RECENT_LIMIT: usize = 32 * 1024;
 /// libssh2 在非阻塞模式下表示「稍后重试」的错误码
 const EAGAIN: i32 = -37;
+/// 连续探测失败多少次后停止（远端可能禁用了 exec，避免每轮都刷失败日志）
+const PROBE_MAX_FAILURES: u32 = 3;
 
 // ---------------------------------------------------------------------------
 // 事件发射
@@ -43,6 +46,11 @@ pub fn data_event(id: &str) -> String {
 /// 会话结束事件名。
 pub fn closed_event(id: &str) -> String {
     format!("ssh:closed:{id}")
+}
+
+/// 延迟事件名。
+pub fn latency_event(id: &str) -> String {
+    format!("ssh:latency:{id}")
 }
 
 pub fn emit_status(app: &AppHandle, id: &str, state: &SessionState) {
@@ -71,6 +79,14 @@ pub fn emit_closed(app: &AppHandle, id: &str, reason: &str, clean: bool) {
     }
 }
 
+/// 推送一次延迟探测结果；`None` 表示该会话不再提供延迟（远端不支持）。
+pub fn emit_latency(app: &AppHandle, id: &str, ms: Option<u32>) {
+    let payload = serde_json::json!({ "ms": ms });
+    if let Err(e) = app.emit(&latency_event(id), payload) {
+        log::warn!("推送会话 {id} 延迟失败：{e}");
+    }
+}
+
 // ---------------------------------------------------------------------------
 // shell 泵
 // ---------------------------------------------------------------------------
@@ -81,6 +97,8 @@ pub fn emit_closed(app: &AppHandle, id: &str, reason: &str, clean: bool) {
 /// `clean = false` 表示链路异常，由调用方决定是否自动重连。
 ///
 /// `sink` 是可选的输出记录端（会话日志模块），在事件推送之外同步落盘。
+///
+/// `keepalive_secs` 同时驱动保活与延迟探测：为 0 时两者都不做。
 #[allow(clippy::too_many_arguments)]
 pub fn run_shell(
     app: &AppHandle,
@@ -89,6 +107,7 @@ pub fn run_shell(
     term: &str,
     cols: u32,
     rows: u32,
+    keepalive_secs: u32,
     rx: &Receiver<SessionCommand>,
     cancel: &AtomicBool,
     recent: &Mutex<VecDeque<u8>>,
@@ -111,6 +130,11 @@ pub fn run_shell(
     let mut err = [0u8; ERR_BUF];
     let mut pending_input: Vec<u8> = Vec::new();
     let mut pending_resize: Option<(u32, u32)> = None;
+    let keepalive = Duration::from_secs(keepalive_secs as u64);
+    let mut next_keepalive = Instant::now() + keepalive;
+    // 首个探测立刻做一次，标签上的信号条不必等满一个间隔
+    let mut next_probe = Instant::now();
+    let mut probe_failures = 0u32;
 
     let end = loop {
         if cancel.load(Ordering::Relaxed) {
@@ -214,6 +238,38 @@ pub fn run_shell(
         }
 
         if !read_any {
+            // 保活与延迟探测只在空闲轮驱动，避免与高频输出抢同一轮循环
+            if !keepalive.is_zero() {
+                if Instant::now() >= next_keepalive {
+                    next_keepalive = Instant::now() + keepalive;
+                    // libssh2 只配置间隔不会自动发送，必须由应用主动驱动
+                    if let Err(e) = sess.keepalive_send() {
+                        if e.code() != ssh2::ErrorCode::Session(EAGAIN) {
+                            log::debug!("会话 {id} 发送保活失败：{e}");
+                        }
+                    }
+                }
+                if Instant::now() >= next_probe && probe_failures < PROBE_MAX_FAILURES {
+                    next_probe = Instant::now() + keepalive;
+                    match latency::probe_once(sess) {
+                        Ok(ms) => {
+                            probe_failures = 0;
+                            emit_latency(app, id, Some(ms));
+                        }
+                        Err(e) => {
+                            probe_failures += 1;
+                            log::debug!(
+                                "会话 {id} 延迟探测失败（{probe_failures}/{PROBE_MAX_FAILURES}）：{e}"
+                            );
+                            if probe_failures >= PROBE_MAX_FAILURES {
+                                log::info!("会话 {id} 延迟探测连续失败，停止探测");
+                                emit_latency(app, id, None);
+                            }
+                        }
+                    }
+                }
+            }
+
             if pending_input.is_empty() {
                 // 空闲时等待前端输入：有输入立刻唤醒，避免固定睡眠把按键推迟一个轮询周期。
                 // 远端输出没有事件通知，只能靠 IDLE_SLEEP 兜底轮询。
