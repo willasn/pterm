@@ -96,6 +96,8 @@ jobs:
   publish-r2:
     needs: build
     runs-on: ubuntu-latest
+    # R2 的 4 个 Secrets 建在该 Environment 下，job 必须声明它才能读到。
+    environment: r2-publish
     permissions:
       contents: read
     steps:
