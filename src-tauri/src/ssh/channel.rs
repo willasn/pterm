@@ -14,6 +14,7 @@ use tauri::{AppHandle, Emitter};
 use crate::error::{AppError, AppResult};
 
 use super::latency;
+use super::monitor;
 use super::session::OutputSink;
 use super::types::{SessionCommand, SessionState, ShellEnd};
 
@@ -99,6 +100,9 @@ pub fn emit_latency(app: &AppHandle, id: &str, ms: Option<u32>) {
 /// `sink` 是可选的输出记录端（会话日志模块），在事件推送之外同步落盘。
 ///
 /// `keepalive_secs` 同时驱动保活与延迟探测：为 0 时两者都不做。
+///
+/// `monitor` 是会话资源监控的运行时开关：关闭时每轮只有一次原子读取，不产生
+/// 任何通道与 IO；打开后按 [`monitor::INTERVAL`] 节流采样。
 #[allow(clippy::too_many_arguments)]
 pub fn run_shell(
     app: &AppHandle,
@@ -110,6 +114,7 @@ pub fn run_shell(
     keepalive_secs: u32,
     rx: &Receiver<SessionCommand>,
     cancel: &AtomicBool,
+    monitor: &AtomicBool,
     recent: &Mutex<VecDeque<u8>>,
     sink: Option<&dyn OutputSink>,
 ) -> AppResult<ShellEnd> {
@@ -135,6 +140,8 @@ pub fn run_shell(
     // 首个探测立刻做一次，标签上的信号条不必等满一个间隔
     let mut next_probe = Instant::now();
     let mut probe_failures = 0u32;
+    // 资源监控状态：开关关闭时不采样，首个样本在打开后立刻采集
+    let mut monitor_state = monitor::Monitor::new();
 
     let end = loop {
         if cancel.load(Ordering::Relaxed) {
@@ -238,6 +245,9 @@ pub fn run_shell(
         }
 
         if !read_any {
+            // 资源监控：开关关闭时这里只有一次原子读取，不产生任何远端开销
+            monitor_state.tick(app, id, sess, monitor.load(Ordering::Relaxed));
+
             // 保活与延迟探测只在空闲轮驱动，避免与高频输出抢同一轮循环
             if !keepalive.is_zero() {
                 if Instant::now() >= next_keepalive {

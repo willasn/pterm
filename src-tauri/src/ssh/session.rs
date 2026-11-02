@@ -111,6 +111,8 @@ pub struct SessionHandle {
     recent: Arc<Mutex<VecDeque<u8>>>,
     /// 置位后会话线程不再重连并尽快退出
     cancel: Arc<AtomicBool>,
+    /// 会话资源监控的运行时开关（设置保存后由前端广播，不重连即时生效）
+    monitor: Arc<AtomicBool>,
     tx: Sender<SessionCommand>,
 }
 
@@ -220,11 +222,16 @@ impl SessionManager {
         let (tx, rx) = mpsc::channel();
         let cancel = Arc::new(AtomicBool::new(false));
         let recent = Arc::new(Mutex::new(VecDeque::new()));
+        // 新建会话直接继承当前开关状态；关闭时 run_shell 不会发起任何采样
+        let monitor = Arc::new(AtomicBool::new(
+            deps.config.flags().connection.session_monitor,
+        ));
 
         let handle = Arc::new(SessionHandle {
             info: info.clone(),
             recent: recent.clone(),
             cancel: cancel.clone(),
+            monitor: monitor.clone(),
             tx,
         });
         self.sessions.lock().insert(id.clone(), handle);
@@ -244,6 +251,7 @@ impl SessionManager {
             info,
             recent,
             cancel,
+            monitor,
             sessions: self.sessions.clone(),
             ended: self.ended.clone(),
             sink,
@@ -325,6 +333,16 @@ impl SessionManager {
         Ok(self.require(id)?.recent_text(max_bytes))
     }
 
+    /// 广播资源监控开关到所有会话线程。
+    ///
+    /// 只写一个原子量，不打扰既有连接；会话线程在下一轮空闲时读到新值，
+    /// 关闭后立即停止采样（不再打开任何 exec 通道）。
+    pub fn set_monitor_all(&self, enabled: bool) {
+        for handle in self.sessions.lock().values() {
+            handle.monitor.store(enabled, Ordering::Relaxed);
+        }
+    }
+
     /// 让同一 id 的旧会话退出。
     ///
     /// 取旧会话时必须先把锁的临时值绑进局部变量再判断：若写成
@@ -371,6 +389,8 @@ struct RunContext {
     info: Arc<Mutex<SessionInfo>>,
     recent: Arc<Mutex<VecDeque<u8>>>,
     cancel: Arc<AtomicBool>,
+    /// 资源监控运行时开关，与 `SessionHandle` 共用同一份原子量
+    monitor: Arc<AtomicBool>,
     sessions: Arc<Mutex<HashMap<String, Arc<SessionHandle>>>>,
     /// 结束快照的去处，与 `SessionManager::ended` 同一份
     ended: Arc<Mutex<VecDeque<SessionInfo>>>,
@@ -614,6 +634,7 @@ impl RunContext {
                 keepalive,
                 rx,
                 &self.cancel,
+                &self.monitor,
                 &self.recent,
                 self.sink.as_deref(),
             )?
@@ -718,6 +739,7 @@ mod tests {
             })),
             recent: Arc::new(Mutex::new(VecDeque::new())),
             cancel: Arc::new(AtomicBool::new(false)),
+            monitor: Arc::new(AtomicBool::new(false)),
             tx,
         })
     }

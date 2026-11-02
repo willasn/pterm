@@ -364,6 +364,20 @@ export interface PromptPasswordOptions {
  * 输入为空时确认无效，避免把空串当成密码提交。
  */
 export function promptPassword(message: string, options?: PromptPasswordOptions): Promise<string | null> {
+  return promptInput(message, options, "password");
+}
+
+/** 单行文本输入弹窗（如生成密钥时修改密钥名 / 配置别名）。取消返回 null。 */
+export function promptText(message: string, options?: PromptPasswordOptions): Promise<string | null> {
+  return promptInput(message, options, "text");
+}
+
+/** 密码 / 文本共用的单行输入弹窗实现（复用同一份模态节点）。 */
+function promptInput(
+  message: string,
+  options: PromptPasswordOptions | undefined,
+  type: "text" | "password"
+): Promise<string | null> {
   const opts = options || {};
   const mask = $("modal-password") as HTMLElement;
   // 节点缺失时无法收集输入，按取消处理，交由调用方走原来的失败提示
@@ -373,11 +387,13 @@ export function promptPassword(message: string, options?: PromptPasswordOptions)
   const okBtn = $("password-ok") as HTMLElement;
   const cancelBtn = $("password-cancel") as HTMLElement;
 
-  ($("password-title") as HTMLElement).textContent = opts.title || "输入密码";
+  const isPassword = type === "password";
+  ($("password-title") as HTMLElement).textContent = opts.title || (isPassword ? "输入密码" : "输入名称");
   ($("password-message") as HTMLElement).textContent = message || "";
-  ($("password-label") as HTMLElement).textContent = opts.label || "密码";
-  okBtn.textContent = opts.okText || "连接";
+  ($("password-label") as HTMLElement).textContent = opts.label || (isPassword ? "密码" : "名称");
+  okBtn.textContent = opts.okText || (isPassword ? "连接" : tr("common.ok", "确定"));
   cancelBtn.textContent = opts.cancelText || "取消";
+  input.type = type;
   input.value = opts.value || "";
   input.placeholder = opts.placeholder || "";
 

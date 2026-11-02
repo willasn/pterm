@@ -14,6 +14,14 @@ import { ask, b64ToBytes, errorText, promptPassword, toast } from "../util/util"
 /** id -> 取消订阅函数数组 */
 const subscriptions = new Map<string, (() => void)[]>();
 
+/**
+ * 资源监控开关。关闭时不注册任何指标监听，后端也不再采样，
+ * 做到「关掉即零开销」；打开时再给已有会话补上监听。
+ */
+let monitorEnabled = false;
+/** id -> 指标事件取消订阅函数 */
+const metricsListeners = new Map<string, () => void>();
+
 function eventsFor(id: string): {
   data: string;
   status: string;
@@ -115,6 +123,7 @@ async function subscribe(id: string): Promise<void> {
     }),
   ]);
   subscriptions.set(id, unlisten);
+  attachMetrics(id);
 
   // 对齐抢跑：会话线程可能在订阅前就发出了提示，事件会丢，这里主动取一次
   ipc
@@ -127,6 +136,11 @@ async function subscribe(id: string): Promise<void> {
 
 function unsubscribe(id: string): void {
   const list = subscriptions.get(id);
+  const metricsOff = metricsListeners.get(id);
+  if (metricsOff) {
+    metricsListeners.delete(id);
+    stop(metricsOff);
+  }
   if (!list) return;
   subscriptions.delete(id);
   list.forEach((fn) => {
@@ -134,6 +148,37 @@ function unsubscribe(id: string): void {
       fn();
     } catch (_) {}
   });
+}
+
+/** 按开关状态为单个会话挂上指标监听（已挂过则跳过）。 */
+function attachMetrics(id: string): void {
+  if (!monitorEnabled || metricsListeners.has(id) || !subscriptions.has(id)) return;
+  ipc
+    .listen(`ssh:metrics:${id}`, (payload: any) => {
+      if (!payload) return;
+      terminalApi.setMetrics(id, payload);
+    })
+    .then((off) => {
+      // 注册完成前可能已关掉开关或关掉了标签，此时立即摘除，避免监听泄漏
+      if (monitorEnabled && subscriptions.has(id)) metricsListeners.set(id, off);
+      else stop(off);
+    })
+    .catch(() => {});
+}
+
+/**
+ * 设置资源监控开关。关闭时摘掉全部指标监听；打开时给已有会话补挂。
+ * 后端采样由 terminal 的配置同步另行广播（见 terminal/api.ts 的 setConfig）。
+ */
+export function setMonitorEnabled(enabled: boolean): void {
+  if (enabled === monitorEnabled) return;
+  monitorEnabled = enabled;
+  if (!enabled) {
+    metricsListeners.forEach((off) => stop(off));
+    metricsListeners.clear();
+    return;
+  }
+  Array.from(subscriptions.keys()).forEach(attachMetrics);
 }
 
 /**

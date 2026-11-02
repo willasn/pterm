@@ -43,7 +43,10 @@ export const ipc = {
   resetConfig: () => call("reset_config"),
 
   // ---------- MCP 服务（可开关） ----------
-  mcpInfo: () => call<{ enabled: boolean; port: number; endpoint: string; token: string | null; running: boolean }>("mcp_info"),
+  mcpInfo: () =>
+    call<{ enabled: boolean; port: number; endpoint: string; token: string | null; running: boolean; last_error: string | null }>("mcp_info"),
+  mcpResetToken: () =>
+    call<{ enabled: boolean; port: number; endpoint: string; token: string | null; running: boolean; last_error: string | null }>("mcp_reset_token"),
 
   // ---------- 连接配置 ----------
   listConnections: () => call("list_connections"),
@@ -105,6 +108,8 @@ export const ipc = {
   // 键盘交互认证（keyboard-interactive）提示应答。text 为 null 表示用户取消。
   sshAuthRespond: (id: string, text: string | null) => call("ssh_auth_respond", { id, text }),
   sshAuthPending: (id: string) => call("ssh_auth_pending", { id }),
+  // 会话资源监控开关：只改运行时原子量，不重连
+  sshSetSessionMonitor: (enabled: boolean) => call("ssh_set_session_monitor", { enabled }),
 
   // ---------- 本地终端（可开关，本机 PTY shell） ----------
   localTerminalOpen: (cols: number, rows: number, sessionId: string | null) =>

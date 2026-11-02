@@ -80,6 +80,10 @@ export const FLAG_META: Record<string, { label: string; hint?: string }> = {
     label: "输入法自动切换",
     hint: "终端聚焦时切到英文输入源、失焦时还原（仅 macOS）；终端内可输中文需切到输入法模式",
   },
+  "connection.session_monitor": {
+    label: "会话资源监控",
+    hint: "终端底部一行显示远端主机 CPU / 内存 / 负载 / 磁盘 / 网络，悬停查看型号等详情（Linux 读 /proc、macOS 用 ps / vm_stat）；默认关闭，关闭时不发起任何采样",
+  },
   "sync.git_sync": { label: "Git 同步", hint: "用 Git 仓库同步配置，不做云同步" },
   "sync.git_sync_scope": { label: "同步范围" },
   "sync.git_sync_secrets": {
@@ -110,20 +114,23 @@ export const FLAG_META: Record<string, { label: string; hint?: string }> = {
  *   与后端默认行为接管。
  * - 已在专属设置页配置：断线自动重连、主机密钥校验（设置 → 连接）、快捷键总开关
  *   （设置 → 快捷键）、自动更新（设置 → 关于 → 软件更新）。
- * - 必开项（多标签 / 分屏 / 连接分组 / 配置导入导出 / 快捷连接 / 同步输入 / 远程桌面 /
- *   Git 同步 / 流式响应 / 危险命令提示 / 命令片段 / 全局搜索 / 命令历史 / 快捷面板 /
- *   主题 / 崩溃日志）恒为开启，后端会强制拉回 true。
+ * - 必开项（多标签 / 分屏 / SFTP 文件传输 / 连接分组 / 配置导入导出 / 快捷连接 / 同步输入 /
+ *   远程桌面 / 本地终端 / 生成并部署 SSH 密钥 / Git 同步 / 流式响应 / 危险命令提示 /
+ *   命令片段 / 全局搜索 / 命令历史 / 快捷面板 / 主题 / 崩溃日志）恒为开启，后端会强制拉回 true。
  * - 上下文注入（`ai.ai_context_inject`）的开关已移到主界面右侧 AI 助手面板的标题栏，
  *   设置里不再展示。
  */
 export const HIDDEN_FLAGS = new Set([
   "connection.tabs",
   "connection.split_view",
+  "connection.sftp",
   "connection.connection_group",
   "connection.import_export",
   "connection.quick_connect",
   "connection.sync_input",
   "connection.rdp",
+  "connection.local_terminal",
+  "connection.key_setup",
   "connection.auto_reconnect",
   "connection.host_key_check",
   "sync.git_sync",

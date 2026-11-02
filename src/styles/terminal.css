@@ -180,12 +180,15 @@ body.tab-dragging * {
   text-overflow: ellipsis;
 }
 
-/* 延迟信号条：3 格，格数与颜色表示强度，hover 的毫秒数写在元素 title 上 */
+/* 延迟信号条：3 格，格数与颜色表示强度，hover 的毫秒数写在元素 title 上。
+   命中区上下撑满标签高度、左右各留 6px 内边距，扩大悬停范围；格子本身尺寸不变，
+   底部内边距按「标签高度 36px - 信号条 11px」补偿，保持图标的视觉位置。 */
 .tab .rtt {
   display: inline-flex;
   align-items: flex-end;
   gap: 2px;
-  height: 11px;
+  align-self: stretch;
+  padding: 0 6px calc((36px - 11px) / 2);
   flex: none;
   cursor: default;
 }
@@ -367,6 +370,14 @@ body.tab-dragging * {
   flex: 1 1 0;
   min-width: 0;
   min-height: 0;
+  /* 终端区 + 底部监控条：监控条占独立高度，不覆盖终端内容 */
+  display: flex;
+  flex-direction: column;
+}
+
+.pane-term {
+  flex: 1 1 auto;
+  min-height: 0;
 }
 
 /* 分屏分隔线：只在真正分屏时出现，避免单 pane 也多一条边 */
@@ -484,6 +495,59 @@ body.tab-dragging * {
 .pane-ime[data-ime="strict"] {
   color: var(--ok);
   border-color: var(--ok);
+}
+
+/* 会话资源监控条：默认关闭；开启后在终端底部占一行显示远端主机
+   CPU / 内存 / 负载 / 磁盘 / 网络，hover 单项查看型号等详情。
+   每个块的命中区左右各外扩 4px、上下撑满整条高度，鼠标不用精确贴住文字；
+   块与分隔符之间不留 flex gap，靠内边距维持原有的 8px 视觉间距。 */
+.pane-monitor {
+  flex: none;
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  height: 22px;
+  padding: 0 var(--sp-4);
+  border-top: 1px solid var(--border);
+  background: var(--bg-elev);
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  user-select: none;
+  /* WKWebView 里 user-select: none 仍会把可读文字区域显示成竖线（I-beam）光标，
+     这里显式指定默认箭头，避免整条状态栏出现文本光标 */
+  cursor: default;
+}
+
+.pane-monitor .pm-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  padding: 0 var(--sp-4);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pane-monitor .pm-k {
+  color: var(--text-dim);
+}
+
+.pane-monitor .pm-v {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.pane-monitor .pm-sep {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 var(--sp-4);
+  color: var(--border);
+}
+
+.pane-monitor.pm-unsupported {
+  justify-content: center;
 }
 
 /* 同步组选组弹框：把标签加入已有组或新建组（见 sync_input.js） */

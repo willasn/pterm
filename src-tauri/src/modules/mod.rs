@@ -88,6 +88,11 @@ impl ModuleRegistry {
                 }
                 self.initialized.lock().remove(id);
                 log::info!("模块 {id} 已关闭");
+            } else if enabled && running {
+                // 已初始化的模块感知配置变化（如 MCP 监听端口），失败只记录不阻断保存
+                if let Err(e) = module.reconfigure(ctx) {
+                    log::warn!("模块 {id} 重新配置失败：{e}");
+                }
             }
         }
         Ok(())

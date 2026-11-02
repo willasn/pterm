@@ -77,11 +77,12 @@ pub trait PluggableModule {
 features:
   tabs:            true    # 必开项
   split_view:      true    # 必开项
-  sftp:            true
+  sftp:            true    # 必开项
   port_forward:    false
   jump_host:       true
   host_key_check:  true    # 开关在「设置 → 连接」
-  local_terminal:  true
+  local_terminal:  true    # 必开项
+  key_setup:       true    # 必开项
   session_log:     false
   auto_reconnect:  true    # 开关在「设置 → 连接」
   connection_group:true    # 必开项
@@ -89,6 +90,7 @@ features:
   rdp:             true    # 必开项
   quick_connect:   true    # 必开项
   sync_input:      true    # 必开项
+  session_monitor: false   # 会话资源监控，默认关闭
 ```
 
 > 标「必开项」的开关恒为开启、界面不暴露，配置里写成 false 也会被强制拉回
@@ -101,7 +103,7 @@ features:
 | [x] | SFTP | `sftp` | 文件浏览、上传、下载、删除、重命名、权限修改；支持文件夹递归传输、拖拽上传、传输进度与中断 | `src/features/sftp/`、`src-tauri/src/features/sftp/` |
 | [x] | 端口转发 | `port_forward` | 本地转发 / 远程转发 / 动态转发（SOCKS5），支持启停与状态查看 | `src/features/port-forward/`、`src-tauri/src/features/port_forward/` |
 | [x] | 跳板机 | `jump_host` | 通过 ProxyJump 链式连接（支持多级） | `src-tauri/src/ssh/jump.rs` |
-| [x] | 一键生成密钥 | `key_setup` | 连接右键「生成并部署密钥…」：本地纯 Rust 生成 ed25519 密钥对（无口令，私钥 0600），认证后把公钥经 SSH exec 幂等追加到远端 `~/.ssh/authorized_keys`（只追加不覆盖，写前备份并修正 700/600 权限），再另起一条仅私钥认证的会话验证登录，最后写入本机 `~/.ssh/config`（按 Host 段匹配，冲突时用户选择覆盖 / 另加别名 / 跳过，写前备份、原子替换）。跳板机复用同一隧道；RDP 连接不适用 | `src-tauri/src/ssh/key_setup.rs`、`src/features/connections/` |
+| [x] | 一键生成密钥 | `key_setup` | 连接右键「生成并部署密钥…」：先弹窗让用户确认 / 修改名称（默认按连接名生成，该名称同时作为私钥文件名后缀与 `~/.ssh/config` 的 Host 别名）；本地纯 Rust 生成 ed25519 密钥对（无口令，私钥 0600），认证后把公钥经 SSH exec 幂等追加到远端 `~/.ssh/authorized_keys`（只追加不覆盖，写前备份并修正 700/600 权限），再另起一条仅私钥认证的会话验证登录，最后写入本机 `~/.ssh/config`（按 Host 段匹配，冲突时用户选择覆盖 / 另加别名 / 跳过，写前备份、原子替换）。跳板机复用同一隧道；RDP 连接不适用 | `src-tauri/src/ssh/key_setup.rs`、`src/features/connections/` |
 | [x] | 主机密钥校验 | `host_key_check` | 建连握手后、认证前比对服务端主机密钥：首次连接弹窗确认指纹（TOFU），密钥变更时以危险样式二次确认，确认后写入配置目录下的 `known_hosts.json`（本机私有、不随 Git 同步）；未确认一律拒绝，抵御中间人攻击。**校验覆盖终端 / SFTP / 端口转发 / 跳板机**：后三者无法弹窗，未确认或已变更时提示「先在终端中连接该主机完成首次信任」。设置「连接 → 主机密钥校验」可关闭开关，开关右侧「已知主机」按钮打开独立弹窗查看 / 移除已知主机；「测试连接」不校验也不写入 | `src-tauri/src/ssh/known_hosts.rs`、`src-tauri/src/ssh/session.rs`、`src/features/ssh/api.ts`、`src/features/settings/` |
 | [x] | 本地终端 | `local_terminal` | 在本机 PTY（Unix pty / Windows ConPTY）上打开一个 shell 标签，不经过网络；复用 SSH 的会话表、事件通道与标签 / 分屏体系，读写 / 改尺寸 / 断开走同一组命令。入口：侧栏按钮与快捷键（默认 `Cmd/Ctrl+Shift+T`）。Windows 优先 PowerShell、回退 cmd | `src-tauri/src/ssh/local.rs`、`src-tauri/src/modules/local_terminal/`、`src/features/local-terminal/` |
 | [x] | 会话日志 | `session_log` | 按会话落盘完整终端输出，支持开关、保留天数（默认 10 天）、保留条数（默认 20 条）与单文件大小上限（默认 100 KB，超出丢弃最旧内容）；天数 / 条数 / 上限任一置 0 表示该项不限制。预览按「单个文件」截取末尾 10 KB | `src/features/session-log/`、`src-tauri/src/features/session_log/` |
@@ -111,6 +113,7 @@ features:
 | [x] | 导入导出 | `import_export` | 导入/导出连接配置（含 `~/.ssh/config` 解析），导出时排除凭据 | `src/features/import-export/`、`src-tauri/src/features/import_export/` |
 | [x] | 快捷连接 | `quick_connect` | `user@host:port` 一行直达，无需先保存配置 | `src/features/connections/` |
 | [x] | 同步输入 | `sync_input` | 只在一台终端输入，输入同步广播到**同一同步组**内的其它标签。右键标签菜单：`当前添加到组` / `全部添加到组`（加入组后用同色轮廓 + 组序号徽标标识分组）、`开启 / 关闭组内同步输入`（**每组独立开关**，开启后组内才互相广播，成员标签加同色高亮以区别于普通状态）、`移出同步组`、`移除全部组`（解散所有组）。加入组后组内标签自动聚拢、当前标签移到组的最右侧。分组为会话期临时状态、不落库 | `src/features/sync-input/`、`src/features/tabs/`、`src/features/terminal/` |
+| [x] | 会话资源监控 | `session_monitor` | 终端**底部占一行的状态条**显示远端主机 **CPU / 内存 / 负载 / 磁盘 / 网络**（占独立高度，不覆盖终端内容；开关变化后自动重新适配终端尺寸），SSH 会话每 3 秒刷新。鼠标悬停单项查看详情：CPU 显示型号 / 核心数，内存显示总容量 / 已用 / 可用（Linux 有 root 时含内存条型号与频率），磁盘显示根分区占用与物理磁盘型号容量，负载显示解释与当前核数。采集：Linux 读 `/proc` + `dmidecode` + `lsblk`，macOS 用 `ps` / `vm_stat` / `netstat` / `sysctl` / `diskutil`，硬件信息只在开启时采一次并缓存；其他系统连续失败后显示「暂不支持资源监控」。**默认关闭**：关闭时不注册指标监听、后端每轮仅做一次原子判断，不打开通道、不执行任何远端命令；设置里开/关对已有会话即时生效（无需重连） | `src-tauri/src/ssh/monitor.rs`、`src-tauri/src/ssh/channel.rs`、`src/features/terminal/`、`src/features/ssh/api.ts` |
 | [x] | 远程桌面（RDP） | `rdp` | 新建连接时可选 RDP 协议打开 Windows 远程桌面（不实现 RDP 协议本身）。Windows：生成数据目录下的 `.rdp` 并拉起系统自带 `mstsc`；若保险库存有密码，先用 `cmdkey` 写入 Windows 凭据管理器实现免密登录。macOS：系统无自带客户端，生成同一份 `.rdp` 后交给微软「Windows App」（原 Microsoft Remote Desktop，按探测到的应用路径唤起，兼容新旧目录名）打开，pterm 只负责保存会话，认证与凭据由该客户端管理；未安装时弹窗引导并一键跳转 Mac App Store 安装页。连接条目与 SSH 共用一张表，靠 `protocol` 字段区分 | `src-tauri/src/features/rdp/`、`src/features/rdp/` |
 
 ---
@@ -193,7 +196,9 @@ features:
 | --- | --- | --- | --- | --- |
 | [x] | MCP 服务 | `mcp` | 本机 `127.0.0.1` 上的 Streamable HTTP 端点（`POST /mcp`，无状态 JSON-RPC），所有请求需携带配置目录下 `mcp.token`（0600）对应的 Bearer 令牌；关闭时不监听端口、不产生后台任务 | `src-tauri/src/modules/mcp/server.rs`、`src-tauri/src/modules/mcp/mod.rs` |
 | [x] | MCP 工具集 | `mcp` | 最小闭环 5 个工具：`list_connections` / `connect` / `exec` / `read_output` / `disconnect`。`connect` 复用现有 SSH 核心完成认证与主机密钥严格校验（不接受静默信任新主机），`exec` 通过会话输出环形缓冲解析退出码与输出（约 32 KB 上限） | `src-tauri/src/modules/mcp/tools.rs`、`src-tauri/src/modules/mcp/rpc.rs` |
-| [x] | MCP 设置界面 | `mcp` | 「设置 → MCP 服务」：开关、运行状态、端点地址、访问令牌复制、一键复制客户端 JSON 配置；端口暂只能在 config.yaml 修改并重启生效 | `src-tauri/src/modules/mcp/commands.rs`、`src/features/settings/` |
+| [x] | MCP 设置界面 | `mcp` | 「设置 → MCP 服务」：开关、端口在线编辑（保存后立即重新绑定，无需重启）、运行状态、实际端点地址、访问令牌复制 / 重置、一键复制客户端 JSON 配置 | `src-tauri/src/modules/mcp/commands.rs`、`src/features/settings/` |
+| [x] | MCP 端口自动降级 | `mcp` | 首选端口被占用时按 +1 递增重试，最多 5 次；成功后把实际端口写回配置并刷新端点，全部失败时界面展示错误提示 | `src-tauri/src/modules/mcp/server.rs` |
+| [x] | MCP 重置访问令牌 | `mcp` | 一键生成新 `mcp.token`（仍 0600），运行中的服务立即切换到新令牌，旧令牌立即失效 | `src-tauri/src/modules/mcp/commands.rs`（`mcp_reset_token`） |
 | [ ] | stdio 传输 | `mcp` | 需先把 SSH 核心与 `AppHandle` 解耦；当前仅 HTTP | — |
 
 ---

@@ -281,6 +281,15 @@ export async function save(): Promise<void> {
     const moduleList = await ipc.saveConfig(draft);
     modules = moduleList || modules;
 
+    // MCP 端口被占用时后端会自动降级并写回配置：同步到草稿，
+    // 避免下次保存又把端口改回被占用的值。
+    try {
+      const mcp = await ipc.mcpInfo();
+      if (draft.features && draft.features.mcp) draft.features.mcp.port = mcp.port;
+    } catch {
+      // 状态查询失败不影响保存结果
+    }
+
     // Git 凭据同 API Key：也必须在 save_config 之后（set 带模块门控），
     // 且只写加密保险库，绝不进配置文件。
     if (gitPasswordInputs.size) {

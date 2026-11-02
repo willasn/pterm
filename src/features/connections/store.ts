@@ -4,7 +4,7 @@ import { ipc } from "../ipc/api";
 import { copyPassword as copyRdpPassword, open as openRdp, probe as probeRdp } from "../rdp/api";
 import * as ssh from "../ssh/api";
 import { active } from "../terminal/api";
-import { ask, choose, getPath, promptPassword, setPath } from "../util/util";
+import { ask, choose, getPath, promptPassword, promptText, setPath } from "../util/util";
 
 /** 可被右键菜单打开的模块面板：只依赖其 open()。 */
 interface OpenableModule {
@@ -298,23 +298,54 @@ function openModule(mod: any): void {
   if (mod && typeof mod.open === "function") mod.open();
 }
 
+/** 把任意文本收敛成安全标识（仅保留 ASCII 字母数字与 `._-`），与后端规则一致。 */
+function slugify(raw: string): string {
+  const mapped = Array.from(raw)
+    .map((c) => (/[A-Za-z0-9._-]/.test(c) ? c : "-"))
+    .join("");
+  return mapped.replace(/^-+/, "").replace(/-+$/, "");
+}
+
+/** 默认名称：优先连接名，纯中文等无法收敛时退回 user_host。 */
+function keyNameSuggestion(conn: any): string {
+  const fallback = `${conn.username}_${conn.host}`;
+  const base = (conn.name || "").trim() || fallback;
+  return slugify(base) || slugify(fallback);
+}
+
 /**
  * 一键生成并部署 SSH 密钥：本地生成 ed25519（无口令），公钥幂等追加到远端
  * `~/.ssh/authorized_keys`，验证密钥登录并写入本机 `~/.ssh/config`。
- * 本机配置冲突时让用户选择处理方式，其余步骤由后端一次完成。
+ * 命名弹窗默认填入按连接名生成的名字，用户可修改；该名字同时作为密钥后缀
+ * 与配置块别名。本机配置冲突时让用户选择处理方式，其余步骤由后端一次完成。
  */
 async function setupKey(conn: any): Promise<void> {
   const target = `${conn.username}@${conn.host}:${conn.port || 22}`;
-  const ok = await ask(
+  const name = await promptText(
     `将为 ${target} 生成 ed25519 密钥对：\n` +
       "· 私钥保存到本机 ~/.ssh（无口令）\n" +
       "· 公钥追加到服务器 ~/.ssh/authorized_keys（只追加不覆盖）\n" +
-      "· 写入本机 ~/.ssh/config，并验证密钥登录"
+      "· 写入本机 ~/.ssh/config，并验证密钥登录\n\n" +
+      "该名称将作为密钥文件名后缀（~/.ssh/id_ed25519_<名称>）\n" +
+      "以及 ~/.ssh/config 中的 Host 别名。",
+    {
+      title: "生成并部署密钥",
+      label: "密钥名称 / 配置别名",
+      value: keyNameSuggestion(conn),
+      okText: "开始部署",
+    }
   );
-  if (!ok) return;
+  if (name == null) return;
+  const chosen = name.trim();
+  if (!chosen) return;
+  const options: any = {
+    config_policy: "ask",
+    key_name: chosen,
+    config_alias: chosen,
+  };
   try {
     toast("正在生成并部署密钥…", "info", 10000);
-    let result = await ipc.sshSetupKey(conn.id, { config_policy: "ask" });
+    let result = await ipc.sshSetupKey(conn.id, options);
     if (result?.config?.status === "conflict") {
       const choice = await choose({
         title: "SSH 配置已存在",
@@ -325,7 +356,7 @@ async function setupKey(conn: any): Promise<void> {
           { value: "skip", label: "跳过配置", desc: "只部署密钥，不改本机 config" },
         ],
       });
-      if (choice) result = await ipc.sshSetupKey(conn.id, { config_policy: choice });
+      if (choice) result = await ipc.sshSetupKey(conn.id, { ...options, config_policy: choice });
     }
     if (!result) return;
     const deployText = result.deploy === "added" ? "公钥已追加" : "公钥已存在";

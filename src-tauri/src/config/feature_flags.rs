@@ -49,6 +49,15 @@ pub trait PluggableModule: Send + Sync {
     fn dispose(&self) -> AppResult<()> {
         Ok(())
     }
+
+    /// 配置保存后调用（仅模块已初始化且仍启用时）。
+    ///
+    /// 用于响应需要在线重启的内部配置，例如 MCP 的监听端口变化。
+    /// 默认什么都不做，避免各模块重复处理无关配置。
+    fn reconfigure(&self, ctx: &crate::modules::ModuleContext) -> AppResult<()> {
+        let _ = ctx;
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -97,6 +106,9 @@ pub struct ConnectionFlags {
     /// 终端获得焦点时自动把系统输入源切到英文、失焦时还原（仅 macOS）。
     /// 关闭后需用户自行保证终端里使用英文输入法，否则输入法异常时快打会漏字。
     pub ime_auto_switch: bool,
+    /// 会话资源监控：终端右下角小面板显示远端主机 CPU / 内存 / 负载 / 磁盘 / 网络。
+    /// 默认关闭；关闭时不发起任何采样（不占用 SSH 通道与 IO）。
+    pub session_monitor: bool,
     /// 会话日志保留天数（按文件最后修改时间计算，超过即清理）
     pub session_log_retention_days: u32,
     /// 会话日志保留条数（最多保留最近修改的 N 个日志文件）
@@ -126,6 +138,7 @@ impl Default for ConnectionFlags {
             key_setup: true,
             sync_input: true,
             ime_auto_switch: true,
+            session_monitor: false,
             session_log_retention_days: 10,
             session_log_retention_count: 20,
             session_log_max_file_kb: 100,
@@ -370,8 +383,9 @@ impl FeatureFlags {
     /// 「必开项」：这些开关不在设置界面展示（前端 `HIDDEN_FLAGS`），且恒为开启——
     /// 配置文件里写成 false 也会在加载 / 重置时被强制回写为 true。
     ///
-    /// 目前包含：多标签、分屏、连接分组、配置导入导出、快捷连接、同步输入、远程桌面
-    /// （`connection.*`），Git 同步（`sync.git_sync`），流式响应、危险命令提示
+    /// 目前包含：多标签、分屏、SFTP 文件传输、连接分组、配置导入导出、快捷连接、同步输入、
+    /// 远程桌面、本地终端、生成并部署 SSH 密钥（`connection.*`），Git 同步（`sync.git_sync`），
+    /// 流式响应、危险命令提示
     /// （`ai.ai_streaming` / `ai.ai_danger_warning`），
     /// 命令片段 / 全局搜索 / 命令历史 / 快捷面板 / 主题 / 崩溃日志（`auxiliary.*`）。
     /// 返回值表示是否发生了改动，供调用方决定要不要回写文件。
@@ -380,11 +394,14 @@ impl FeatureFlags {
         let flags = [
             &mut self.connection.tabs,
             &mut self.connection.split_view,
+            &mut self.connection.sftp,
             &mut self.connection.connection_group,
             &mut self.connection.import_export,
             &mut self.connection.quick_connect,
             &mut self.connection.sync_input,
             &mut self.connection.rdp,
+            &mut self.connection.local_terminal,
+            &mut self.connection.key_setup,
             &mut self.sync.git_sync,
             &mut self.ai.ai_streaming,
             &mut self.ai.ai_danger_warning,
@@ -434,6 +451,7 @@ impl FeatureFlags {
             "key_setup" => self.connection.key_setup,
             "sync_input" => self.connection.sync_input,
             "ime_auto_switch" => self.connection.ime_auto_switch,
+            "session_monitor" => self.connection.session_monitor,
         ]));
         out.extend(entries!("sync", [
             "git_sync" => self.sync.git_sync,
@@ -576,6 +594,13 @@ mod tests {
 
         flags.ai.ai_assistant = true;
         assert!(flags.module_enabled(module_id::AI_ASSISTANT));
+    }
+
+    /// 资源监控涉及额外 SSH 通道，默认必须关闭；开关需真实反映
+    #[test]
+    fn session_monitor_is_off_by_default() {
+        let flags = FeatureFlags::default();
+        assert!(!flags.connection.session_monitor, "会话资源监控不应默认开启");
     }
 
     /// MCP 端点等价于一条执行通道，默认必须关闭；开关需真实生效

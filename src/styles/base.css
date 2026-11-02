@@ -832,6 +832,7 @@ textarea:disabled {
   line-height: 1.6;
   color: var(--text-dim);
   word-break: break-word;
+  white-space: pre-line;
 }
 
 .dialog-body {

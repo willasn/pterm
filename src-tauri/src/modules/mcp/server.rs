@@ -4,7 +4,8 @@
 //! 会话状态全部无状态化，因此不需要 `Mcp-Session-Id`，也不提供服务端主动推送
 //! （`GET /mcp` 返回 405，客户端会退回 POST 模式）。
 
-use std::io::Write;
+use std::io::{ErrorKind, Write};
+use std::net::TcpListener;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -30,6 +31,11 @@ pub const TOKEN_FILE: &str = "mcp.token";
 
 /// 请求体上限。MCP 请求本身很小，这里只防意外的大包。
 const MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
+
+/// 端口被占用时最多尝试的次数（含首选端口）。
+///
+/// 首选端口不可用时按 +1 递增重试，用满次数仍失败才向用户报错。
+pub const MAX_PORT_ATTEMPTS: u16 = 5;
 
 /// 一次工具调用可用的共享状态。
 #[derive(Clone)]
@@ -59,15 +65,20 @@ impl Running {
 }
 
 /// 启动 HTTP 服务。端口占用等错误在此同步返回，便于模块初始化时直接记录。
+///
+/// 首选端口被占用时自动按 +1 递增降级（最多 [`MAX_PORT_ATTEMPTS`] 次），
+/// 成功后把实际端口写回配置，保证界面与客户端配置里的地址一致。
 pub fn start(ctx: &ModuleContext) -> AppResult<Running> {
-    let port = ctx.config.flags().mcp.port;
+    let preferred = ctx.config.flags().mcp.port;
     let token = load_or_create_token(&ctx.paths.config_dir.join(TOKEN_FILE))?;
 
-    let listener = std::net::TcpListener::bind(("127.0.0.1", port)).map_err(|e| {
-        AppError::Other(format!(
-            "MCP 服务无法监听 127.0.0.1:{port}：{e}（可在 config.yaml 的 features.mcp.port 改端口）"
-        ))
-    })?;
+    let (listener, port) = bind_with_fallback(preferred)?;
+    if port != preferred {
+        log::warn!("MCP 首选端口 127.0.0.1:{preferred} 被占用，已降级使用 {port}");
+        if let Err(e) = ctx.config.update(|cfg| cfg.features.mcp.port = port) {
+            log::warn!("MCP 实际端口 {port} 写回配置失败：{e}");
+        }
+    }
     listener.set_nonblocking(true)?;
 
     let state = McpState {
@@ -111,6 +122,40 @@ pub fn start(ctx: &ModuleContext) -> AppResult<Running> {
     })
 }
 
+/// 从首选端口开始绑定，被占用时按 +1 递增重试。
+///
+/// 只对「端口已占用」降级；其它错误（如权限不足）立即返回，
+/// 因为换端口也无法解决。尝试次数用满后返回可读错误，由界面提示用户换端口。
+fn bind_with_fallback(preferred: u16) -> AppResult<(TcpListener, u16)> {
+    if preferred == 0 {
+        return Err(AppError::Other(
+            "MCP 端口不能为 0，请在设置 → MCP 服务中填写 1-65535 之间的端口".into(),
+        ));
+    }
+    let mut last: Option<(u16, std::io::Error)> = None;
+    for offset in 0..MAX_PORT_ATTEMPTS {
+        let Some(port) = preferred.checked_add(offset) else {
+            break;
+        };
+        match TcpListener::bind(("127.0.0.1", port)) {
+            Ok(listener) => return Ok((listener, port)),
+            Err(e) if e.kind() == ErrorKind::AddrInUse => last = Some((port, e)),
+            Err(e) => {
+                return Err(AppError::Other(format!(
+                    "MCP 服务无法监听 127.0.0.1:{port}：{e}"
+                )))
+            }
+        }
+    }
+    let detail = last
+        .map(|(port, e)| format!("（最后一次 127.0.0.1:{port}：{e}）"))
+        .unwrap_or_default();
+    Err(AppError::Other(format!(
+        "MCP 端口 127.0.0.1:{preferred} 及后续 {} 个端口均被占用，请在设置 → MCP 服务中更换端口{detail}",
+        MAX_PORT_ATTEMPTS
+    )))
+}
+
 /// 读取或首次生成令牌。令牌只存在本机配置目录，不进入仓库与日志。
 fn load_or_create_token(path: &Path) -> AppResult<String> {
     if let Ok(existing) = std::fs::read_to_string(path) {
@@ -119,7 +164,19 @@ fn load_or_create_token(path: &Path) -> AppResult<String> {
             return Ok(token);
         }
     }
+    generate_token(path)
+}
 
+/// 重置令牌：写入一枚全新令牌，旧值立即失效。
+///
+/// 每次重置都换新随机值并覆盖 `mcp.token`（仍为 0600），
+/// 调用方负责让运行中的服务重新加载该令牌。
+pub fn reset_token(path: &Path) -> AppResult<String> {
+    generate_token(path)
+}
+
+/// 生成随机令牌并覆盖写入令牌文件（权限 0600）。
+fn generate_token(path: &Path) -> AppResult<String> {
     let token = format!(
         "{}{}",
         uuid::Uuid::new_v4().simple(),
@@ -215,4 +272,26 @@ fn json_response(body: Value) -> Response {
         body.to_string(),
     )
         .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 首选端口被占用时应自动 +1 降级，且不超出尝试次数。
+    #[test]
+    fn bind_falls_back_to_next_port_when_preferred_is_taken() {
+        let occupied = TcpListener::bind(("127.0.0.1", 0)).expect("绑定临时端口");
+        let preferred = occupied.local_addr().expect("读取临时端口").port();
+        if preferred > u16::MAX - MAX_PORT_ATTEMPTS {
+            return; // 极端情况：跳过，避免 +1 溢出
+        }
+
+        let (_listener, actual) = bind_with_fallback(preferred).expect("降级绑定");
+        assert_ne!(actual, preferred, "首选端口被占用时必须换端口");
+        assert!(
+            actual < preferred + MAX_PORT_ATTEMPTS,
+            "实际端口 {actual} 超出最多 {MAX_PORT_ATTEMPTS} 次尝试范围"
+        );
+    }
 }

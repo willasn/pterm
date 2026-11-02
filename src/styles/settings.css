@@ -2032,3 +2032,38 @@ body[data-theme="light"] .foot-badges--tiles .git-status:active {
   justify-content: flex-end;
 }
 
+/* MCP 服务地址：端口以内联输入框呈现，一眼可见「可直接点击修改」 */
+.mcp-endpoint {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  flex-wrap: wrap;
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  color: var(--text-dim);
+}
+
+.field-control .mcp-endpoint .mcp-port-input {
+  width: 88px;
+  padding: 2px var(--sp-8);
+  text-align: center;
+  font-family: var(--font-mono);
+  border-style: dashed;
+}
+
+.mcp-endpoint .mcp-port-input:hover {
+  border-style: solid;
+  border-color: var(--accent);
+}
+
+.mcp-endpoint .mcp-port-input:focus {
+  border-style: solid;
+}
+
+/* 设置分区里的独立动作行（如 MCP 一键复制），与 .field 保持同样的分隔节奏 */
+.settings-action-row {
+  display: flex;
+  align-items: center;
+  padding: var(--sp-8) 0;
+  border-top: 1px solid var(--border);
+}

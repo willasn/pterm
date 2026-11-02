@@ -6,6 +6,7 @@
 //! - [`session`]：传输层、会话表、会话线程与自动重连
 //! - [`channel`]：shell 通道的数据泵与事件推送
 //! - [`latency`]：会话延迟探测（旁路 exec 通道测往返）
+//! - [`monitor`]：会话资源监控（CPU / 内存 / 负载 / 磁盘 / 网络，按需采样）
 //! - [`jump`]：跳板机（ProxyJump）本地隧道
 //! - [`known_hosts`]：主机密钥校验（TOFU / known_hosts）
 //! - [`local`]：本地终端会话运行器（本机 PTY）
@@ -24,5 +25,6 @@ pub mod key_setup;
 pub mod known_hosts;
 pub mod latency;
 pub mod local;
+pub mod monitor;
 pub mod session;
 pub mod types;

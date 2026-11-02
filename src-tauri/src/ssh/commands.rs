@@ -62,6 +62,15 @@ pub fn ssh_recent_output(
     state.sessions.recent_text(&id, limit)
 }
 
+/// 运行时开关「会话资源监控」：设置保存后由前端调用，对已有会话即时生效。
+///
+/// 关闭后会话线程不再发起任何采样（不打开 exec 通道）；打开则下一轮空闲开始采样。
+#[tauri::command]
+pub fn ssh_set_session_monitor(state: State<'_, AppState>, enabled: bool) -> AppResult<()> {
+    state.sessions.set_monitor_all(enabled);
+    Ok(())
+}
+
 /// 测试连接与认证，不创建会话。用于连接配置界面的「测试」按钮。
 #[tauri::command]
 pub async fn ssh_test_connection(params: ConnectParams) -> AppResult<String> {

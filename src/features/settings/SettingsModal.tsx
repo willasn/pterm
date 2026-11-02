@@ -1292,10 +1292,11 @@ function AboutCategory() {
 // 分类：MCP 服务
 // ---------------------------------------------------------------------------
 
-/** MCP 服务：开关、端点、令牌与一键复制的客户端配置。 */
+/** MCP 服务：开关、端口、端点、令牌与一键复制的客户端配置。 */
 function McpCategory() {
   const version = useSettingsVersion();
   const [info, setInfo] = useState<McpInfo | null>(null);
+  const [resetting, setResetting] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -1320,7 +1321,27 @@ function McpCategory() {
       .catch(() => toast("复制失败", "error"));
   };
 
-  const endpoint = info?.endpoint || "—";
+  const resetToken = async () => {
+    const confirmed = await ask(
+      "重置访问令牌？旧令牌会立即失效，已接入的客户端需要换成新令牌才能继续调用。",
+      { title: "重置访问令牌", okText: "重置", kind: "danger" }
+    );
+    if (!confirmed) return;
+    setResetting(true);
+    try {
+      setInfo(await ipc.mcpResetToken());
+      toast("访问令牌已重置，请更新客户端配置", "ok");
+    } catch (err) {
+      toast(errorText(err), "error");
+    } finally {
+      setResetting(false);
+    }
+  };
+
+  // 端口与端点合并展示：草稿优先（用户可能改了还没保存），否则用后端实际端口
+  const draftPort = getPath(getDraft(), "features.mcp.port");
+  const portInput =
+    typeof draftPort === "number" && draftPort > 0 ? draftPort : info?.port ?? 39217;
   const token = info?.token || "";
   const clientConfig = token
     ? JSON.stringify(
@@ -1353,8 +1374,24 @@ function McpCategory() {
         <Field label="服务状态">
           <span className={"badge " + (info?.running ? "on" : "off")}>{status}</span>
         </Field>
-        <Field label="服务地址" hint="仅绑定本机回环地址">
-          <span className="muted">{endpoint}</span>
+        <Field label="服务地址" hint="仅绑定本机回环地址；端口点击即可修改，保存后立即生效">
+          <div className="mcp-endpoint">
+            <span>http://127.0.0.1:</span>
+            <input
+              type="number"
+              className="mcp-port-input"
+              min={1}
+              max={65535}
+              step={1}
+              title="点击修改 MCP 监听端口"
+              defaultValue={String(portInput)}
+              onChange={(event) => {
+                const n = parseInt(event.target.value, 10);
+                if (Number.isFinite(n)) setPath(getDraft(), "features.mcp.port", n);
+              }}
+            />
+            <span>/mcp</span>
+          </div>
         </Field>
         <Field
           label="访问令牌"
@@ -1366,21 +1403,25 @@ function McpCategory() {
                 {token}
               </span>
               <Btn onClick={() => copy(token, "已复制访问令牌")}>复制</Btn>
+              <Btn kind="danger" disabled={!info?.enabled || resetting} onClick={() => void resetToken()}>
+                {resetting ? "重置中…" : "重置"}
+              </Btn>
             </div>
           ) : (
             <span className="muted">尚未生成</span>
           )}
         </Field>
-        <Field label="客户端配置" hint="复制后粘贴到 TRAE 的 MCP 配置，或作为 CodeBuddy 的 mcp add-json 参数">
+        <div className="settings-action-row">
           <Btn kind="primary" disabled={!clientConfig} onClick={() => copy(clientConfig, "已复制 MCP 客户端配置")}>
-            复制 JSON 配置
+            点我复制到 MCP 使用
           </Btn>
-        </Field>
+        </div>
+        {info?.last_error ? <Note kind="warn">{info.last_error}</Note> : null}
       </Section>
       <Section title="说明">
         <Note>
-          端口默认为 {info?.port ?? 39217}；如需修改，请编辑配置目录下 config.yaml 的
-          features.mcp.port 并重启应用。
+          端口默认为 {info?.port ?? 39217}；保存后立即生效。若端口被占用，会自动按 +1 递增尝试（最多 5 次），
+          成功后把实际端口写回配置，请以「服务地址」为准更新客户端。
         </Note>
         <Note>
           安全边界：只监听 127.0.0.1，所有请求需携带上面的令牌；目标主机必须已在终端中完成首次指纹信任；

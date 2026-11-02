@@ -106,7 +106,8 @@ pub fn run() {
             let ai = AiService::new();
             registry.register(Arc::new(AiAssistantModule::new(ai.clone())));
             // MCP 服务：本机 Streamable HTTP 端点，供外部 AI 经 pterm 认证后连接 SSH
-            registry.register(McpModule::new());
+            let mcp = McpModule::new();
+            registry.register(mcp.clone());
 
             let state = AppState::new(
                 config,
@@ -122,6 +123,8 @@ pub fn run() {
             let ctx = state.module_context(app.handle().clone());
             state.modules.apply(&ctx)?;
             app.manage(state);
+            // 设置界面命令需要读取 MCP 的实际监听端口与最近错误，托管同一模块实例
+            app.manage(mcp);
 
             // 系统托盘仅 Windows 提供，且恒定常驻（设置里的开关已移除，不再可配置）。
             // macOS 不支持系统托盘，关闭窗口改由 Dock 图标恢复（见下方 RunEvent::Reopen）。
@@ -184,6 +187,8 @@ pub fn run() {
             // 键盘交互认证（keyboard-interactive）提示应答
             ssh::commands::ssh_auth_respond,
             ssh::commands::ssh_auth_pending,
+            // 会话资源监控开关（可开关，默认关闭）
+            ssh::commands::ssh_set_session_monitor,
             // 本地终端（可开关）
             modules::local_terminal::commands::local_terminal_open,
             // Git 同步（可开关）
@@ -253,6 +258,7 @@ pub fn run() {
             modules::ai_assistant::commands::ai_protocols,
             // MCP 服务（可开关）：本地端点状态查询，供设置界面展示与复制令牌
             modules::mcp::commands::mcp_info,
+            modules::mcp::commands::mcp_reset_token,
             // 崩溃日志（可开关）
             utils::commands::crash_log_read,
             utils::commands::crash_log_export,

@@ -5,7 +5,12 @@ import * as tabs from "../tabs/store";
 import { $, confirmDialog, el, errorText, toast } from "../util/util";
 import { collectMatches, firstIndexFrom, SearchMatch } from "./search";
 
-let ssh: { disconnect(id: string): Promise<void>; reconnect(id: string): Promise<any> };
+let ssh: {
+  disconnect(id: string): Promise<void>;
+  reconnect(id: string): Promise<any>;
+  /** 资源监控的指标监听开关（可选：未接线时静默跳过）。 */
+  setMonitorEnabled?(enabled: boolean): void;
+};
 let syncInput: { targetsFor(id: string): string[] };
 let ai: { forget(id: string): void };
 /** 连接管理：把会话状态回写给侧栏连接点的状态色（见 connections/store 的 noteSession）。 */
@@ -21,6 +26,8 @@ export function wireDependencies(deps: {
   connections: typeof connections;
 }): void {
   ({ ssh, syncInput, ai, connections } = deps);
+  // 配置可能先于依赖注入应用：接线后补一次监控开关，避免漏挂指标监听
+  if (monitorOn && typeof ssh.setMonitorEnabled === "function") ssh.setMonitorEnabled(true);
 }
 
 /**
@@ -86,6 +93,8 @@ export interface TerminalController {
   setState(state: SessionState): void;
   /** 根据延迟探测结果更新标签上的信号条。 */
   setLatency(ms: number | null): void;
+  /** 资源监控采样结果（见 ssh:metrics 事件）。 */
+  setMetrics(payload: any): void;
   fit(): void;
   focus(): void;
   /** 复制选中内容到剪贴板；返回 false 表示本次不接管（无选中）。 */
@@ -181,8 +190,44 @@ function readClipboard(): Promise<string> {
 /** 应用配置变化：字体、主题、滚动缓冲等。 */
 export function setConfig(next: any): void {
   config = next;
+  syncMonitorFlag();
   controllers.forEach((ctrl) => ctrl.applyConfig());
   tabs.render();
+}
+
+/** 会话资源监控是否开启（features.connection.session_monitor，默认关闭）。 */
+let monitorOn = false;
+
+function monitorEnabled(): boolean {
+  const c = (config && config.features && config.features.connection) || {};
+  return !!c.session_monitor;
+}
+
+/**
+ * 把资源监控开关同步到事件订阅层与后端。
+ *
+ * 只在开关真正变化时广播：关闭后后端会话线程只做一次原子判断即返回，
+ * 前端的指标监听也全部摘除，不保留任何持续采样或监听开销。
+ */
+function syncMonitorFlag(): void {
+  const on = monitorEnabled();
+  if (on === monitorOn) return;
+  monitorOn = on;
+  if (ssh && typeof ssh.setMonitorEnabled === "function") ssh.setMonitorEnabled(on);
+  ipc.sshSetSessionMonitor(on).catch(() => {});
+}
+
+/** 字节数格式化：1.2M / 340K。 */
+function fmtBytes(value: number): string {
+  if (!isFinite(value) || value < 0) return "—";
+  const units = ["B", "K", "M", "G", "T"];
+  let v = value;
+  let i = 0;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i += 1;
+  }
+  return (v >= 10 || i === 0 ? v.toFixed(0) : v.toFixed(1)) + units[i];
 }
 
 /** 终端配色：默认跟随主题的 --term-bg / --term-fg，可被 terminal.background/foreground 独立覆盖。 */
@@ -461,6 +506,10 @@ export function open(info: SessionInfo, options?: any): TerminalController {
   if (fitAddon) term.loadAddon(fitAddon);
 
   const pane = el("div", { class: "pane", dataset: { id: info.id } });
+  // 终端独占一块弹性区域：监控条开启时在底部占一行，FitAddon 按这块区域算尺寸，
+  // 因此监控条不会盖住终端内容。
+  const termHost = el("div", { class: "pane-term" });
+  pane.appendChild(termHost);
   const banner = el("div", { class: "pane-banner" }, [el("span", { class: "text" })]);
   pane.appendChild(banner);
 
@@ -545,6 +594,160 @@ export function open(info: SessionInfo, options?: any): TerminalController {
     return true;
   }
 
+  // -------------------------------------------------------------------------
+  // 资源监控面板：仅在开关打开且会话就绪时创建，关闭即移除 DOM 与监听引用
+  // -------------------------------------------------------------------------
+  let monitorEl: HTMLElement | null = null;
+  let monitorShown = false;
+  /** 最近一轮采样：面板比指标晚创建时（状态事件与事件顺序不固定）用它补渲染 */
+  let lastMetrics: any = null;
+  const monitorVals: Record<string, HTMLElement> = {};
+  const monitorItems: Record<string, HTMLElement> = {};
+
+  function ensureMonitor(): void {
+    if (monitorEl || !monitorOn) return;
+    const items = [
+      { key: "cpu", label: "CPU" },
+      { key: "mem", label: "内存" },
+      { key: "load", label: "负载" },
+      { key: "disk", label: "磁盘" },
+      { key: "net", label: "网络" },
+    ];
+    const nodes: HTMLElement[] = [];
+    items.forEach((item, index) => {
+      if (index) nodes.push(el("span", { class: "pm-sep", text: "·" }));
+      const value = el("span", { class: "pm-v", text: "—" });
+      const node = el("span", { class: "pm-item" }, [
+        el("span", { class: "pm-k", text: item.label }),
+        value,
+      ]);
+      monitorVals[item.key] = value;
+      monitorItems[item.key] = node;
+      nodes.push(node);
+    });
+    monitorEl = el("div", { class: "pane-monitor" }, nodes);
+    pane.appendChild(monitorEl);
+    if (lastMetrics) renderMetrics(lastMetrics);
+  }
+
+  function removeMonitor(): void {
+    if (!monitorEl) return;
+    monitorEl.remove();
+    monitorEl = null;
+    Object.keys(monitorVals).forEach((key) => delete monitorVals[key]);
+    Object.keys(monitorItems).forEach((key) => delete monitorItems[key]);
+  }
+
+  /** 根据开关与会话状态显隐监控条；返回是否改变了布局（调用方按需 refit）。 */
+  function syncMonitor(): boolean {
+    const localTerm = !!(opts.params && opts.params.kind === "local");
+    const kind = info.state && info.state.state;
+    const show = monitorOn && !localTerm && kind === "ready";
+    if (!show) {
+      const changed = monitorShown;
+      removeMonitor();
+      monitorShown = false;
+      // 断线 / 关闭监控后读数作废，重连后重新累计
+      lastMetrics = null;
+      return changed;
+    }
+    ensureMonitor();
+    const changed = !monitorShown;
+    monitorShown = true;
+    return changed;
+  }
+
+  function setText(key: string, value: string, title: string): void {
+    const node = monitorVals[key];
+    if (node) node.textContent = value;
+    const item = monitorItems[key];
+    if (item) item.title = title;
+  }
+
+  function renderMetrics(payload: any): void {
+    if (!monitorEl || !payload) return;
+    if (payload.unsupported) {
+      monitorEl.classList.add("pm-unsupported");
+      monitorEl.textContent = "该主机暂不支持资源监控";
+      return;
+    }
+
+    const hw = payload.hardware || {};
+    const cores = typeof hw.cpu_cores === "number" ? hw.cpu_cores : null;
+
+    const cpu = typeof payload.cpu === "number" ? payload.cpu : null;
+    setText(
+      "cpu",
+      cpu == null ? "—" : `${cpu.toFixed(0)}%`,
+      [
+        hw.cpu_model ? `型号：${hw.cpu_model}` : "型号：未知",
+        cores ? `核心数：${cores}` : null,
+        cpu == null ? null : `当前占用：${cpu.toFixed(0)}%`,
+      ]
+        .filter(Boolean)
+        .join("\n")
+    );
+
+    const memUsed = typeof payload.mem_used === "number" ? payload.mem_used : null;
+    const memTotal = typeof payload.mem_total === "number" ? payload.mem_total : null;
+    const memPct = memUsed != null && memTotal ? (memUsed / memTotal) * 100 : null;
+    setText(
+      "mem",
+      memPct == null ? "—" : `${memPct.toFixed(0)}%`,
+      [
+        hw.mem_model ? `型号：${hw.mem_model}` : null,
+        memTotal != null ? `总容量：${fmtBytes(memTotal)}` : null,
+        memUsed != null ? `已用：${fmtBytes(memUsed)}` : null,
+        memUsed != null && memTotal != null ? `可用：${fmtBytes(memTotal - memUsed)}` : null,
+      ]
+        .filter(Boolean)
+        .join("\n")
+    );
+
+    const load = typeof payload.load1 === "number" ? payload.load1 : null;
+    setText(
+      "load",
+      load == null ? "—" : load.toFixed(2),
+      [
+        load == null ? "1 分钟平均负载：—" : `1 分钟平均负载：${load.toFixed(2)}`,
+        "可运行 + 不可中断进程的平均数量",
+        cores ? `本机 ${cores} 核：持续高于该值说明任务在排队` : null,
+      ]
+        .filter(Boolean)
+        .join("\n")
+    );
+
+    const diskUsed = typeof payload.disk_used === "number" ? payload.disk_used : null;
+    const diskTotal = typeof payload.disk_total === "number" ? payload.disk_total : null;
+    const diskPct = diskUsed != null && diskTotal ? (diskUsed / diskTotal) * 100 : null;
+    const disks: string[] = Array.isArray(hw.disks) ? hw.disks : [];
+    setText(
+      "disk",
+      diskPct == null ? "—" : `${diskPct.toFixed(0)}%`,
+      [
+        diskUsed != null && diskTotal != null
+          ? `根分区：已用 ${fmtBytes(diskUsed)} / ${fmtBytes(diskTotal)}`
+          : null,
+        ...disks.map((item) => `磁盘：${item}`),
+      ]
+        .filter(Boolean)
+        .join("\n")
+    );
+
+    const rx = typeof payload.net_rx === "number" ? payload.net_rx : null;
+    const tx = typeof payload.net_tx === "number" ? payload.net_tx : null;
+    setText(
+      "net",
+      rx == null || tx == null ? "—" : `↓${fmtBytes(rx)} ↑${fmtBytes(tx)}`,
+      [
+        rx != null ? `接收：${fmtBytes(rx)}/s` : null,
+        tx != null ? `发送：${fmtBytes(tx)}/s` : null,
+      ]
+        .filter(Boolean)
+        .join("\n")
+    );
+  }
+
   const ctrl: TerminalController = {
     id: info.id,
     info,
@@ -573,6 +776,8 @@ export function open(info: SessionInfo, options?: any): TerminalController {
       Object.assign(term.options, next);
       echo.setEnabled(localEchoEnabled());
       applyImeMode();
+      // 开关切换会增减底部监控条，占用的高度变了要重新适配终端尺寸
+      if (syncMonitor()) this.fit();
     },
 
     /** 写入远端输出（先剥掉本地已经画过的回显）。 */
@@ -587,6 +792,8 @@ export function open(info: SessionInfo, options?: any): TerminalController {
       // 非就绪时未确认的本地预测不会送达远端，撤回以免屏幕与 shell 不一致
       if (kind !== "ready") echo.reset();
       pane.dataset.state = kind;
+      // 面板只在就绪时出现：断线 / 重连期间隐藏，避免展示过期读数
+      syncMonitor();
       renderBanner(this, state);
       // 会话就绪时重新对齐尺寸：自动重连会按连接参数重建 pty（首开标签时是 80x24），
       // 若不再推一次真实尺寸，apt / dpkg 等会按错误尺寸排版并覆盖已输出的行。
@@ -604,6 +811,13 @@ export function open(info: SessionInfo, options?: any): TerminalController {
     setLatency(ms: number | null) {
       info.latency = typeof ms === "number" && ms >= 0 ? ms : null;
       tabs.touch(this);
+    },
+
+    /** 资源监控采样结果：缓存一份供面板补渲染，未开启监控时直接丢弃。 */
+    setMetrics(payload: any) {
+      if (!monitorOn) return;
+      lastMetrics = payload;
+      if (monitorEl) renderMetrics(payload);
     },
 
     fit() {
@@ -739,8 +953,8 @@ export function open(info: SessionInfo, options?: any): TerminalController {
     if (tabs.activeIdOf() !== info.id) tabs.activate(info.id);
   });
 
-  // term.open 会自己把 .xterm 容器插入 pane；提示条为绝对定位，随后追加即可
-  term.open(pane);
+  // term.open 会自己把 .xterm 容器插入传入的容器；提示条为绝对定位，随后追加即可
+  term.open(termHost);
   pane.appendChild(banner);
 
   // 终端内右击：原生菜单已被通用右键菜单模块全局屏蔽（src/features/context-menu/），
@@ -957,6 +1171,9 @@ export function open(info: SessionInfo, options?: any): TerminalController {
   tabs.attach(ctrl, opts);
   updateEmptyState();
   ctrl.setState(info.state || { state: "connecting" });
+  // 面板按当前开关与状态决定是否创建（关闭时不产生任何节点）
+  syncMonitor();
+
   return ctrl;
 }
 
@@ -1108,6 +1325,12 @@ export function close(id: string): void {
 
 export function get(id: string): TerminalController | null {
   return controllers.get(id) || null;
+}
+
+/** 资源监控采样结果（由 ssh 模块转发 `ssh:metrics:{id}` 事件）。 */
+export function setMetrics(id: string, payload: any): void {
+  const ctrl = controllers.get(id);
+  if (ctrl) ctrl.setMetrics(payload);
 }
 
 export function active(): TerminalController | null {

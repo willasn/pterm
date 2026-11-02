@@ -52,13 +52,16 @@ export interface AiModelConfig {
   context_bytes: number | null;
 }
 
-/** MCP 服务状态（mcp_info 返回）。 */
+/** MCP 服务状态（mcp_info / mcp_reset_token 返回）。 */
 export interface McpInfo {
   enabled: boolean;
+  /** 实际端口：运行中为监听端口（可能已自动降级），否则为配置端口 */
   port: number;
   endpoint: string;
   token: string | null;
   running: boolean;
+  /** 最近一次启动 / 重新配置失败的原因 */
+  last_error: string | null;
 }
 
 /** 协议元信息（ai_protocols 返回）。 */

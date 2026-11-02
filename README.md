@@ -50,7 +50,8 @@ pterm/
 │       │   ├── interactive.rs   # 键盘交互认证的提示应答中枢
 │       │   ├── jump.rs          # 跳板机（ProxyJump 隧道）
 │       │   ├── known_hosts.rs   # 主机密钥校验（known_hosts / TOFU）
-│       │   └── local.rs         # 本地终端运行器（本机 PTY）
+│       │   ├── local.rs         # 本地终端运行器（本机 PTY）
+│       │   └── monitor.rs       # 会话资源监控（CPU / 内存 / 负载 / 磁盘 / 网络，按需采样）
 │       ├── modules/             # 可插拔模块
 │       │   ├── git_sync/        # Git 同步（可开关）
 │       │   │   ├── repo.rs      # git2 仓库操作封装
@@ -61,7 +62,7 @@ pterm/
 │       │   ├── snippets/        # 命令片段（可开关）
 │       │   ├── global_search/   # 全局搜索（可开关，检索逻辑在前端）
 │       │   ├── command_history/ # 命令历史（可开关）
-│       │   ├── local_terminal/  # 本地终端（可开关，本机 PTY shell）
+│       │   ├── local_terminal/  # 本地终端（必开，本机 PTY shell）
 │       │   ├── quick_panel/     # 快捷面板（必开，恒定开启）
 │       │   ├── system_tray/     # 系统托盘（仅 Windows，恒定常驻）
 │       │   ├── auto_update/     # 自动更新（开关在设置「关于 → 软件更新」，从 GitHub Releases 检查并安装。Tauri updater）
