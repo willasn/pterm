@@ -93,6 +93,7 @@ jobs:
 
   # 构建完成后把安装包同步到 Cloudflare R2（公共只读分发的镜像）。
   # 认证信息全部来自 GitHub Secrets，不落仓库；推送动作由 GitHub 托管的 runner 完成。
+  # 该桶为多应用共用（software），pterm 的产物统一放在 pterm/ 前缀下。
   publish-r2:
     needs: build
     runs-on: ubuntu-latest
@@ -135,7 +136,8 @@ jobs:
           AWS_DEFAULT_REGION: auto
           R2_ENDPOINT: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
           BUCKET: ${{ secrets.R2_BUCKET }}
-          R2_BASE: https://dl.pterm.panpan.space
+          R2_BASE: https://dl.panpan.space
+          R2_PREFIX: pterm
         run: |
           set -euo pipefail
 
@@ -144,7 +146,7 @@ jobs:
           #    signature 是对文件内容签名的，与 url 无关，改写不会破坏更新校验。
           if [ -f dist/latest.json ]; then
             gh_prefix="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/"
-            jq --arg p "$gh_prefix" --arg b "${R2_BASE}/latest/" \
+            jq --arg p "$gh_prefix" --arg b "${R2_BASE}/${R2_PREFIX}/latest/" \
               '.platforms |= with_entries(
                  .value.url |= (if startswith($p) then $b + .[($p | length):] else . end)
                )' dist/latest.json > dist/latest.json.tmp
@@ -156,16 +158,16 @@ jobs:
           for f in dist/*; do
             name="$(basename "$f")"
             [ "$name" = "latest.json" ] && continue
-            echo "上传 latest/$name"
-            aws s3 cp "$f" "s3://$BUCKET/latest/$name" \
+            echo "上传 $R2_PREFIX/latest/$name"
+            aws s3 cp "$f" "s3://$BUCKET/$R2_PREFIX/latest/$name" \
               --endpoint-url "$R2_ENDPOINT" \
               --cache-control "public, max-age=31536000, immutable"
           done
 
-          # 3. 删除 latest/ 下不属于本次发布的旧文件（先传后删，避免 404 窗口）。
+          # 3. 删除 $R2_PREFIX/latest/ 下不属于本次发布的旧文件（先传后删，避免 404 窗口）。
           existing="$(aws s3api list-objects-v2 \
             --bucket "$BUCKET" \
-            --prefix "latest/" \
+            --prefix "$R2_PREFIX/latest/" \
             --query 'Contents[].Key' \
             --output text \
             --endpoint-url "$R2_ENDPOINT")"
@@ -179,7 +181,7 @@ jobs:
 
           # 4. 最后更新指针，保证 latest.json 生效时文件一定已就位。
           if [ -f dist/latest.json ]; then
-            aws s3 cp dist/latest.json "s3://$BUCKET/latest.json" \
+            aws s3 cp dist/latest.json "s3://$BUCKET/$R2_PREFIX/latest.json" \
               --endpoint-url "$R2_ENDPOINT" \
               --content-type "application/json" \
               --cache-control "no-cache"

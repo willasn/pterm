@@ -23,6 +23,8 @@ tauri-plugin-updater = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
+# 更新源版本号比较（取多个更新源中最大的有效版本）
+semver = "1"
 
 # SSH 核心
 ssh2 = { version = "0.9", features = ["vendored-openssl"] }

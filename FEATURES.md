@@ -225,7 +225,7 @@ features:
 | [x] | 全局搜索 | `global_search` | 跨连接 / 片段 / 历史 / 设置的统一模糊搜索 | `src/features/search/`、`src-tauri/src/modules/global_search/` |
 | [x] | 命令历史 | `command_history` | 记录并检索历史执行的命令，支持去重与频率排序 | `src/features/history/`、`src-tauri/src/modules/command_history/` |
 | [x] | 快捷面板 | `quick_panel` | 全局快捷键唤起的命令面板（类 Spotlight）；必开项，设置「功能开关」中不再展示 | `src/features/quick-panel/`、`src-tauri/src/modules/quick_panel/` |
-| [x] | 自动更新 | `auto_update` | 开关控制启动后自动从 GitHub Releases 检查新版本（结果按天缓存）并在发现新版时右下角提示；开关在「设置 → 关于 → 软件更新」栏，页内「检查更新」按钮始终可用，关闭开关也能主动手动检查。确认后下载、校验签名并安装，装完重启应用（Tauri updater） | `src-tauri/src/modules/auto_update/`、`src/features/auto-update/` |
+| [x] | 自动更新 | `auto_update` | 开关控制启动后自动检查新版本（结果按天缓存）并在发现新版时右下角提示；并行检查 R2（`dl.panpan.space/pterm/latest.json`）与 GitHub Releases 两个更新源（单源超时 4 秒），取有效版本号最大的那份，并从该源下载；开关在「设置 → 关于 → 软件更新」栏，页内「检查更新」按钮始终可用，关闭开关也能主动手动检查。确认后下载、校验签名并安装，装完重启应用（Tauri updater） | `src-tauri/src/modules/auto_update/`、`src/features/auto-update/` |
 | [x] | 主题 | `theme` | 内置亮/暗主题 + 自定义配色，终端配色独立配置 | `src/styles/theme.css`、`src-tauri/src/modules/theme/` |
 | [x] | 快捷键 | `shortcuts` | 全部操作可绑定快捷键；设置页每个动作固定一行，左侧只读描述，可逐条启用 / 禁用、改键或清空解绑，附冲突检测 | `src/features/shortcuts/`、`src/features/settings/`、`src-tauri/src/modules/shortcuts/` |
 | [x] | 崩溃日志 | `crash_log` | panic hook 捕获崩溃信息写本地日志，设置「关于」页可查看与导出 | `src-tauri/src/utils/mod.rs` + `src-tauri/src/utils/commands.rs` |

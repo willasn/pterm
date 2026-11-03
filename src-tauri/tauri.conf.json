@@ -54,7 +54,7 @@
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDJGMzlGMUZGNjI0QTM3RUMKUldUc04wcGkvL0U1TDhxVmRqeXBTWmMxOTNBcXBjd3pXT3hDRkxvb2puN0x0ZjJROHgrcWU1dnUK",
       "endpoints": [
-        "https://dl.pterm.panpan.space/latest.json",
+        "https://dl.panpan.space/pterm/latest.json",
         "https://github.com/willasn/pterm/releases/latest/download/latest.json"
       ]
     }

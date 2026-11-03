@@ -1,8 +1,8 @@
 //! 自动更新（FEATURES.md §6）。
 //!
-//! 用 tauri-plugin-updater 检查 GitHub Releases 上的 `latest.json`：有新版则下载、
-//! 校验签名并安装，装完重启应用。**opt-in**：默认开启（`auxiliary.auto_update = true`），
-//! 可在设置中关闭。
+//! 用 tauri-plugin-updater 检查 `latest.json`：有新版则下载、校验签名并安装，装完重启应用。
+//! 检查时会并行请求 R2 与 GitHub 两个更新源（单源 4 秒超时），取有效版本号最大的那份，
+//! 并从该源下载。**opt-in**：默认开启（`auxiliary.auto_update = true`），可在设置中关闭。
 //!
 //! `auxiliary.auto_update` 开关只控制「启动后自动检查一次（结果按天缓存）并自动弹提示条」
 //! 这部分自动行为；设置「关于 → 软件更新」页的「检查更新」按钮**始终可用**，关掉开关也能
