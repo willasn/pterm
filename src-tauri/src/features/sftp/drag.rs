@@ -168,6 +168,8 @@ fn launch_macos(app: &AppHandle, path: PathBuf, transfer_id: String) -> AppResul
 fn launch_windows(app: &AppHandle, path: PathBuf, transfer_id: String) -> AppResult<()> {
     let window = app.get_webview_window("main").ok_or_else(missing_window)?;
     let app_cb = app.clone();
+    // 提交到常驻线程的闭包必须 'static，不能再借用外部 app 引用。
+    let app_err = app.clone();
     let tid_cb = transfer_id.clone();
     // DoDragDrop 会一直阻塞到松手，所以异步提交，启动失败再通过事件回报。
     drag_thread::submit(Box::new(move || {
@@ -187,7 +189,7 @@ fn launch_windows(app: &AppHandle, path: PathBuf, transfer_id: String) -> AppRes
             drag::Options::default(),
         );
         if let Err(err) = result {
-            let _ = app.emit(
+            let _ = app_err.emit(
                 EVENT_SFTP_DRAG_END,
                 serde_json::json!({ "id": transfer_id, "error": format!("启动系统拖拽失败：{err}") }),
             );
