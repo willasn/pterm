@@ -141,12 +141,21 @@ jobs:
         run: |
           set -euo pipefail
 
-          # 1. 把 latest.json 里的下载地址从 GitHub Release 改写到 R2。
+          # 安装包按版本分目录存放：pterm/<version>/<文件名>。
+          # 文件名本身不带版本号（如 pterm_aarch64.app.tar.gz），如果所有版本都放在
+          # 同一个 key 上，配合下面 immutable 的长缓存，Cloudflare 边缘会一直返回
+          # 首次缓存的旧版本安装包——客户端拿旧包去比对 latest.json 里的新签名，
+          # 就会报 "The signature verification failed"。把版本写进路径后，
+          # 每个版本的 URL 天然唯一，immutable 缓存才是安全的。
+          VERSION="${GITHUB_REF_NAME#v}"
+          R2_DIR="${R2_PREFIX}/${VERSION}"
+
+          # 1. 把 latest.json 里的下载地址从 GitHub Release 改写到 R2 的版本目录。
           #    不改的话客户端读到的 url 仍指向 GitHub，R2 就白传了。
           #    signature 是对文件内容签名的，与 url 无关，改写不会破坏更新校验。
           if [ -f dist/latest.json ]; then
             gh_prefix="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/"
-            jq --arg p "$gh_prefix" --arg b "${R2_BASE}/${R2_PREFIX}/latest/" \
+            jq --arg p "$gh_prefix" --arg b "${R2_BASE}/${R2_DIR}/" \
               '.platforms |= with_entries(
                  .value.url |= (if startswith($p) then $b + .[($p | length):] else . end)
                )' dist/latest.json > dist/latest.json.tmp
@@ -154,30 +163,32 @@ jobs:
             cat dist/latest.json
           fi
 
-          # 2. 先删除 R2 上所有 $R2_PREFIX/latest/ 下的文件，再逐个上传。
-          #    这样可以避免「本地文件已更新但 S3 上仍残留旧内容」的问题——
-          #    之前曾出现过 R2 上文件与 GitHub Release 内容不一致、导致签名
-          #    验证失败的情况。
+          # 2. 上传安装包到版本目录。路径里带版本号，内容不会变，可以长缓存。
+          for f in dist/*; do
+            name="$(basename "$f")"
+            [ "$name" = "latest.json" ] && continue
+            echo "上传 $R2_DIR/$name"
+            aws s3 cp "$f" "s3://$BUCKET/$R2_DIR/$name" \
+              --endpoint-url "$R2_ENDPOINT" \
+              --cache-control "public, max-age=31536000, immutable"
+          done
+
+          # 3. 删除其他版本的旧文件（先传后删，避免下载地址 404 窗口）。
+          #    只保留本次的版本目录与 latest.json 指针本身。
           existing="$(aws s3api list-objects-v2 \
             --bucket "$BUCKET" \
-            --prefix "$R2_PREFIX/latest/" \
+            --prefix "$R2_PREFIX/" \
             --query 'Contents[].Key' \
             --output text \
             --endpoint-url "$R2_ENDPOINT")"
           [ "$existing" = "None" ] && existing=""
           for key in $existing; do
+            case "$key" in
+              "$R2_DIR/"*) continue ;;
+              "$R2_PREFIX/latest.json") continue ;;
+            esac
             echo "删除旧文件 $key"
             aws s3 rm "s3://$BUCKET/$key" --endpoint-url "$R2_ENDPOINT"
-          done
-
-          # 3. 上传安装包。文件名自带版本号，内容不会变，可以长缓存。
-          for f in dist/*; do
-            name="$(basename "$f")"
-            [ "$name" = "latest.json" ] && continue
-            echo "上传 $R2_PREFIX/latest/$name"
-            aws s3 cp "$f" "s3://$BUCKET/$R2_PREFIX/latest/$name" \
-              --endpoint-url "$R2_ENDPOINT" \
-              --cache-control "public, max-age=31536000, immutable"
           done
 
           # 4. 最后更新指针，保证 latest.json 生效时文件一定已就位。

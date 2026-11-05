@@ -13,7 +13,7 @@ use futures_util::future::join_all;
 use semver::Version;
 use serde::Serialize;
 use serde_json::Value;
-use tauri::{AppHandle, Emitter, Manager, Url};
+use tauri::{AppHandle, Emitter, Url};
 use tauri_plugin_updater::{Update, UpdaterExt};
 
 use crate::error::{AppError, AppResult};
@@ -119,11 +119,9 @@ async fn check_update_from(
 ) -> Result<Option<Update>, tauri_plugin_updater::Error> {
     let updater = app
         .updater_builder()
-        .endpoints(vec![url])
-        .map_err(|e| tauri_plugin_updater::Error::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?
+        .endpoints(vec![url])?
         .timeout(CHECK_TIMEOUT)
-        .build()
-        .map_err(|e| tauri_plugin_updater::Error::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
+        .build()?;
 
     match updater.check().await {
         Ok(Some(mut update)) => {
@@ -148,12 +146,12 @@ pub async fn auto_update_check(app: AppHandle) -> AppResult<UpdateInfo> {
     }
 
     let mut last_check_err: Option<tauri_plugin_updater::Error> = None;
-    let mut any_has_update = false;
+    // 是否至少有一个源成功完成了 check（无论结果是有更新还是没更新）
+    let mut any_checked_ok = false;
 
     for (_, url) in candidates {
         match check_update_from(&app, url).await {
             Ok(Some(update)) => {
-                any_has_update = true;
                 return Ok(UpdateInfo {
                     has_update: true,
                     current: update.current_version.clone(),
@@ -162,18 +160,16 @@ pub async fn auto_update_check(app: AppHandle) -> AppResult<UpdateInfo> {
                     published_at: update.date.map(|date| date.unix_timestamp()),
                 });
             }
-            Ok(None) => continue, // 版本不新，试下一个源
+            Ok(None) => {
+                // 这个源确认没有更新；继续看其他源是否有更高版本
+                any_checked_ok = true;
+            }
             Err(err) => last_check_err = Some(err),
         }
     }
 
-    if any_has_update {
-        // 上面已经 return 了，这里不会到达
-        unreachable!()
-    }
-
-    // 所有源都返回 None → 已是最新
-    if last_check_err.is_none() {
+    // 至少有一个源确认「无更新」→ 视为已是最新
+    if any_checked_ok || last_check_err.is_none() {
         return Ok(UpdateInfo {
             has_update: false,
             current,
@@ -183,7 +179,7 @@ pub async fn auto_update_check(app: AppHandle) -> AppResult<UpdateInfo> {
         });
     }
 
-    // 所有源要么不可用要么 check 报错
+    // 所有源都 check 报错
     Err(last_check_err
         .map(update_error)
         .unwrap_or_else(|| AppError::Other("更新检查失败：所有更新源均不可用".into())))
@@ -206,8 +202,8 @@ pub async fn auto_update_install(app: AppHandle) -> AppResult<()> {
     let mut found_update = false;
 
     for (_, url) in candidates {
-        let Some(update) = match check_update_from(&app, url).await {
-            Ok(Some(u)) => Some(u),
+        let update = match check_update_from(&app, url.clone()).await {
+            Ok(Some(update)) => update,
             Ok(None) => continue, // 当前已是最新
             Err(err) => {
                 last_install_err = Some(err);
@@ -236,7 +232,6 @@ pub async fn auto_update_install(app: AppHandle) -> AppResult<()> {
             Ok(()) => {
                 log::info!("更新已安装，正在重启应用");
                 app.restart();
-                return Ok(());
             }
             Err(err) => {
                 log::warn!(
