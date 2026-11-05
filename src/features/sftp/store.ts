@@ -29,6 +29,8 @@ import type {
 
 /** 传输进度事件名，与后端 commands.rs 的 EVENT_SFTP_PROGRESS 保持一致。 */
 const TRANSFER_EVENT = "sftp:progress";
+/** 原生拖出结束事件名，与后端 drag.rs 的 EVENT_SFTP_DRAG_END 保持一致。 */
+const DRAG_END_EVENT = "sftp:drag-end";
 /** 建立连接过场的最短展示时长：太快会让动画像闪一下，反而更突兀。 */
 const MIN_CONNECT_MS = 650;
 
@@ -48,6 +50,10 @@ export interface SftpState {
   connectingText: string;
   /** 拖拽上传提示是否可见。 */
   dropVisible: boolean;
+  /** 行拖拽下载：正在拖动的条目，null 表示没有拖拽。 */
+  dragEntry: SftpEntry | null;
+  /** 指针是否悬停在面板底部的下载投放区。 */
+  dragOverZone: boolean;
   open: boolean;
 }
 
@@ -65,6 +71,8 @@ const initialState: SftpState = {
   connecting: false,
   connectingText: "正在连接…",
   dropVisible: false,
+  dragEntry: null,
+  dragOverZone: false,
   open: false,
 };
 
@@ -252,6 +260,17 @@ function bindTransferEvents(): void {
   transferEventsBound = true;
   ipc.listen(TRANSFER_EVENT, onTransferProgress)
     .catch(() => {});
+  // 原生拖出在 Windows 上异步启动，失败只能通过事件回报
+  ipc.listen(DRAG_END_EVENT, (payload: any) => {
+    const id = payload && payload.id ? String(payload.id) : "";
+    const name = id ? pendingDragOuts.get(id) : undefined;
+    if (id) pendingDragOuts.delete(id);
+    if (payload && payload.error) toast(String(payload.error), "error");
+    // 只有真正在目标位置松手（dropped）才提示完成；拖回窗口取消则什么都不做
+    else if (name && payload && payload.dropped) toast(`已拖出 ${name}`, "ok");
+    // 原生拖拽结束：延迟解除「拖出中」状态，避免同一轮的 drop 事件被当成上传
+    scheduleDragOutReset();
+  }).catch(() => {});
 }
 
 // ---------------------------------------------------------------------------
@@ -260,15 +279,20 @@ function bindTransferEvents(): void {
 
 let dragBound = false;
 
-/** Tauri 的 webview 拖拽接口：全局 API 下同时存在 webview / webviewWindow 两个命名空间。 */
+/**
+ * Tauri 的 webview 拖拽接口。全局 API 下 `getCurrentWebview` 属于 `webview` 命名空间，
+ * `webviewWindow` 只提供 `getCurrentWebviewWindow`；两者都能订阅拖拽事件，按可用性回退。
+ */
 function dragApi(): any {
   const ns = (window as any).__TAURI__;
   if (!ns) return null;
-  const mod = ns.webviewWindow || ns.webview;
-  if (!mod || typeof mod.getCurrentWebview !== "function") return null;
+  const getter =
+    (ns.webview && ns.webview.getCurrentWebview) ||
+    (ns.webviewWindow && ns.webviewWindow.getCurrentWebviewWindow);
+  if (typeof getter !== "function") return null;
   try {
-    const webview = mod.getCurrentWebview();
-    return webview && typeof webview.onDragDropEvent === "function" ? webview : null;
+    const view = getter();
+    return view && typeof view.onDragDropEvent === "function" ? view : null;
   } catch {
     return null;
   }
@@ -283,6 +307,8 @@ function bindDragDrop(): void {
   webview
     .onDragDropEvent((event: any) => {
       const payload = (event && event.payload) || {};
+      // 正在把远端条目拖出窗口：此时落回本窗口的 drop 不是「本地文件拖入」，一律忽略
+      if (draggingOut) return;
       if (!state.open) {
         if (state.dropVisible) setState({ dropVisible: false });
         return;
@@ -310,6 +336,98 @@ function handleDrop(paths: string[]): void {
   const dir = state.listing.path;
   list.forEach((path) => enqueue(uploadSpec(sessionId, path, dir)));
   toast(`开始上传 ${list.length} 个条目`, "ok");
+}
+
+// ---------------------------------------------------------------------------
+// 拖拽下载（远端 → 系统文件管理器 / 面板内投放区）
+// ---------------------------------------------------------------------------
+
+/** 拖拽下载期间禁止选中文本，避免出现内容被选中的观感。 */
+function setDraggingCursor(on: boolean): void {
+  document.body.classList.toggle("sftp-dragging", on);
+}
+
+/**
+ * 是否正在把远端条目拖出窗口（原生拖拽进行中）。
+ * 此时若指针又回到窗口内松手，Tauri 也会收到 drop 事件（路径是刚缓存的文件），
+ * 必须忽略，否则会被误判为「从本地拖入」而触发一次上传。
+ */
+let draggingOut = false;
+let dragOutResetTimer = 0;
+
+function markDraggingOut(): void {
+  draggingOut = true;
+  if (dragOutResetTimer) window.clearTimeout(dragOutResetTimer);
+  dragOutResetTimer = 0;
+}
+
+function scheduleDragOutReset(): void {
+  if (dragOutResetTimer) window.clearTimeout(dragOutResetTimer);
+  // drop 与 drag-end 的先后顺序因平台而异，延后解除更稳妥
+  dragOutResetTimer = window.setTimeout(() => {
+    draggingOut = false;
+    dragOutResetTimer = 0;
+  }, 400);
+}
+
+function cancelDraggingOut(): void {
+  if (dragOutResetTimer) window.clearTimeout(dragOutResetTimer);
+  dragOutResetTimer = 0;
+  draggingOut = false;
+}
+
+/** 开始拖动某个条目（指针位移超过阈值后由 UI 调用）。 */
+export function beginEntryDrag(entry: SftpEntry): void {
+  if (!state.currentId || state.busy) return;
+  if (state.dragEntry && state.dragEntry.path === entry.path) return;
+  setDraggingCursor(true);
+  setState({ dragEntry: entry, dragOverZone: false });
+}
+
+/** 更新指针是否悬停在下载投放区，用于高亮提示。 */
+export function setDragOverZone(over: boolean): void {
+  if (!state.dragEntry || state.dragOverZone === over) return;
+  setState({ dragOverZone: over });
+}
+
+export function endEntryDrag(): void {
+  setDraggingCursor(false);
+  if (!state.dragEntry && !state.dragOverZone) return;
+  setState({ dragEntry: null, dragOverZone: false });
+}
+
+/** 拖出中的传输 id → 文件名，仅用于原生拖拽结束后按需提示。 */
+const pendingDragOuts = new Map<string, string>();
+let dragOutSeq = 0;
+
+/**
+ * 拖出到系统文件管理器：后端先把条目缓存到本地，再启动原生拖拽，
+ * 松手落在 Finder / 资源管理器里才真正完成下载。
+ *
+ * 这里不进入传输队列，也不提前展示进度/完成提示：缓存只是原生拖拽的前置准备，
+ * 用户松开鼠标（拖拽结束）后才给出结果提示，避免「拖到窗口外就已经执行了」的观感。
+ */
+export function dragEntryOut(entry: SftpEntry): void {
+  const sessionId = state.currentId;
+  if (!sessionId) return;
+  markDraggingOut();
+  if (state.dropVisible) setState({ dropVisible: false });
+  const tid = "drag-" + ++dragOutSeq + "-" + Date.now();
+  pendingDragOuts.set(tid, entry.name);
+  void ipc
+    .sftpDragOut(
+      sessionId,
+      entry.path,
+      entry.name,
+      Number(entry.size) || 0,
+      Number(entry.modified) || 0,
+      tid,
+    )
+    .catch((err) => {
+      pendingDragOuts.delete(tid);
+      cancelDraggingOut();
+      toast(errorText(err), "error");
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -780,7 +898,8 @@ export function openPanel(): void {
 }
 
 export function closePanel(): void {
-  setState({ open: false });
+  setDraggingCursor(false);
+  setState({ open: false, dragEntry: null, dragOverZone: false });
 }
 
 /** 由 app.ts 在配置变化时调用（启动、保存设置、重置）。 */

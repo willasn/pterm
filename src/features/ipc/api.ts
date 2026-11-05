@@ -97,6 +97,9 @@ export const ipc = {
   sshDisconnect: (id: string) => call("ssh_disconnect", { id }),
   sshSessions: () => call("ssh_sessions"),
   sshRecentOutput: (id: string, maxBytes: number) => call("ssh_recent_output", { id, maxBytes }),
+  // 后台执行：独立 exec 通道，不写入用户终端
+  sshExec: (id: string, command: string, timeoutMs?: number) =>
+    call("ssh_exec", { id, command, timeoutMs }),
   sshTestConnection: (params: any) => call("ssh_test_connection", { params }),
   // 一键生成并部署 SSH 密钥：本地生成 ed25519，公钥追加到远端 authorized_keys，
   // 验证密钥登录并写入本机 ~/.ssh/config
@@ -137,6 +140,15 @@ export const ipc = {
   sftpUpload: (id: string, local: string, remote: string, transferId: string) =>
     call("sftp_upload", { id, local, remote, transferId }),
   sftpCancelTransfer: (transferId: string) => call("sftp_cancel_transfer", { transferId }),
+  // 拖出下载：先把远端条目缓存到本地，再由后端启动原生拖拽（返回缓存字节数）
+  sftpDragOut: (
+    id: string,
+    remote: string,
+    name: string,
+    size: number,
+    modified: number,
+    transferId: string,
+  ) => call("sftp_drag_out", { id, remote, name, size, modified, transferId }),
   sftpDelete: (id: string, path: string) => call("sftp_delete", { id, path }),
   sftpRename: (id: string, from: string, to: string) => call("sftp_rename", { id, from, to }),
   sftpChmod: (id: string, path: string, mode: number) => call("sftp_chmod", { id, path, mode }),

@@ -1,14 +1,22 @@
-import { useEffect, useRef, type ReactNode } from "react";
+import {
+  useEffect,
+  useRef,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
+} from "react";
 import { Btn, Field, Note, Section } from "../../components/form";
 import { Portal } from "../../components/Portal";
 import { useT } from "../../hooks/useLocale";
 import {
+  beginEntryDrag,
   cancelEdit,
   closePanel,
   connect,
   currentHome,
   disconnect,
   download,
+  dragEntryOut,
+  endEntryDrag,
   humanSize,
   loadListing,
   modeText,
@@ -16,6 +24,7 @@ import {
   parentOf,
   remove,
   selectSession,
+  setDragOverZone,
   setEditorValue,
   setPendingConn,
   startEdit,
@@ -215,16 +224,98 @@ function Toolbar({ state, pathRef }: { state: SftpState; pathRef: { current: HTM
   );
 }
 
+/** 下载投放区元素 id：拖动条目时用它做指针命中检测。 */
+const DOWNLOAD_ZONE_ID = "sftp-download-zone";
+/** 指针位移超过该阈值才视为拖拽，避免影响点击与打开目录。 */
+const DRAG_THRESHOLD = 6;
+
+function overDownloadZone(x: number, y: number): boolean {
+  const node = document.getElementById(DOWNLOAD_ZONE_ID);
+  if (!node) return false;
+  const rect = node.getBoundingClientRect();
+  return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+}
+
+/** 指针移出窗口即视为拖到系统文件管理器（Finder / 资源管理器）。 */
+function outsideWindow(x: number, y: number): boolean {
+  return x <= 0 || y <= 0 || x >= window.innerWidth || y >= window.innerHeight;
+}
+
 /** 单个目录条目。 */
 function ItemRow({ state, entry }: { state: SftpState; entry: SftpEntry }) {
   const label = entry.name + (entry.is_dir ? "/" : "") + (entry.is_symlink ? " ↗" : "");
+  const gesture = useRef<{ x: number; y: number; active: boolean; out: boolean } | null>(null);
+  // 拖拽结束后浏览器仍可能补发一次 click，用它拦掉误触发的打开目录
+  const dragged = useRef(false);
+
+  const onPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0 || event.pointerType !== "mouse") return;
+    if ((event.target as HTMLElement).closest(".sftp-act")) return;
+    if (!state.currentId || state.busy) return;
+    dragged.current = false;
+    // 抑制默认的文本选择，避免拖动过程中选中整个窗口的文字
+    event.preventDefault();
+    gesture.current = { x: event.clientX, y: event.clientY, active: false, out: false };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+
+  const onPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const current = gesture.current;
+    if (!current || current.out) return;
+    if (!current.active) {
+      const moved =
+        Math.abs(event.clientX - current.x) >= DRAG_THRESHOLD ||
+        Math.abs(event.clientY - current.y) >= DRAG_THRESHOLD;
+      if (!moved) return;
+      current.active = true;
+      dragged.current = true;
+      beginEntryDrag(entry);
+    }
+    // 拖出窗口：先缓存到本地，再由后端启动原生拖拽
+    if (outsideWindow(event.clientX, event.clientY)) {
+      current.out = true;
+      endEntryDrag();
+      dragEntryOut(entry);
+      return;
+    }
+    setDragOverZone(overDownloadZone(event.clientX, event.clientY));
+  };
+
+  const onPointerUp = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const current = gesture.current;
+    gesture.current = null;
+    if (!current) return;
+    if (!current.active) {
+      // 未达到拖拽阈值即为单击；指针捕获下 click 不可靠，直接在这里进入目录
+      if (entry.is_dir && !dragged.current) void navigate(entry.path);
+      return;
+    }
+    if (current.out) return;
+    // 兜底：个别平台在窗口外松手仍会补发 pointerup，此时同样按拖出处理
+    if (outsideWindow(event.clientX, event.clientY)) {
+      endEntryDrag();
+      dragEntryOut(entry);
+      return;
+    }
+    const onZone = overDownloadZone(event.clientX, event.clientY);
+    endEntryDrag();
+    if (onZone) void download(entry);
+  };
+
+  const onPointerCancel = () => {
+    gesture.current = null;
+    endEntryDrag();
+  };
+
   return (
-    <div className="sftp-item">
-      <span
-        className={"sftp-name" + (entry.is_dir ? " dir" : "")}
-        title={entry.path}
-        onClick={entry.is_dir ? () => void navigate(entry.path) : undefined}
-      >
+    <div
+      className="sftp-item"
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
+      onPointerCancel={onPointerCancel}
+    >
+      <span className={"sftp-name" + (entry.is_dir ? " dir" : "")} title={entry.path}>
         {label}
       </span>
       <span className="sftp-size">{entry.is_dir ? "—" : humanSize(entry.size)}</span>
@@ -368,6 +459,19 @@ export function SftpModal() {
               </span>
             </div>
           </div>
+          {/* 拖拽下载投放区：从列表拖动条目时浮现，松手后选择本地位置下载 */}
+          {state.dragEntry ? (
+            <div
+              className={"sftp-dropzone download" + (state.dragOverZone ? " active" : "")}
+              id={DOWNLOAD_ZONE_ID}
+            >
+              <div className="sftp-dropzone-card">
+                <span className="sftp-dropzone-icon">⬇</span>
+                <span className="sftp-dropzone-title">松开即可下载到本地</span>
+                <span className="sftp-dropzone-path">{state.dragEntry.name}</span>
+              </div>
+            </div>
+          ) : null}
           {/* 建立连接过场：避免等待期间看起来像卡住 */}
           <div className="sftp-connecting" id="sftp-connecting" hidden={!state.connecting}>
             <div className="sftp-connecting-card">

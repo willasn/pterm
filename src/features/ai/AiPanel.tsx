@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Markdown } from "./markdown";
 import {
+  agentContinue,
   approveCurrent,
   clearCurrent,
   close,
@@ -194,9 +195,16 @@ function AssistantBody({ msg }: { msg: AiMessage }) {
           </div>
         ) : msg.state === "done" && msg.output ? (
           <details className="ai-agent-step">
-            <summary>查看终端输出</summary>
+            <summary>查看执行输出</summary>
             <pre className="log-preview">{msg.output}</pre>
           </details>
+        ) : null}
+        {msg.canContinue ? (
+          <div className="log-actions">
+            <button className="btn primary" type="button" onClick={agentContinue}>
+              继续执行
+            </button>
+          </div>
         ) : null}
       </div>
     );
@@ -213,7 +221,7 @@ function AssistantBody({ msg }: { msg: AiMessage }) {
           // 流式阶段保持纯文本：半截的 Markdown 会渲染成乱码块
           <pre className="log-preview">{text}</pre>
         ) : (
-          // 回答结束，一次性渲染成结构化 DOM；命令块附带「运行」按钮（手动发送到终端）
+          // 回答结束，一次性渲染成结构化 DOM；命令块附带「运行」按钮（后台通道执行）
           <Markdown text={text} onRun={(command) => void runSuggested(command)} />
         )
       ) : null}
@@ -386,7 +394,7 @@ export function AiPanel() {
                 type="button"
                 data-mode="ask"
                 aria-pressed={state.mode === "ask" ? "true" : "false"}
-                title="给出建议与命令，命令可手动点击「运行」发送到终端，不会自动执行"
+                title="给出建议与命令，命令可手动点击「运行」在后台通道执行，不会自动执行"
                 onClick={() => setMode("ask")}
               >
                 Ask

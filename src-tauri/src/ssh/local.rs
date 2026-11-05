@@ -135,6 +135,10 @@ pub fn run_local(
                 Ok(SessionCommand::Resize { cols, rows }) => {
                     resize(cols, rows);
                 }
+                Ok(SessionCommand::Exec { reply, .. }) => {
+                    // 本地会话的后台命令由 SessionManager 直接以子进程执行，不会走到这里
+                    let _ = reply.send(Err("本地终端不支持通过会话通道执行后台命令".into()));
+                }
                 Ok(SessionCommand::Close) => {
                     want_close = true;
                     break;
@@ -176,6 +180,9 @@ pub fn run_local(
         match rx.recv_timeout(IDLE_SLEEP) {
             Ok(SessionCommand::Write(data)) => pending_input.extend_from_slice(&data),
             Ok(SessionCommand::Resize { cols, rows }) => resize(cols, rows),
+            Ok(SessionCommand::Exec { reply, .. }) => {
+                let _ = reply.send(Err("本地终端不支持通过会话通道执行后台命令".into()));
+            }
             Ok(SessionCommand::Close) => {
                 break ShellEnd {
                     clean: true,

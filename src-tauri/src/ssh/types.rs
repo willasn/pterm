@@ -185,9 +185,30 @@ pub enum SessionCommand {
     Write(Vec<u8>),
     /// 终端尺寸变化
     Resize { cols: u32, rows: u32 },
+    /// 在独立 exec 通道里执行一条命令：不写入用户终端，结果通过 `reply` 回传。
+    Exec {
+        command: String,
+        /// 执行超时（毫秒），到时中止并返回已拿到的输出
+        timeout_ms: u64,
+        reply: ExecReply,
+    },
     /// 用户主动关闭：不再重连
     Close,
 }
+
+/// 后台命令执行结果。
+#[derive(Debug, Clone, Serialize)]
+pub struct ExecResult {
+    /// stdout 与 stderr 合并后的文本
+    pub output: String,
+    /// 远端退出码；超时或拿不到时为 `None`
+    pub exit_code: Option<i32>,
+    /// 是否因超时被中止
+    pub timed_out: bool,
+}
+
+/// 后台命令的回信通道。
+pub type ExecReply = std::sync::mpsc::Sender<Result<ExecResult, String>>;
 
 /// shell 泵的结束原因。
 #[derive(Debug)]

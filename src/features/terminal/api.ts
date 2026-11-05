@@ -307,6 +307,15 @@ function createEcho(term: any): Echo {
   /** 未确认内容起始处的 buffer 行列，用于定位撤回位置 */
   let startRow = 0;
   let startCol = 0;
+  /**
+   * 预测起点是否仍然可信。
+   *
+   * 只要出现过一次「不画」的输入（方向键、Tab、回车、粘贴、跨行放弃等），
+   * 远端就会移动光标或改写行内容，起点之后可能已经有真实命令文本；此后
+   * 再按起点清到行尾就会把命令后半段擦成空格。这种预测只保留用于跟远端
+   * 回显对账，不再允许撤回。
+   */
+  let anchorOk = false;
   /** 仍在终端解析中的写入数。解析未完成时 buffer 里的光标位置不可信 */
   let busy = 0;
   let enabled = true;
@@ -358,19 +367,75 @@ function createEcho(term: any): Echo {
     return !!buf && buf.type !== "normal";
   }
 
+  /** 只在能确认真实屏幕上那段预测仍然原样存在时才撤回到预测起点。 */
+  function canErase(): boolean {
+    if (!pending || !anchorOk || visual <= 0) return false;
+    // 还有写入没解析完，buffer 里的光标位置与内容都不可信
+    if (busy > 0) return false;
+    const buf = term.buffer.active;
+    // 光标必须仍停在预测内容末尾——挪走了就说明行中间已经有真实文本
+    if (buf.cursorY !== startRow) return false;
+    const endCol = Math.min(startCol + visual, Math.max(term.cols - 1, 0));
+    if (buf.cursorX !== endCol) return false;
+    const line = buf.getLine(startRow);
+    if (!line) return false;
+    if (line.translateToString(false, startCol, startCol + visual) !== renderedPrediction()) return false;
+    // 预测末尾之后这一行还必须是空的，否则“清到行尾”会擦掉远端刚画出的内容
+    return line.translateToString(true, startCol + visual).trim() === "";
+  }
+
+  /** 预测内容在屏幕上实际留下的字符（退格会把前一个字符抹成空格）。 */
+  function renderedPrediction(): string {
+    const chars: string[] = [];
+    for (let i = 0; i < pending.length; i++) {
+      if (pending.charCodeAt(i) === 8) {
+        // "\b \b"：先抹掉上一个字符，再跳过退格后面的空格与退格本身
+        chars.pop();
+        i += 2;
+        continue;
+      }
+      chars.push(pending[i]);
+    }
+    return chars.join("").padEnd(visual, " ");
+  }
+
   /** 撤回全部未确认内容：光标移回预测起点并清到行尾（预测限制在单行内，这样就够）。 */
   function undo(): void {
     if (!pending) return;
     // 备用屏幕里没有可安全清理的“行尾”：只丢弃本地预测，交给全屏程序自己重画，
     // 否则清到行尾会把它的界面擦掉。
-    if (inAlternateScreen()) {
-      pending = "";
-      visual = 0;
-      return;
+    //
+    // 普通屏幕下也必须先确认预测区还在原处：光标一旦被移到行中间，起点之后
+    // 就是真实命令文本，清到行尾会把后半段擦成空格（屏幕上没了，shell 的行
+    // 缓冲里还在，光标仍能移过去）。对不上就只丢预测，不动屏幕。
+    if (!inAlternateScreen() && canErase()) {
+      writeTracked("\x1b[" + (startCol + 1) + "G\x1b[K");
     }
-    writeTracked("\x1b[" + (startCol + 1) + "G\x1b[K");
     pending = "";
     visual = 0;
+    anchorOk = false;
+  }
+
+  /**
+   * 光标是否停在当前行末尾（后面没有内容，且不是软换行的续行）。
+   *
+   * 只有追加式预测撤回才是安全的：行中间插入时，zsh/zle 等会用终端的
+   * 「插入字符」能力（ESC[@）而不是重画后半行，撤回时的“清到行尾”会把
+   * 后半行真的擦掉——表现为光标后的字符消失，但 shell 的行缓冲其实还在。
+   * 所以行中间一律不预测，交给远端真实回显。
+   */
+  function atLineEnd(): boolean {
+    const buf = term.buffer.active;
+    const line = buf.getLine(buf.cursorY);
+    if (!line) return false;
+    // 当前行本身是续行，或下一行与当前行连着（软换行），都无法可靠撤回
+    if (line.isWrapped) return false;
+    const next = buf.getLine(buf.cursorY + 1);
+    if (next && next.isWrapped) return false;
+    // 直接问「光标到行尾这段还有没有内容」，而不是比列号：
+    // 内置 xterm 对外暴露的 BufferLineApiView 只有 translateToString / getCell，
+    // 没有 getTrimmedLength（调用会抛 TypeError，把后面的输入一起带崩）
+    return line.translateToString(true, buf.cursorX) === "";
   }
 
   /**
@@ -380,6 +445,8 @@ function createEcho(term: any): Echo {
   function canExtend(): string {
     // 全屏程序不预测：它的回显与按键不是一一对应的，预测只会破坏界面
     if (inAlternateScreen()) return "altscreen";
+    // 行中间不预测，避免撤回时清掉光标后面的内容
+    if (!atLineEnd()) return "midline";
     const buf = term.buffer.active;
     if (!pending) {
       // 终端还在解析远端数据，此刻读到的光标位置不可信
@@ -387,6 +454,7 @@ function createEcho(term: any): Echo {
       startRow = buf.cursorY;
       startCol = buf.cursorX;
       visual = 0;
+      anchorOk = true;
     } else if (buf.cursorY !== startRow) {
       return "row";
     }
@@ -417,6 +485,7 @@ function createEcho(term: any): Echo {
         }
         const why = canExtend();
         if (why) {
+          if (pending) anchorOk = false;
           return false;
         }
         writeTracked("\b \b");
@@ -426,14 +495,19 @@ function createEcho(term: any): Echo {
       }
 
       if (!allPrintable(text)) {
+        // 回车 / 方向键 / Tab / 粘贴等：远端会移动光标或改写行内容，
+        // 之前的预测起点不再可信，只保留用于跟回显对账
+        if (pending) anchorOk = false;
         return false;
       }
       const why = canExtend();
       if (why) {
+        if (pending) anchorOk = false;
         return false;
       }
       // 跨行后无法确定撤回位置，直接放弃预测，等远端回显
       if (startCol + visual + text.length > term.cols) {
+        if (pending) anchorOk = false;
         return false;
       }
       writeTracked(text);
@@ -460,6 +534,7 @@ function createEcho(term: any): Echo {
           // 整个预测都被这次回显确认（已画在屏幕上），多余部分照写
           pending = "";
           visual = 0;
+          anchorOk = false;
           out = bytes.subarray(i);
         } else {
           // 只回显了一部分（TCP 分片），剩下的继续等，不能当作不一致撤回
@@ -876,7 +951,10 @@ export function open(info: SessionInfo, options?: any): TerminalController {
     if (verdict && verdict.command && !verdict.stale) {
       recordHistory(ctrl, verdict.command);
     }
-    echo.predict(data);
+    // 本地预测只影响观感，出错也必须照常发送：否则预测里一个异常就会让输入整体失效
+    try {
+      echo.predict(data);
+    } catch (_) {}
     send(ctrl, data);
     mirror(ctrl, data);
   }

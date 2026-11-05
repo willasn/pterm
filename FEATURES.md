@@ -100,7 +100,7 @@ features:
 | --- | --- | --- | --- | --- |
 | [x] | 多标签 | `tabs` | 单窗口多会话标签页，标签可拖拽排序、重命名、关闭；标签右键可「克隆会话」，用同一连接参数再开一份独立 SSH 会话（仅 SSH，RDP 不产生标签） | `src/features/tabs/` |
 | [x] | 分屏 | `split_view` | 同一标签内水平/垂直分屏，多个终端共享标签 | `src/features/split/` |
-| [x] | SFTP | `sftp` | 文件浏览、上传、下载、删除、重命名、权限修改；支持文件夹递归传输、拖拽上传、传输进度与中断 | `src/features/sftp/`、`src-tauri/src/features/sftp/` |
+| [x] | SFTP | `sftp` | 文件浏览、上传、下载、删除、重命名、权限修改；支持文件夹递归传输、拖拽上传、拖拽下载（拖出到系统文件管理器 / 面板内投放区）、传输进度与中断 | `src/features/sftp/`、`src-tauri/src/features/sftp/` |
 | [x] | 端口转发 | `port_forward` | 本地转发 / 远程转发 / 动态转发（SOCKS5），支持启停与状态查看 | `src/features/port-forward/`、`src-tauri/src/features/port_forward/` |
 | [x] | 跳板机 | `jump_host` | 通过 ProxyJump 链式连接（支持多级） | `src-tauri/src/ssh/jump.rs` |
 | [x] | 一键生成密钥 | `key_setup` | 连接右键「生成并部署密钥…」：先弹窗让用户确认 / 修改名称（默认按连接名生成，该名称同时作为私钥文件名后缀与 `~/.ssh/config` 的 Host 别名）；本地纯 Rust 生成 ed25519 密钥对（无口令，私钥 0600），认证后把公钥经 SSH exec 幂等追加到远端 `~/.ssh/authorized_keys`（只追加不覆盖，写前备份并修正 700/600 权限），再另起一条仅私钥认证的会话验证登录，最后写入本机 `~/.ssh/config`（按 Host 段匹配，冲突时用户选择覆盖 / 另加别名 / 跳过，写前备份、原子替换）。跳板机复用同一隧道；RDP 连接不适用 | `src-tauri/src/ssh/key_setup.rs`、`src/features/connections/` |
@@ -164,11 +164,11 @@ features:
 | 状态 | 功能 | FLAG | 说明 | 代码位置 |
 | --- | --- | --- | --- | --- |
 | [x] | 总开关 | `ai_assistant` | 关闭时不注册任何 AI command、不加载 AI UI | `src-tauri/src/modules/ai_assistant/mod.rs` |
-| [x] | Ask 模式 | — | 面板右侧停靠，输入即提问：回答问题、解释报错并给出建议与指导，命令以代码块列出、不自动执行。每个 shell 代码块带「运行」按钮，用户手动点击后才写入当前终端会话（危险命令仍二次确认）。输入框回车即发送、Shift + 回车换行；输入法组词中（中文候选面板打开）回车只上屏、不发送 | `src-tauri/src/modules/ai_assistant/commands.rs`、`src/features/ai/` |
+| [x] | Ask 模式 | — | 面板右侧停靠，输入即提问：回答问题、解释报错并给出建议与指导，命令以代码块列出、不自动执行。每个 shell 代码块带「运行」按钮，用户手动点击后在**独立后台通道**执行（不写入当前终端，危险命令仍二次确认），输出展示在新命令气泡里。输入框回车即发送、Shift + 回车换行；输入法组词中（中文候选面板打开）回车只上屏、不发送 | `src-tauri/src/modules/ai_assistant/commands.rs`、`src/features/ai/` |
 | [x] | 消息流 | — | 内容区是一条**按 SSH 会话隔离**的对话流：每个终端会话各有一份对话，切标签各自独立、切回仍能看到；提问发出后立即进流并清空输入框，模型的思考 / 流式回答 / Agent 每步命令与结论都作为消息依次落进消息框。对话只存内存、不落库，会话关闭即随会话丢弃；面板右上角按钮可二次确认后清空当前对话 | `src/features/ai/store.ts` |
-| [x] | 回答渲染 | — | 回答结束后按 Markdown 渲染一次（流式期间仍是纯文本，避免半截语法闪烁）：代码块（语言标签 + 复制按钮 + 注释 / 字符串 / 数字 / 关键字基础配色；shell 家族或无标注语言的代码块额外带「运行」按钮，手动发送到终端）、行内 code、加粗 / 斜体 / 删除线、有序与无序列表、标题、引用、分隔线、http(s) 链接（点击复制链接，应用未装 opener 插件、不唤起浏览器）。白名单子集，DOM 全部由 textContent 构建、不用 innerHTML，模型输出里的标签只会显示为纯文本 | `src/features/ai/markdown.tsx`、`src/styles/settings.css` |
+| [x] | 回答渲染 | — | 回答结束后按 Markdown 渲染一次（流式期间仍是纯文本，避免半截语法闪烁）：代码块（语言标签 + 复制按钮 + 注释 / 字符串 / 数字 / 关键字基础配色；shell 家族或无标注语言的代码块额外带「运行」按钮，后台通道执行）、行内 code、加粗 / 斜体 / 删除线、有序与无序列表、标题、引用、分隔线、http(s) 链接（点击复制链接，应用未装 opener 插件、不唤起浏览器）。白名单子集，DOM 全部由 textContent 构建、不用 innerHTML，模型输出里的标签只会显示为纯文本 | `src/features/ai/markdown.tsx`、`src/styles/settings.css` |
 | [x] | 流式响应 | `ai_streaming` | SSE 流式输出，逐字上屏，支持中途取消 | `src-tauri/src/modules/ai_assistant/client.rs` |
-| [x] | Agent 模式 | — | 读取终端输出决定下一步，自动执行命令直到完成：只读命令（ls / cat / df / grep / `systemctl status` / `docker ps` 等）直接写入终端无需确认；涉及删除、修改、改动系统状态的关键操作（rm / mv / chmod / 软件包与服务管理 / `git push` / 容器改动 / 数据库写入等）在消息流里单独成条、需用户授权后才执行；危险命令额外二次确认。授权判定在后端（`danger::classify`），循环在前端，后端不写终端。与 Ask 一样由面板切换，不设独立开关；执行过的命令写入「命令历史」（受 `auxiliary.command_history` 门控） | `src-tauri/src/modules/ai_assistant/agent.rs`、`danger.rs`、`src/features/ai/store.ts` |
+| [x] | Agent 模式 | — | 读取终端输出决定下一步，自动执行命令直到完成：只读命令（ls / cat / df / grep / `systemctl status` / `docker ps` 等）直接执行无需确认；涉及删除、修改、改动系统状态的关键操作（rm / mv / chmod / 软件包与服务管理 / `git push` / 容器改动 / 数据库写入等）在消息流里单独成条、需用户授权后才执行；危险命令额外二次确认。命令统一在会话的**独立 exec 通道**里执行（不申请 pty、不写入用户终端，用户交互 shell 不受影响；本地会话则起子进程），超时默认 60 秒并回传已获取的输出。授权判定在后端（`danger::classify`），循环在前端。与 Ask 一样由面板切换，不设独立开关；执行过的命令写入「命令历史」（受 `auxiliary.command_history` 门控）。单轮步数上限可在设置里调整（默认 30，范围 5~200），只是安全网：剩余 1~2 步时提示模型收尾；用完即暂停并显示「继续执行」按钮，沿用目标与已有步骤再给一轮；同一条命令连续出现 3 次、或连续 3 条命令失败时自动暂停，避免原地打转 | `src-tauri/src/modules/ai_assistant/agent.rs`、`danger.rs`、`src-tauri/src/ssh/session.rs`、`channel.rs`、`src/features/ai/store.ts` |
 | [x] | 多模型 | — | 设置里可添加任意多个自定义模型，每个模型独立配置协议、API 地址、API Key（各存加密保险库）与生成参数（温度 / 输入 token 上限 / 输出 token 上限 / 超时 / 上下文字节数，留空用默认值）；面板底部显式选择用哪个 | `src-tauri/src/modules/ai_assistant/client.rs` |
 | [x] | 多协议 | — | 每个模型单独选择协议，协议决定 `base_url` 之后拼接的路径后缀、鉴权头与请求 / 响应格式：OpenAI 兼容（`/chat/completions`，Bearer）、OpenAI Responses（`/responses`，Bearer）、Anthropic Messages（`/messages`，`x-api-key` + `anthropic-version`）。流式与非流式均按协议分别解析。设置界面在协议下方实时提示「实际请求地址」（即会加什么后缀） | `src-tauri/src/modules/ai_assistant/protocol.rs`、`client.rs` |
 | [x] | 上下文占比 | — | 输入控件行里（Agent 右侧）一个环形图标，显示「上下文使用率」＝当前窗口总 token ÷ 所选模型的输入 token 上限（本地估算，不发往服务端）；鼠标移上弹出「上下文使用率 / {百分比}% of {输入上限}」，占比升高由绿转黄转红；无会话 / 无模型时收起 | `src/features/ai/store.ts` |

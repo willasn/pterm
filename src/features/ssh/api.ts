@@ -420,6 +420,23 @@ export function recentOutput(id: string, maxBytes: number): Promise<string> {
   return ipc.sshRecentOutput(id, maxBytes);
 }
 
+/** 后台命令执行结果：输出为 stdout + stderr 合并文本。 */
+export interface ExecResult {
+  output: string;
+  exit_code: number | null;
+  timed_out: boolean;
+}
+
+/**
+ * 在会话的独立 exec 通道里执行命令：**不写入用户终端**。
+ *
+ * AI 助手的 Agent 自动执行与 Ask「运行」都走这里，避免与用户抢同一条交互终端。
+ * `timeoutMs` 省略时后端使用默认值（60 秒）。
+ */
+export function exec(id: string, command: string, timeoutMs?: number): Promise<ExecResult> {
+  return ipc.sshExec(id, command, timeoutMs);
+}
+
 export async function test(params: any): Promise<any> {
   return ipc.sshTestConnection(params);
 }

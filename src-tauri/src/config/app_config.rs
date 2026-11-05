@@ -177,6 +177,11 @@ pub struct AiConfig {
     pub timeout_secs: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_bytes: Option<usize>,
+    /// Agent 单轮最多执行多少条命令；留空用默认值（30）。
+    ///
+    /// 这只是安全兜底，正常的停止机制是模型返回 done 或用户手动停止。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_max_steps: Option<u32>,
 }
 
 impl Default for AiConfig {
@@ -189,6 +194,7 @@ impl Default for AiConfig {
             max_tokens: None,
             timeout_secs: None,
             context_bytes: None,
+            agent_max_steps: None,
         }
     }
 }

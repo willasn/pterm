@@ -31,6 +31,8 @@ export interface AiMessage {
   state: MessageState;
   /** 是否仍在流式返回（决定用 <pre> 还是 Markdown 渲染）。 */
   running: boolean;
+  /** 因步数上限停下的提示气泡：显示「继续执行」按钮 */
+  canContinue: boolean;
 }
 
 /** Agent 循环状态；每个会话独立。 */
@@ -43,6 +45,14 @@ export interface AgentState {
   finished: boolean;
   busy: boolean;
   pending: AiMessage | null;
+  /** 本轮已产生的命令数：步数上限按「本轮」算，新一轮或点继续时归零。 */
+  steps: number;
+  /** 上一条命令，用于识别模型原地打转。 */
+  lastCommand: string;
+  /** 同一条命令连续出现的次数（含本次）。 */
+  repeat: number;
+  /** 连续失败的命令数。 */
+  failStreak: number;
 }
 
 /** 每个终端会话一份面板状态（key = 终端会话 id）。 */

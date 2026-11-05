@@ -2,7 +2,8 @@ import { useSyncExternalStore } from "react";
 import { errorText, pt, toast } from "../../lib/legacy";
 import { inspect } from "../danger/rules";
 import { ipc } from "../ipc/api";
-import { recentOutput, write } from "../ssh/api";
+import { exec, recentOutput } from "../ssh/api";
+import type { ExecResult } from "../ssh/api";
 import { active, list as terminalList, refitAll } from "../terminal/api";
 import { ask, confirmDialog } from "../util/util";
 import type {
@@ -25,8 +26,9 @@ import type {
  * 内容区是**一条按 SSH 会话隔离的消息流**：每个终端会话各有一份对话，切标签各自
  * 独立、切回仍能看到，会话关闭即清空，不落库。面板只负责「组织提问 → 派发命令 →
  * 订阅事件 → 展示」；提示词组装在 Rust 侧完成。Ask 模式给出建议与命令，命令由用户
- * 手动点击「运行」才写入终端；Agent 模式自动执行只读命令，涉及删除、修改等关键操作
- * 时停下等用户授权，危险命令额外二次确认，循环在前端跑。
+ * 手动点击「运行」后**在独立后台通道执行**；Agent 模式自动执行只读命令，涉及删除、
+ * 修改等关键操作时停下等用户授权，危险命令额外二次确认，循环在前端跑。无论哪种模式，
+ * 命令都不会写进用户当前终端，也不会占用用户的交互 shell。
  *
  * 迁移说明：消息仍是可变对象（流式期间原地追加文本），React 侧用版本号驱动重绘；
  * 消息按 id 作 key，React 会就地更新文本节点，不会整条重建。
@@ -36,8 +38,18 @@ import type {
 // 常量
 // ---------------------------------------------------------------------------
 
-/** Agent 单轮循环上限，防止模型反复试探停不下来 */
-const MAX_AGENT_STEPS = 10;
+/**
+ * Agent 单轮步数上限的兜底值（设置里可改）。步数上限只是安全网，
+ * 正常停止靠模型返回 done 或用户手动停止；快用完时会提示模型收尾。
+ */
+const DEFAULT_MAX_AGENT_STEPS = 30;
+/** 设置项的合法区间：太小会让正常任务跑不完，太大则失去兜底意义。 */
+const MIN_AGENT_STEPS = 5;
+const MAX_AGENT_STEPS_CAP = 200;
+/** 同一条命令连续出现几次就判定为原地打转。 */
+const REPEAT_LIMIT = 3;
+/** 连续几条命令失败就停下，交回用户判断环境问题。 */
+const FAIL_STREAK_LIMIT = 3;
 /** 模型未配置「最大输入 token」时的兜底上限（对应设置里的输入占位值 128000） */
 const DEFAULT_MAX_INPUT_TOKENS = 128000;
 /** 没有活动会话时（尚未连接 / 全部关闭）的兜底 key，仅用于显示空状态 */
@@ -46,10 +58,6 @@ const NO_SESSION_KEY = "__no_session__";
 const PANEL_MIN_WIDTH = 320;
 const PANEL_MAX_RATIO = 0.7;
 const PANEL_WIDTH_KEY = "pterm.aiPanelWidth";
-/** 判断终端输出是否安静的轮询间隔：命令输出通常是一段突发，之后趋于平静。 */
-const AGENT_QUIET_MS = 1200;
-/** 输出一直不安静时的最长等待，避免卡死在长跑命令上 */
-const AGENT_MAX_WAIT_MS = 20000;
 /** 已派发但请求 id 还没拿回来时的占位值，让「正在回答」立即可见。 */
 const PENDING_ASK = "__pending__";
 
@@ -295,6 +303,7 @@ function pushUserMessage(view: SessionView, text: string, kind: MessageKind): Ai
     output: "",
     state: "",
     running: false,
+    canContinue: false,
   };
   view.messages.push(msg);
   return msg;
@@ -321,6 +330,7 @@ function pushAssistantMessage(view: SessionView, patch: Partial<AiMessage>): AiM
       output: "",
       state: "",
       running: false,
+      canContinue: false,
     },
     patch
   );
@@ -580,26 +590,15 @@ function agentLive(view: SessionView): boolean {
   return !!(view && view.agent && view.agent.running) && panelOpen;
 }
 
-/** 等终端输出安静下来：连续两轮长度不变即认为命令已执行完。 */
-function waitForQuiet(view: SessionView): Promise<void> {
-  const sessionId = view.agent ? view.agent.sessionId : null;
-  return new Promise((resolve) => {
-    let last = -1;
-    let stable = 0;
-    const started = Date.now();
-    const tick = async () => {
-      if (!agentLive(view)) return resolve();
-      const text = await readTerminal(sessionId);
-      if (text.length === last) stable += 1;
-      else {
-        stable = 0;
-        last = text.length;
-      }
-      if (stable >= 2 || Date.now() - started > AGENT_MAX_WAIT_MS) return resolve();
-      setTimeout(tick, AGENT_QUIET_MS);
-    };
-    setTimeout(tick, AGENT_QUIET_MS);
-  });
+/** 后台命令结果转成气泡里的 output：附退出码 / 超时说明。 */
+function formatExecOutput(result: ExecResult): string {
+  const text = (result.output || "").trim();
+  const meta = result.timed_out
+    ? "命令超时，已中止（输出可能不完整）。"
+    : typeof result.exit_code === "number" && result.exit_code !== 0
+      ? "退出码：" + result.exit_code
+      : "";
+  return [text, meta].filter(Boolean).join("\n\n") || "（无输出）";
 }
 
 /**
@@ -612,6 +611,33 @@ function agentStepsOf(view: SessionView): { command: string; output: string }[] 
     .map((m) => ({ command: m.command, output: m.output }));
 }
 
+/** 本轮的步数上限：取自设置，缺失或非法时用兜底值，并夹到合法区间。 */
+function maxAgentSteps(): number {
+  const raw = Number(aiConfig && aiConfig.agent_max_steps);
+  if (!Number.isFinite(raw) || raw <= 0) return DEFAULT_MAX_AGENT_STEPS;
+  return Math.min(MAX_AGENT_STEPS_CAP, Math.max(MIN_AGENT_STEPS, Math.round(raw)));
+}
+
+/**
+ * 步数或停滞判定命中后停下，并把原因写回当前气泡。
+ *
+ * `canContinue` 为 true 时气泡上会显示「继续执行」：适用于只是步数用尽的场景，
+ * 目标与已有步骤都还在，接着跑即可；原地打转 / 连续失败则不给，避免继续撞墙。
+ */
+function agentGuardStop(view: SessionView, msg: AiMessage, note: string, canContinue: boolean): void {
+  const ag = view.agent;
+  if (ag) {
+    ag.running = false;
+    ag.pending = null;
+  }
+  msg.running = false;
+  msg.state = "stopped";
+  msg.noteKind = "warn";
+  msg.note = note;
+  msg.canContinue = canContinue;
+  bump();
+}
+
 function agentStop(view: SessionView | undefined | null): void {
   if (view && view.agent) {
     view.agent.running = false;
@@ -619,7 +645,7 @@ function agentStop(view: SessionView | undefined | null): void {
   }
 }
 
-/** 停掉所有会话在跑的循环。关闭面板或模块时必须调，否则会继续请求模型并写终端。 */
+/** 停掉所有会话在跑的循环。关闭面板或模块时必须调，否则会在后台继续请求模型。 */
 function agentStopAll(): void {
   sessionViews.forEach((view) => agentStop(view));
 }
@@ -661,6 +687,8 @@ async function agentStep(key: string): Promise<void> {
       goal: ag.goal,
       steps: agentStepsOf(view),
       terminal_tail: await readTerminal(ag.sessionId),
+      // 快用完时让模型收尾，而不是在半路被硬性截断
+      remaining_steps: Math.max(0, maxAgentSteps() - ag.steps),
       model: selectedModel(),
     });
   } catch (err) {
@@ -701,6 +729,27 @@ async function agentStep(key: string): Promise<void> {
   msg.running = false;
   msg.command = result.command || "";
 
+  // 本轮步数按「模型产出的命令」计：跳过 / 待确认的命令同样占一步，避免靠反复跳过无限循环
+  const command = msg.command.trim();
+  ag.steps += 1;
+  if (command && command === ag.lastCommand) {
+    ag.repeat += 1;
+  } else {
+    ag.lastCommand = command;
+    ag.repeat = 1;
+  }
+
+  // 步数上限只是安全网：命中后不执行这条命令，但保留它让用户看到模型本来想做什么
+  const limit = maxAgentSteps();
+  if (ag.steps > limit) {
+    agentGuardStop(view, msg, "已达到本轮 " + limit + " 步上限，这条命令未执行。可以点「继续执行」再给一轮步数。", true);
+    return;
+  }
+  if (ag.repeat >= REPEAT_LIMIT) {
+    agentGuardStop(view, msg, "同一条命令已连续出现 " + ag.repeat + " 次，已暂停以免原地打转。", false);
+    return;
+  }
+
   // 需要授权的命令（删除 / 修改 / 关键操作）才停下等用户确认；其余只读命令直接自动执行
   if (!result.requires_auth) {
     msg.danger = "";
@@ -720,10 +769,11 @@ async function agentStep(key: string): Promise<void> {
 }
 
 /**
- * 执行一步命令：写入终端 → 等输出 → 读回 → 推进循环。
+ * 执行一步命令：在独立后台通道执行 → 读回输出 → 推进循环。
  *
+ * 命令**不写入用户终端**：后端在同一 SSH 连接上另开 exec 通道（无 pty）执行，
+ * 用户当前 shell 的输入、输出与状态完全不受影响。
  * 自动执行（只读命令）与用户授权后执行共用此函数；`auto` 仅影响提示文案。
- * 这是唯一真正写入终端的地方。
  */
 async function agentExecute(key: string, msg: AiMessage, auto: boolean): Promise<void> {
   const view = sessionState(key);
@@ -734,27 +784,29 @@ async function agentExecute(key: string, msg: AiMessage, auto: boolean): Promise
   msg.note = auto ? "自动执行中…" : "已执行，等待输出…";
   bump();
 
+  let result: ExecResult;
   try {
-    // 直接写入会话（含回车），不经过 terminal 的按键通道：授权判定已在上面完成
-    await write(ag.sessionId, msg.command + "\n");
+    result = await exec(ag.sessionId, msg.command);
   } catch (err) {
     ag.running = false;
     msg.noteKind = "error";
-    msg.note = "写入终端失败：" + errorText(err);
+    msg.note = "后台执行失败：" + errorText(err);
     bump();
     toast(errorText(err), "error");
     return;
   }
 
-  // 写入成功即记入命令历史：即使随后清空对话或关闭会话，命令仍能在「命令历史」里查到。
+  // 命令已发出即记入命令历史：即使随后清空对话或关闭会话，命令仍能在「命令历史」里查到。
   ipc.pushHistory(msg.command, ag.host || "", ag.sessionId).catch(() => {});
 
-  await waitForQuiet(view);
-
-  // 输出读回来之前用户可能已经关掉面板：标记停止，但输出仍尽量读一次
-  msg.output = await readTerminal(ag.sessionId);
+  msg.output = formatExecOutput(result);
   msg.note = "";
 
+  // 连续失败说明环境或思路有问题：继续试下去只会越试越偏，先停下交回用户
+  const failed = result.timed_out || (typeof result.exit_code === "number" && result.exit_code !== 0);
+  ag.failStreak = failed ? ag.failStreak + 1 : 0;
+
+  // 执行期间用户可能已经关掉面板：标记停止，但输出保留
   if (!agentLive(view)) {
     ag.running = false;
     msg.noteKind = "warn";
@@ -764,13 +816,10 @@ async function agentExecute(key: string, msg: AiMessage, auto: boolean): Promise
   }
 
   bump();
-  if (agentStepsOf(view).length >= MAX_AGENT_STEPS) {
+  if (ag.failStreak >= FAIL_STREAK_LIMIT) {
     ag.running = false;
-    pushAssistantMessage(view, {
-      kind: "agent",
-      note: "已达到 " + MAX_AGENT_STEPS + " 步上限，自动停止。",
-      noteKind: "warn",
-    });
+    msg.noteKind = "warn";
+    msg.note = "连续 " + ag.failStreak + " 条命令失败，已暂停；请检查环境或在输入框补充信息后再继续。";
     bump();
     return;
   }
@@ -831,6 +880,10 @@ export function agentRun(inputText: string): boolean {
     return false;
   }
 
+  // 新一轮重新计数，并把上一轮留下的「继续执行」按钮收掉，避免指向旧目标
+  view.messages.forEach((msg) => {
+    msg.canContinue = false;
+  });
   pushUserMessage(view, goal, "agent");
   const agent: AgentState = {
     goal,
@@ -841,11 +894,44 @@ export function agentRun(inputText: string): boolean {
     finished: false,
     busy: false,
     pending: null,
+    steps: 0,
+    lastCommand: "",
+    repeat: 0,
+    failStreak: 0,
   };
   view.agent = agent;
   bump();
   void agentStep(key);
   return true;
+}
+
+/**
+ * 步数上限暂停后点「继续执行」：沿用目标与已有步骤，本轮步数重新计。
+ *
+ * 与重新开一轮的区别是模型仍能看到之前的步骤，不会从头再来；重复 / 失败计数也一并清零，
+ * 否则刚继续就会被上一次的停滞状态再次拦下。
+ */
+export function agentContinue(): void {
+  const key = currentKey();
+  const view = sessionState(key);
+  const ag = view.agent;
+  if (!ag || ag.running || ag.busy || !sessionIdOf()) return;
+  view.messages.forEach((msg) => {
+    msg.canContinue = false;
+  });
+  ag.running = true;
+  ag.finished = false;
+  ag.pending = null;
+  ag.steps = 0;
+  ag.lastCommand = "";
+  ag.repeat = 0;
+  ag.failStreak = 0;
+  pushAssistantMessage(view, {
+    kind: "agent",
+    note: "继续执行（本轮再给 " + maxAgentSteps() + " 步）。",
+  });
+  bump();
+  void agentStep(key);
 }
 
 /**
@@ -927,9 +1013,10 @@ export function skipCurrent(): void {
 }
 
 /**
- * Ask 模式回答里命令块上的「运行」：由用户手动点击，把建议命令写入当前会话终端。
+ * Ask 模式回答里命令块上的「运行」：由用户手动点击，在**独立后台通道**执行。
  *
  * 点击本身就是授权，普通命令不再额外拦截；命中危险规则时仍要二次确认（全局约束）。
+ * 输出展示在新建的命令气泡里，不会写进用户当前终端。
  */
 export async function runSuggested(command: string): Promise<void> {
   const cmd = (command || "").trim();
@@ -944,14 +1031,28 @@ export async function runSuggested(command: string): Promise<void> {
     const ok = await confirmDialog({ command: cmd, reason: "该命令命中危险规则：" + danger });
     if (!ok) return;
   }
+
+  const host = hostOf() || "";
+  const view = sessionState(sessionId);
+  const msg = pushAssistantMessage(view, {
+    kind: "ask",
+    command: cmd,
+    state: "done",
+    note: "正在后台执行…",
+  });
+  bump();
+
   try {
-    await write(sessionId, cmd + "\n");
+    const result = await exec(sessionId, cmd);
+    msg.output = formatExecOutput(result);
+    msg.note = result.timed_out ? "执行超时，已中止。" : "";
+    ipc.pushHistory(cmd, host, sessionId).catch(() => {});
   } catch (err) {
+    msg.noteKind = "error";
+    msg.note = "后台执行失败：" + errorText(err);
     toast(errorText(err), "error");
-    return;
   }
-  ipc.pushHistory(cmd, hostOf() || "", sessionId).catch(() => {});
-  toast("已发送到终端", "ok");
+  bump();
 }
 
 // ---------------------------------------------------------------------------
@@ -1027,7 +1128,7 @@ export function view(): AiView {
         : {
             icon: "✦",
             title: "Ask 模式",
-            desc: "我可以回答问题、解释报错，并把自然语言转成命令给出建议。回答不会自动执行——命令会以代码块列出，你可点击「运行」手动发送到终端；想全自动请切到 Agent 模式。",
+            desc: "我可以回答问题、解释报错，并把自然语言转成命令给出建议。回答不会自动执行——命令会以代码块列出，你可点击「运行」在后台通道执行；想全自动请切到 Agent 模式。",
           };
   }
 

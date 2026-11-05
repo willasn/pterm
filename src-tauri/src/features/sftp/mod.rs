@@ -27,6 +27,7 @@ use crate::ssh::session::open_transport;
 use crate::ssh::types::ConnectParams;
 
 pub mod commands;
+pub mod drag;
 
 /// 上传/下载的读写块大小。
 const COPY_BUF: usize = 32 * 1024;

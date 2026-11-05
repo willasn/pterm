@@ -40,6 +40,8 @@ pub fn system_prompt() -> String {
         "规则：",
         "- 一次只给一条命令。需要多条时逐步来，你会拿到上一条的执行结果再决定下一步。",
         "- 命令必须是非交互的：不要用需要人工输入、编辑器或分页器的命令。",
+        "- 每条命令都在独立的后台非交互通道里执行，不会进入用户当前终端：不要依赖上一条命令的 \
+cd、环境变量或 shell 状态；需要固定目录时写成 `cd /path && cmd`，或直接使用绝对路径。",
         "- 目标已经达成、或无法继续时，立刻返回 done 并在 summary 里说明。",
         "- 不要重复执行已经成功执行过的命令。",
     ]
@@ -47,7 +49,15 @@ pub fn system_prompt() -> String {
 }
 
 /// 组装本轮 user 消息：目标 + 已执行步骤 + 当前终端输出。
-pub fn user_prompt(goal: &str, steps: &[AgentStep], terminal_tail: &str) -> String {
+///
+/// `remaining_steps` 是本轮还能执行多少条命令：快用完时提前告知模型收尾，
+/// 避免它开启新方向、然后在半路被硬性截断。
+pub fn user_prompt(
+    goal: &str,
+    steps: &[AgentStep],
+    terminal_tail: &str,
+    remaining_steps: Option<u32>,
+) -> String {
     let mut parts = vec![format!("目标：{}", goal.trim())];
 
     if steps.is_empty() {
@@ -63,12 +73,26 @@ pub fn user_prompt(goal: &str, steps: &[AgentStep], terminal_tail: &str) -> Stri
 
     let tail_text = terminal_tail.trim();
     parts.push(if tail_text.is_empty() {
-        "当前终端最近输出：暂无".into()
+        "用户当前终端最近输出（仅供参考，不是本任务命令的输出）：暂无".into()
     } else {
-        format!("当前终端最近输出：\n{}", tail(&terminal_tail, 4000))
+        format!(
+            "用户当前终端最近输出（仅供参考，不是本任务命令的输出）：\n{}",
+            tail(&terminal_tail, 4000)
+        )
     });
 
     parts.push("请给出下一步。".into());
+
+    // 只剩一两步时提示模型收尾：宁可给出阶段性结论，也不要在半路被截断
+    if let Some(remaining) = remaining_steps {
+        if remaining <= 2 {
+            parts.push(format!(
+                "注意：本轮最多还能执行 {remaining} 条命令。请优先收尾：用 done 给出已完成的\
+内容与阶段性结论；如果任务尚未完成，在 summary 里说明剩余步骤，不要开启新方向。"
+            ));
+        }
+    }
+
     parts.join("\n\n")
 }
 
@@ -108,6 +132,13 @@ pub fn parse_action(raw: &str) -> AppResult<AgentAction> {
         }
     }
 
+    // 有些模型（如 DeepSeek 系）不按提示词回 JSON，而是吐出接口层的「工具调用」标记，
+    // 形如 `<｜｜DSML｜｜invoke name="run"><｜｜DSML｜｜parameter name="command">…`。
+    // 这类标记与提示词约定的动作语义一致，直接映射成 run / done。
+    if let Some(action) = tool_markup_action(text) {
+        return Ok(action);
+    }
+
     if let Some(action) = tolerant_action(text) {
         return Ok(action);
     }
@@ -122,6 +153,108 @@ pub fn parse_action(raw: &str) -> AppResult<AgentAction> {
             tail(raw, 500)
         )),
     })
+}
+
+/// 从「工具调用」标记里提取动作（兼容 DSML / 普通 XML 两种写法）。
+///
+/// 典型形态：
+/// ```text
+/// <｜｜DSML｜｜tool_calls>
+/// <｜｜DSML｜｜invoke name="run">
+/// <｜｜DSML｜｜parameter name="command" string="true">df -h</｜｜DSML｜｜parameter>
+/// </｜｜DSML｜｜invoke>
+/// </｜｜DSML｜｜tool_calls>
+/// ```
+/// 前缀（全角竖线、空格位置）随模型 / 网关而异，因此不按整段标签匹配，
+/// 只以 `invoke`、`parameter`、`name="…"` 这些固定片段为锚点。
+fn tool_markup_action(text: &str) -> Option<AgentAction> {
+    let lower = text.to_ascii_lowercase();
+    // 一次回复可能给出多个 invoke（例如先 think 再 run），取第一个能识别的动作
+    let mut from = 0;
+    while let Some(rel) = lower[from..].find("invoke") {
+        let pos = from + rel;
+        from = pos + "invoke".len();
+        let Some((name, _)) = quoted_value(&text[pos..], &lower[pos..], "name") else {
+            continue;
+        };
+        match name.trim().to_ascii_lowercase().as_str() {
+            ACTION_RUN => {
+                let Some(raw) = tag_parameter(text, &lower, "command") else {
+                    continue;
+                };
+                let command = raw.trim().to_string();
+                if command.is_empty() {
+                    continue;
+                }
+                return Some(AgentAction {
+                    action: ACTION_RUN.into(),
+                    command: Some(command),
+                    summary: None,
+                });
+            }
+            ACTION_DONE => {
+                let summary = tag_parameter(text, &lower, "summary")
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| "任务结束".to_string());
+                return Some(AgentAction {
+                    action: ACTION_DONE.into(),
+                    command: None,
+                    summary: Some(summary),
+                });
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// 逐个 `<…parameter …>` 找名为 `name` 的参数，取出它的标签体。
+fn tag_parameter(text: &str, lower: &str, name: &str) -> Option<String> {
+    let mut from = 0;
+    while let Some(rel) = lower[from..].find("parameter") {
+        let pos = from + rel;
+        let rest = &text[pos..];
+        let rest_lower = &lower[pos..];
+        if let Some((value, after)) = quoted_value(rest, rest_lower, "name") {
+            if value.trim().eq_ignore_ascii_case(name) {
+                let open = after + rest[after..].find('>')? + 1;
+                let body = &rest[open..];
+                let end = closing_tag_start(body).unwrap_or(body.len());
+                return Some(body[..end].to_string());
+            }
+        }
+        from = pos + "parameter".len();
+    }
+    None
+}
+
+/// 在片段里找 `attr="…"`，返回值与右引号之后的下标。
+fn quoted_value(haystack: &str, lower: &str, attr: &str) -> Option<(String, usize)> {
+    let pattern = format!("{attr}=\"");
+    let pos = lower.find(&pattern)?;
+    let start = pos + pattern.len();
+    let end = start + haystack[start..].find('"')?;
+    Some((haystack[start..end].to_string(), end + 1))
+}
+
+/// 找到参数正文的结束位置：第一个闭合 `parameter` / `invoke` / `calls` 标签的起点。
+///
+/// 命令正文里也可能出现 `</dev/null`、`</root>` 之类的内容，因此逐个 `</`
+/// 检查标签名，只是它们才当结束标记。
+fn closing_tag_start(body: &str) -> Option<usize> {
+    let lower = body.to_ascii_lowercase();
+    let mut from = 0;
+    while let Some(rel) = lower[from..].find("</") {
+        let pos = from + rel;
+        let gt = lower[pos..].find('>')?;
+        let tag = &lower[pos + 2..pos + gt];
+        if tag.contains("parameter") || tag.contains("invoke") || tag.contains("calls") {
+            return Some(pos);
+        }
+        from = pos + 2;
+    }
+    None
 }
 
 /// 宽松提取动作：不要求字符串是合法 JSON，按提示词约定的形状逐字段取值。
@@ -404,6 +537,70 @@ mod tests {
         assert!(parse_action("我先解释一下这个问题").is_err());
     }
 
+    /// 有些模型不改 JSON，只吐接口层的工具调用标记（DSML 前缀 + 全角竖线）。
+    #[test]
+    fn parses_dsml_tool_call() {
+        let raw = concat!(
+            "<｜｜DSML｜｜tool_calls>\n",
+            "<｜｜DSML｜｜invoke name=\"run\">\n",
+            "<｜｜DSML｜｜parameter name=\"command\" string=\"true\">",
+            "echo \"cpu.max: $(cat /sys/fs/cgroup/cpu.max 2>/dev/null)\"; nproc",
+            "</｜｜DSML｜｜ parameter>\n",
+            "</｜｜DSML｜｜ invoke>\n",
+            "</｜｜DSML｜｜ calls>"
+        );
+        let action = parse_action(raw).expect("工具调用标记应能解析");
+        assert_eq!(action.action, ACTION_RUN);
+        assert_eq!(
+            action.command.as_deref(),
+            Some(r#"echo "cpu.max: $(cat /sys/fs/cgroup/cpu.max 2>/dev/null)"; nproc"#)
+        );
+    }
+
+    /// 一次回复里有多个 invoke 时，跳过不认识的动作（如 think）继续找。
+    #[test]
+    fn skips_unknown_dsml_invoke() {
+        let raw = concat!(
+            "<｜｜DSML｜｜invoke name=\"think\"><｜｜DSML｜｜parameter name=\"content\">",
+            "先看看负载</｜｜DSML｜｜parameter></｜｜DSML｜｜invoke>",
+            "<｜｜DSML｜｜invoke name=\"run\"><｜｜DSML｜｜parameter name=\"command\">uptime",
+            "</｜｜DSML｜｜parameter></｜｜DSML｜｜invoke>"
+        );
+        let action = parse_action(raw).expect("应跳过 think 取 run");
+        assert_eq!(action.command.as_deref(), Some("uptime"));
+    }
+
+    #[test]
+    fn parses_dsml_done_with_multiline_summary() {
+        let raw = concat!(
+            "<｜｜DSML｜｜invoke name=\"done\">",
+            "<｜｜DSML｜｜parameter name=\"summary\" string=\"true\">CPU 为共享：\n",
+            "- 4 核 1 线程\n- steal 为 0</｜｜DSML｜｜parameter>",
+            "</｜｜DSML｜｜invoke>"
+        );
+        let action = parse_action(raw).expect("工具调用标记应能解析");
+        assert_eq!(action.action, ACTION_DONE);
+        assert_eq!(
+            action.summary.as_deref(),
+            Some("CPU 为共享：\n- 4 核 1 线程\n- steal 为 0")
+        );
+    }
+
+    /// 命令里的 `</dev/null` 不能被当成结束标签。
+    #[test]
+    fn dsml_command_keeps_redirection() {
+        let raw = concat!(
+            "<invoke name=\"run\"><parameter name=\"command\">",
+            "grep cpu /proc/cpuinfo </dev/null >/tmp/out",
+            "</parameter></invoke>"
+        );
+        let action = parse_action(raw).expect("普通 XML 写法也应兼容");
+        assert_eq!(
+            action.command.as_deref(),
+            Some("grep cpu /proc/cpuinfo </dev/null >/tmp/out")
+        );
+    }
+
     /// 尾部截断要保留结尾，因为终端输出的结论通常在最后。
     #[test]
     fn tail_keeps_the_end() {
@@ -414,8 +611,17 @@ mod tests {
 
     #[test]
     fn user_prompt_marks_empty_steps() {
-        let prompt = user_prompt("查看磁盘", &[], "");
+        let prompt = user_prompt("查看磁盘", &[], "", None);
         assert!(prompt.contains("已执行的步骤：暂无"));
-        assert!(prompt.contains("当前终端最近输出：暂无"));
+        assert!(prompt.contains("用户当前终端最近输出（仅供参考，不是本任务命令的输出）：暂无"));
+    }
+
+    /// 只剩一两步时才提示收尾，避免每轮都出现一条干扰信息。
+    #[test]
+    fn user_prompt_hints_wrap_up_near_the_limit() {
+        let near = user_prompt("查看磁盘", &[], "", Some(2));
+        assert!(near.contains("最多还能执行 2 条命令"));
+        let far = user_prompt("查看磁盘", &[], "", Some(10));
+        assert!(!far.contains("最多还能执行"));
     }
 }

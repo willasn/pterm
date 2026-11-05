@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
 use parking_lot::Mutex;
-use ssh2::Session;
+use ssh2::{Channel, Session};
 use tauri::{AppHandle, Emitter};
 
 use crate::error::{AppError, AppResult};
@@ -16,7 +16,7 @@ use crate::error::{AppError, AppResult};
 use super::latency;
 use super::monitor;
 use super::session::OutputSink;
-use super::types::{SessionCommand, SessionState, ShellEnd};
+use super::types::{ExecReply, ExecResult, SessionCommand, SessionState, ShellEnd};
 
 /// 空闲轮询间隔（毫秒）。libssh2 是非阻塞 + 轮询模型，没有事件通知，
 /// 空闲时靠短睡眠让出 CPU；有数据时则紧密循环直到 `WouldBlock`。
@@ -29,6 +29,10 @@ const RECENT_LIMIT: usize = 32 * 1024;
 const EAGAIN: i32 = -37;
 /// 连续探测失败多少次后停止（远端可能禁用了 exec，避免每轮都刷失败日志）
 const PROBE_MAX_FAILURES: u32 = 3;
+/// 后台命令输出保留上限（超出部分继续读取但不再累积，避免内存无限增长）
+const EXEC_OUTPUT_LIMIT: usize = 256 * 1024;
+/// 后台命令单次读取缓冲
+const EXEC_BUF: usize = 16 * 1024;
 
 // ---------------------------------------------------------------------------
 // 事件发射
@@ -89,6 +93,136 @@ pub fn emit_latency(app: &AppHandle, id: &str, ms: Option<u32>) {
 }
 
 // ---------------------------------------------------------------------------
+// 后台命令（独立 exec 通道）
+// ---------------------------------------------------------------------------
+
+/// 一次后台命令执行。
+///
+/// 在会话上另开一条 exec 通道，**不申请 pty、不写入用户终端**，因此用户当前
+/// 交互的 shell 完全不受影响。通道在非阻塞会话上可能返回 EAGAIN，所以每次
+/// 轮询只推进一步，由 shell 泵循环反复调用 [`ExecJob::poll`] 直到拿到结果。
+struct ExecJob {
+    command: String,
+    reply: Option<ExecReply>,
+    channel: Option<Channel>,
+    /// `exec` 请求是否已经成功发出（通道建立与 exec 可能分处两轮）
+    exec_sent: bool,
+    started: Instant,
+    timeout: Duration,
+    output: Vec<u8>,
+}
+
+impl ExecJob {
+    fn new(command: String, timeout_ms: u64, reply: ExecReply) -> Self {
+        Self {
+            command,
+            reply: Some(reply),
+            channel: None,
+            exec_sent: false,
+            started: Instant::now(),
+            timeout: Duration::from_millis(timeout_ms.clamp(1_000, 600_000)),
+            output: Vec::new(),
+        }
+    }
+
+    /// 推进一次。返回 `Some` 表示任务已结束（含出错 / 超时）。
+    fn poll(&mut self, sess: &Session) -> Option<Result<ExecResult, String>> {
+        if self.channel.is_none() {
+            match sess.channel_session() {
+                Ok(mut channel) => {
+                    // 合并 stderr：AI 只看一段连续输出即可，不需要区分流
+                    let _ = channel.handle_extended_data(ssh2::ExtendedData::Merge);
+                    self.channel = Some(channel);
+                }
+                Err(e) if e.code() == ssh2::ErrorCode::Session(EAGAIN) => return None,
+                Err(e) => return Some(Err(format!("打开后台执行通道失败：{e}"))),
+            }
+        }
+
+        let mut failure: Option<String> = None;
+        let mut done = false;
+        let mut timed_out = false;
+        let mut exit_code = None;
+
+        {
+            let channel = self.channel.as_mut()?;
+
+            if !self.exec_sent {
+                match channel.exec(&self.command) {
+                    Ok(()) => self.exec_sent = true,
+                    Err(e) if e.code() == ssh2::ErrorCode::Session(EAGAIN) => return None,
+                    Err(e) => failure = Some(format!("提交后台命令失败：{e}")),
+                }
+            }
+
+            if failure.is_none() {
+                let mut buf = [0u8; EXEC_BUF];
+                loop {
+                    match channel.read(&mut buf) {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            let room = EXEC_OUTPUT_LIMIT.saturating_sub(self.output.len());
+                            if room > 0 {
+                                self.output.extend_from_slice(&buf[..n.min(room)]);
+                            }
+                        }
+                        Err(e) if e.kind() == ErrorKind::WouldBlock => break,
+                        Err(e) => {
+                            failure = Some(format!("读取后台命令输出失败：{e}"));
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if failure.is_none() {
+                let eof = channel.eof();
+                timed_out = !eof && self.started.elapsed() >= self.timeout;
+                done = eof || timed_out;
+                if done && eof {
+                    exit_code = channel.exit_status().ok();
+                }
+            }
+        }
+
+        if let Some(msg) = failure {
+            self.close_channel();
+            return Some(Err(msg));
+        }
+        if !done {
+            return None;
+        }
+
+        self.close_channel();
+        Some(Ok(ExecResult {
+            output: String::from_utf8_lossy(&self.output).into_owned(),
+            exit_code,
+            timed_out,
+        }))
+    }
+
+    fn close_channel(&mut self) {
+        if let Some(mut channel) = self.channel.take() {
+            let _ = channel.send_eof();
+            let _ = channel.close();
+        }
+    }
+}
+
+/// 接收一条新的后台命令；同一会话同一时刻只允许一条，避免输出互相干扰。
+fn accept_exec(job: &mut Option<ExecJob>, command: String, timeout_ms: u64, reply: ExecReply) {
+    if job.is_some() {
+        let _ = reply.send(Err("已有后台命令正在执行，请稍后重试".into()));
+        return;
+    }
+    if command.trim().is_empty() {
+        let _ = reply.send(Err("命令为空".into()));
+        return;
+    }
+    *job = Some(ExecJob::new(command, timeout_ms, reply));
+}
+
+// ---------------------------------------------------------------------------
 // shell 泵
 // ---------------------------------------------------------------------------
 
@@ -142,6 +276,8 @@ pub fn run_shell(
     let mut probe_failures = 0u32;
     // 资源监控状态：开关关闭时不采样，首个样本在打开后立刻采集
     let mut monitor_state = monitor::Monitor::new();
+    // 后台命令：同一时刻只跑一条，独立 exec 通道，输出不进入用户终端
+    let mut exec_job: Option<ExecJob> = None;
 
     let end = loop {
         if cancel.load(Ordering::Relaxed) {
@@ -157,6 +293,11 @@ pub fn run_shell(
             match cmd {
                 SessionCommand::Write(data) => pending_input.extend_from_slice(&data),
                 SessionCommand::Resize { cols, rows } => pending_resize = Some((cols, rows)),
+                SessionCommand::Exec {
+                    command,
+                    timeout_ms,
+                    reply,
+                } => accept_exec(&mut exec_job, command, timeout_ms, reply),
                 SessionCommand::Close => {
                     want_close = true;
                     break;
@@ -229,7 +370,25 @@ pub fn run_shell(
             }
         }
 
-        // 5. 远端关闭
+        // 5. 推进后台命令（独立通道，与上面的交互 shell 互不影响）
+        let exec_finished = match exec_job.as_mut() {
+            Some(job) => match job.poll(sess) {
+                Some(result) => {
+                    if let Some(reply) = job.reply.take() {
+                        // 前端可能已经超时放弃等待，发送失败不算错误
+                        let _ = reply.send(result);
+                    }
+                    true
+                }
+                None => false,
+            },
+            None => false,
+        };
+        if exec_finished {
+            exec_job = None;
+        }
+
+        // 6. 远端关闭
         if channel.eof() {
             // exit-status 正常到达说明 shell 是主动退出；拿不到则多半是链路中断
             break match channel.exit_status() {
@@ -286,6 +445,11 @@ pub fn run_shell(
                 match rx.recv_timeout(IDLE_SLEEP) {
                     Ok(SessionCommand::Write(data)) => pending_input.extend_from_slice(&data),
                     Ok(SessionCommand::Resize { cols, rows }) => pending_resize = Some((cols, rows)),
+                    Ok(SessionCommand::Exec {
+                        command,
+                        timeout_ms,
+                        reply,
+                    }) => accept_exec(&mut exec_job, command, timeout_ms, reply),
                     Ok(SessionCommand::Close) => {
                         break ShellEnd {
                             clean: true,

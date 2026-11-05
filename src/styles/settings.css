@@ -1395,6 +1395,15 @@ body[data-theme="light"] .foot-badges--tiles .git-status:active {
   gap: var(--sp-8);
   align-items: center;
   padding: var(--sp-4) var(--sp-8);
+  /* 拖拽下载依赖指针手势，避免拖动时选中文字 */
+  user-select: none;
+}
+
+/* 拖拽下载期间：禁止选中文本，避免出现内容被选中的观感 */
+body.sftp-dragging,
+body.sftp-dragging * {
+  user-select: none;
+  cursor: grabbing !important;
 }
 
 .sftp-head {
@@ -1487,6 +1496,32 @@ body[data-theme="light"] .foot-badges--tiles .git-status:active {
 
 .sftp-dropzone.active {
   opacity: 1;
+}
+
+/* 拖拽下载投放区：拖动条目时从面板底部浮现 */
+.sftp-dropzone.download {
+  inset: auto 0 72px 0;
+  height: 160px;
+  background: transparent;
+  opacity: 1;
+}
+
+.sftp-dropzone.download .sftp-dropzone-card {
+  opacity: 0.7;
+  transform: scale(0.96);
+}
+
+.sftp-dropzone.download.active {
+  background: rgba(0, 0, 0, 0.22);
+}
+
+.sftp-dropzone.download.active .sftp-dropzone-card {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.sftp-dropzone.download .sftp-dropzone-icon {
+  animation: none;
 }
 
 .sftp-dropzone-card {

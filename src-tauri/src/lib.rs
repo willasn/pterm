@@ -178,6 +178,7 @@ pub fn run() {
             ssh::commands::ssh_disconnect,
             ssh::commands::ssh_sessions,
             ssh::commands::ssh_recent_output,
+            ssh::commands::ssh_exec,
             ssh::commands::ssh_test_connection,
             // 一键生成并部署 SSH 密钥（可开关）
             ssh::commands::ssh_setup_key,
@@ -217,6 +218,7 @@ pub fn run() {
             features::sftp::commands::sftp_download,
             features::sftp::commands::sftp_upload,
             features::sftp::commands::sftp_cancel_transfer,
+            features::sftp::drag::sftp_drag_out,
             features::sftp::commands::sftp_delete,
             features::sftp::commands::sftp_rename,
             features::sftp::commands::sftp_chmod,

@@ -8,8 +8,8 @@ use super::interactive::AuthPrompt;
 use super::jump::JumpTunnel;
 use super::key_setup::{self, KeySetupOptions, KeySetupResult};
 use super::known_hosts::KnownHostEntry;
-use super::session::open_transport;
-use super::types::{ConnectParams, SessionInfo};
+use super::session::{open_transport, DEFAULT_EXEC_TIMEOUT_MS};
+use super::types::{ConnectParams, ExecResult, SessionInfo};
 
 /// 建立 SSH 会话。立即返回会话信息，连接进度通过
 /// `ssh:status:{id}` / `ssh:data:{id}` / `ssh:closed:{id}` 事件推送。
@@ -60,6 +60,24 @@ pub fn ssh_recent_output(
 ) -> AppResult<String> {
     let limit = max_bytes.unwrap_or(8 * 1024);
     state.sessions.recent_text(&id, limit)
+}
+
+/// 在会话的独立 exec 通道里执行一条命令：**不写入用户终端**，返回合并后的输出。
+///
+/// AI 助手的 Agent 自动执行与 Ask「运行」都走这里，避免与用户抢同一条交互终端。
+/// 命令在后台通道上跑，用户当前 shell 的输入、输出和状态都不受影响。
+#[tauri::command]
+pub async fn ssh_exec(
+    state: State<'_, AppState>,
+    id: String,
+    command: String,
+    timeout_ms: Option<u64>,
+) -> AppResult<ExecResult> {
+    let sessions = state.sessions.clone();
+    let timeout = timeout_ms.unwrap_or(DEFAULT_EXEC_TIMEOUT_MS);
+    tauri::async_runtime::spawn_blocking(move || sessions.exec(&id, &command, timeout))
+        .await
+        .map_err(|e| AppError::Ssh(format!("后台命令任务异常结束：{e}")))?
 }
 
 /// 运行时开关「会话资源监控」：设置保存后由前端调用，对已有会话即时生效。

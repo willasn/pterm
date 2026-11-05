@@ -1,5 +1,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::io::Read;
 use std::net::{TcpStream, ToSocketAddrs};
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
@@ -18,7 +20,9 @@ use super::interactive::{AuthPromptHub, InteractivePrompter};
 use super::jump::JumpTunnel;
 use super::known_hosts;
 use super::local;
-use super::types::{ConnectParams, SessionCommand, SessionInfo, SessionKind, SessionState};
+use super::types::{
+    ConnectParams, ExecResult, SessionCommand, SessionInfo, SessionKind, SessionState,
+};
 use super::auth;
 
 /// TCP 连接（含 DNS 解析）超时
@@ -31,6 +35,10 @@ const MAX_RECONNECT_DELAY_MS: u64 = 30_000;
 const REUSE_WAIT: Duration = Duration::from_secs(5);
 /// 已结束会话保留的最终快照条数上限
 const ENDED_HISTORY: usize = 32;
+/// 后台命令默认超时（AI 自动执行 / Ask「运行」共用）
+pub const DEFAULT_EXEC_TIMEOUT_MS: u64 = 60_000;
+/// 等待后台命令回信时在命令超时之外额外留的余量
+const EXEC_REPLY_MARGIN: Duration = Duration::from_secs(10);
 
 // ---------------------------------------------------------------------------
 // 传输层
@@ -127,6 +135,10 @@ impl SessionHandle {
 
     pub fn state(&self) -> SessionState {
         self.info.lock().state.clone()
+    }
+
+    pub fn kind(&self) -> SessionKind {
+        self.info.lock().kind
     }
 
     pub fn recent_text(&self, max_bytes: usize) -> String {
@@ -333,6 +345,44 @@ impl SessionManager {
         Ok(self.require(id)?.recent_text(max_bytes))
     }
 
+    /// 在独立通道里执行一条后台命令，输出不进入用户终端。
+    ///
+    /// SSH 会话复用当前连接另开 exec 通道（不申请 pty），因此用户正在交互的
+    /// shell 完全不受影响；本地会话直接起一个子进程。调用方阻塞等待结果，
+    /// 最长等待 `timeout_ms` 加收尾余量。
+    pub fn exec(&self, id: &str, command: &str, timeout_ms: u64) -> AppResult<ExecResult> {
+        let handle = self.require(id)?;
+        if command.trim().is_empty() {
+            return Err(AppError::Config("命令为空".into()));
+        }
+        if !handle.state().is_ready() {
+            return Err(AppError::SessionNotFound("会话尚未就绪，无法执行命令".into()));
+        }
+
+        if handle.kind() == SessionKind::Local {
+            return local_exec(command, timeout_ms);
+        }
+
+        let (tx, rx) = mpsc::channel();
+        handle.send(SessionCommand::Exec {
+            command: command.to_string(),
+            timeout_ms,
+            reply: tx,
+        })?;
+
+        let wait = Duration::from_millis(timeout_ms.clamp(1_000, 600_000)) + EXEC_REPLY_MARGIN;
+        match rx.recv_timeout(wait) {
+            Ok(Ok(result)) => Ok(result),
+            Ok(Err(msg)) => Err(AppError::Ssh(msg)),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                Err(AppError::Ssh("后台命令执行超时".into()))
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => Err(AppError::SessionNotFound(
+                "会话已结束，后台命令未完成".into(),
+            )),
+        }
+    }
+
     /// 广播资源监控开关到所有会话线程。
     ///
     /// 只写一个原子量，不打扰既有连接；会话线程在下一轮空闲时读到新值，
@@ -423,6 +473,10 @@ impl RunContext {
                 match cmd {
                     SessionCommand::Write(data) => discarded += data.len(),
                     SessionCommand::Resize { cols, rows } => latest_size = Some((cols, rows)),
+                    SessionCommand::Exec { reply, .. } => {
+                        // 断线重连期间无法执行后台命令，直接回绝，别让前端干等
+                        let _ = reply.send(Err("连接已断开，后台命令未执行".into()));
+                    }
                     SessionCommand::Close => {}
                 }
             }
@@ -718,6 +772,85 @@ fn retryable(err: &AppError) -> bool {
 
 fn new_session_id() -> String {
     format!("s-{}", uuid::Uuid::new_v4())
+}
+
+/// 本地会话的后台命令：起一个子进程执行，输出同样不进入用户终端。
+fn local_exec(command: &str, timeout_ms: u64) -> AppResult<ExecResult> {
+    let timeout = Duration::from_millis(timeout_ms.clamp(1_000, 600_000));
+
+    #[cfg(windows)]
+    let mut cmd = {
+        let mut c = Command::new("cmd");
+        c.arg("/C").arg(command);
+        c
+    };
+    #[cfg(not(windows))]
+    let mut cmd = {
+        let mut c = Command::new("sh");
+        c.arg("-c").arg(command);
+        c
+    };
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| AppError::Other(format!("启动后台命令失败：{e}")))?;
+
+    // 先各自起线程把管道读空，避免输出超过管道缓冲时子进程被阻塞
+    let stdout_reader = child.stdout.take().map(|mut pipe| {
+        thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = pipe.read_to_end(&mut buf);
+            buf
+        })
+    });
+    let stderr_reader = child.stderr.take().map(|mut pipe| {
+        thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = pipe.read_to_end(&mut buf);
+            buf
+        })
+    });
+
+    let deadline = Instant::now() + timeout;
+    let mut timed_out = false;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) => {}
+            Err(e) => {
+                let _ = child.kill();
+                return Err(AppError::Other(format!("等待后台命令结束失败：{e}")));
+            }
+        }
+        if Instant::now() >= deadline {
+            timed_out = true;
+            let _ = child.kill();
+            let _ = child.wait();
+            break None;
+        }
+        thread::sleep(Duration::from_millis(20));
+    };
+
+    let mut output = String::new();
+    if let Some(handle) = stdout_reader {
+        if let Ok(bytes) = handle.join() {
+            output.push_str(&String::from_utf8_lossy(&bytes));
+        }
+    }
+    if let Some(handle) = stderr_reader {
+        if let Ok(bytes) = handle.join() {
+            output.push_str(&String::from_utf8_lossy(&bytes));
+        }
+    }
+
+    Ok(ExecResult {
+        output,
+        exit_code: status.and_then(|s| s.code()),
+        timed_out,
+    })
 }
 
 #[cfg(test)]

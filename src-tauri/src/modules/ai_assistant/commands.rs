@@ -50,8 +50,8 @@ pub struct AiAskResult {
 /// 组装 Ask 模式的 user 消息。
 ///
 /// Ask 模式不区分场景：问题原样交给模型，只约定「给出建议与指导」。命令以 ```sh
-/// 代码块单独列出，面板会为每个命令块生成「运行」按钮，由用户手动点击后才写入终端——
-/// 模型自己不会执行任何命令。
+/// 代码块单独列出，面板会为每个命令块生成「运行」按钮，由用户手动点击后在独立后台
+/// 通道执行——模型自己不会执行任何命令。
 fn build_user_message(input: &AiAskInput) -> AppResult<String> {
     let q = input.input.trim();
     if q.is_empty() {
@@ -352,6 +352,9 @@ pub struct AiAgentStepInput {
     /// 当前终端最近输出
     #[serde(default)]
     pub terminal_tail: String,
+    /// 本轮还能执行多少条命令；快用完时提示模型收尾，留空表示不提示
+    #[serde(default)]
+    pub remaining_steps: Option<u32>,
     #[serde(default)]
     pub model: Option<String>,
 }
@@ -376,7 +379,7 @@ pub struct AiAgentStepResult {
 /// Agent 模式的一步：读终端输出 → 让模型决定下一步 → 解析成结构化动作。
 ///
 /// 本命令**不执行任何命令**，只负责决策：连同「这一步是否需要用户授权」一起返回。
-/// 可自动执行的只读命令由前端直接写入终端，关键操作则由前端停下等用户确认。
+/// 可自动执行的只读命令由前端直接交给后台 exec 通道执行，关键操作则由前端停下等用户确认。
 #[tauri::command]
 pub async fn ai_agent_step(
     app: AppHandle,
@@ -400,7 +403,12 @@ pub async fn ai_agent_step(
         },
         ChatMessage {
             role: "user".into(),
-            content: agent::user_prompt(&input.goal, &input.steps, &input.terminal_tail),
+            content: agent::user_prompt(
+                &input.goal,
+                &input.steps,
+                &input.terminal_tail,
+                input.remaining_steps,
+            ),
         },
     ];
 

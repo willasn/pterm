@@ -773,6 +773,42 @@ function ModelsSection() {
   );
 }
 
+/**
+ * Agent 循环参数：步数上限是安全网，用完会暂停在面板里，可点「继续执行」再给一轮。
+ * 正常停止靠模型给出结论或用户手动停止，所以默认值给得比较宽松。
+ */
+function AgentLoopSection() {
+  const draft = getDraft();
+  const current = draft.ai ? draft.ai.agent_max_steps : null;
+  return (
+    <Section title="Agent 执行">
+      <Field
+        label="单轮步数上限"
+        hint="一次任务最多自动执行多少条命令；用完会暂停并可点「继续执行」。留空用默认值 30，范围 5 ~ 200"
+      >
+        <input
+          type="number"
+          min={5}
+          max={200}
+          step={1}
+          placeholder="30"
+          defaultValue={current == null ? "" : String(current)}
+          onChange={(event) => {
+            const raw = event.target.value.trim();
+            draft.ai = draft.ai || {};
+            if (raw === "") {
+              draft.ai.agent_max_steps = null;
+              return;
+            }
+            const n = parseInt(raw, 10);
+            draft.ai.agent_max_steps = Number.isFinite(n) ? n : null;
+          }}
+        />
+      </Field>
+    </Section>
+  );
+}
+
 function AiCategory() {
   const draft = getDraft();
   const aiFlags = (draft.features && draft.features.ai) || {};
@@ -783,6 +819,7 @@ function AiCategory() {
           AI 助手当前已关闭：请先在「功能开关」中打开「AI 助手」并保存，「测试连通性 / 保存」才会生效。
         </Note>
       ) : null}
+      <AgentLoopSection />
       <ModelsSection />
     </>
   );
