@@ -79,10 +79,11 @@ async fn probe_endpoint(client: &reqwest::Client, url: &Url) -> Option<Version> 
     Version::parse(manifest.get("version")?.as_str()?).ok()
 }
 
-/// 并行检查所有更新源，取版本号最大的可用源交由 updater 做正式检查。
+/// 并行探测所有更新源的版本号，返回 `[(version, url)]` 列表（按版本降序）。
 ///
-/// 并行探测只用来挑源：真正解析平台信息、校验版本是否比当前新仍走 updater 本身。
-async fn resolve_update(app: &AppHandle) -> AppResult<Option<Update>> {
+/// 单个源超时、非 2xx、JSON 解析失败或版本号非法都视为不可用，直接排除。
+/// 返回空列表表示所有源都不可用。
+async fn probe_endpoints_ordered(app: &AppHandle) -> AppResult<Vec<(Version, Url)>> {
     let client = reqwest::Client::builder()
         .timeout(CHECK_TIMEOUT)
         .build()
@@ -102,89 +103,158 @@ async fn resolve_update(app: &AppHandle) -> AppResult<Option<Update>> {
         .filter_map(|(url, version)| version.map(|version| (version, url)))
         .collect();
 
+    candidates.sort_by(|a, b| b.0.cmp(&a.0));
+
+    Ok(candidates)
+}
+
+/// 尝试用 `updater.check()` 获取指定 endpoint 的更新对象。
+///
+/// 返回 `Ok(Some(update))` 表示该 endpoint 确实有比当前版本新的更新；
+/// 返回 `Ok(None)` 表示版本不新（所有 endpoint 都返回 None 则表示当前已最新）；
+/// 返回 `Err` 表示该 endpoint 的 manifest 解析失败或网络错误。
+async fn check_update_from(
+    app: &AppHandle,
+    url: Url,
+) -> Result<Option<Update>, tauri_plugin_updater::Error> {
+    let updater = app
+        .updater_builder()
+        .endpoints(vec![url])
+        .map_err(|e| tauri_plugin_updater::Error::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?
+        .timeout(CHECK_TIMEOUT)
+        .build()
+        .map_err(|e| tauri_plugin_updater::Error::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
+
+    match updater.check().await {
+        Ok(Some(mut update)) => {
+            update.timeout = None;
+            Ok(Some(update))
+        }
+        other => other,
+    }
+}
+
+/// 检查是否有新版本。只查询、不下载。
+///
+/// 遍历所有 endpoint，返回第一个有更新的结果；如果所有 endpoint 都表示「没有更新」，
+/// 则返回 `has_update = false`；如果所有 endpoint 都不可用，则返回错误。
+#[tauri::command]
+pub async fn auto_update_check(app: AppHandle) -> AppResult<UpdateInfo> {
+    let current = app.package_info().version.to_string();
+    let candidates = probe_endpoints_ordered(&app).await?;
+
     if candidates.is_empty() {
         return Err(AppError::Other("更新检查失败：所有更新源均不可用".into()));
     }
 
-    // 版本号降序：优先用最新的那份清单。
-    candidates.sort_by(|a, b| b.0.cmp(&a.0));
+    let mut last_check_err: Option<tauri_plugin_updater::Error> = None;
+    let mut any_has_update = false;
 
-    let mut last_error: Option<tauri_plugin_updater::Error> = None;
     for (_, url) in candidates {
-        // 检查请求同样限时；拿到结果后清掉超时，避免 4 秒限制到后续的安装包下载。
-        let updater = app
-            .updater_builder()
-            .endpoints(vec![url])
-            .map_err(update_error)?
-            .timeout(CHECK_TIMEOUT)
-            .build()
-            .map_err(update_error)?;
-
-        match updater.check().await {
-            Ok(Some(mut update)) => {
-                update.timeout = None;
-                return Ok(Some(update));
+        match check_update_from(&app, url).await {
+            Ok(Some(update)) => {
+                any_has_update = true;
+                return Ok(UpdateInfo {
+                    has_update: true,
+                    current: update.current_version.clone(),
+                    latest: Some(update.version.clone()),
+                    notes: update.body.clone(),
+                    published_at: update.date.map(|date| date.unix_timestamp()),
+                });
             }
-            Ok(None) => return Ok(None),
-            Err(err) => last_error = Some(err),
+            Ok(None) => continue, // 版本不新，试下一个源
+            Err(err) => last_check_err = Some(err),
         }
     }
 
-    Err(last_error
-        .map(update_error)
-        .unwrap_or_else(|| AppError::Other("更新检查失败：所有更新源均不可用".into())))
-}
+    if any_has_update {
+        // 上面已经 return 了，这里不会到达
+        unreachable!()
+    }
 
-/// 检查是否有新版本。只查询、不下载。
-#[tauri::command]
-pub async fn auto_update_check(app: AppHandle) -> AppResult<UpdateInfo> {
-    let current = app.package_info().version.to_string();
-    let update = resolve_update(&app).await?;
-    Ok(match update {
-        Some(update) => UpdateInfo {
-            has_update: true,
-            current: update.current_version.clone(),
-            latest: Some(update.version.clone()),
-            notes: update.body.clone(),
-            published_at: update.date.map(|date| date.unix_timestamp()),
-        },
-        None => UpdateInfo {
+    // 所有源都返回 None → 已是最新
+    if last_check_err.is_none() {
+        return Ok(UpdateInfo {
             has_update: false,
             current,
             latest: None,
             notes: None,
             published_at: None,
-        },
-    })
+        });
+    }
+
+    // 所有源要么不可用要么 check 报错
+    Err(last_check_err
+        .map(update_error)
+        .unwrap_or_else(|| AppError::Other("更新检查失败：所有更新源均不可用".into())))
 }
 
 /// 下载并安装更新，完成后重启应用。下载进度经 [`UPDATE_PROGRESS_EVENT`] 事件回传。
 ///
-/// 这里重新 `check()` 一次而不是复用上次检查的结果：检查本身很轻，而缓存
-/// 待安装句柄需要额外的托管状态，收益不值这个复杂度。
+/// 遍历所有 endpoint，依次尝试 `check()` + `download_and_install()`。当某个源的安装包
+/// 签名验证失败或下载损坏时，自动回退到下一个源（典型场景：R2 CDN 上某文件被意外
+/// 替换/损坏，而 GitHub Release 仍保留正确签名的原始版本）。
 #[tauri::command]
 pub async fn auto_update_install(app: AppHandle) -> AppResult<()> {
-    let update = resolve_update(&app)
-        .await?
-        .ok_or_else(|| AppError::Other("当前已是最新版本，无需更新".into()))?;
+    let candidates = probe_endpoints_ordered(&app).await?;
 
-    let emitter = app.clone();
-    update
-        .download_and_install(
-            move |chunk_length, content_length| {
-                let _ = emitter.emit(
-                    UPDATE_PROGRESS_EVENT,
-                    ProgressPayload {
-                        chunk: chunk_length as u64,
-                        total: content_length,
-                    },
+    if candidates.is_empty() {
+        return Err(AppError::Other("更新检查失败：所有更新源均不可用".into()));
+    }
+
+    let mut last_install_err: Option<tauri_plugin_updater::Error> = None;
+    let mut found_update = false;
+
+    for (_, url) in candidates {
+        let Some(update) = match check_update_from(&app, url).await {
+            Ok(Some(u)) => Some(u),
+            Ok(None) => continue, // 当前已是最新
+            Err(err) => {
+                last_install_err = Some(err);
+                continue;
+            }
+        };
+
+        found_update = true;
+        let emitter = app.clone();
+        let install_result = update
+            .download_and_install(
+                move |chunk_length, content_length| {
+                    let _ = emitter.emit(
+                        UPDATE_PROGRESS_EVENT,
+                        ProgressPayload {
+                            chunk: chunk_length as u64,
+                            total: content_length,
+                        },
+                    );
+                },
+                || {},
+            )
+            .await;
+
+        match install_result {
+            Ok(()) => {
+                log::info!("更新已安装，正在重启应用");
+                app.restart();
+                return Ok(());
+            }
+            Err(err) => {
+                log::warn!(
+                    "从更新源 {} 安装失败（{}），尝试下一个源",
+                    url,
+                    err
                 );
-            },
-            || {},
-        )
-        .await
-        .map_err(update_error)?;
+                last_install_err = Some(err);
+                // 继续尝试下一个 endpoint
+            }
+        }
+    }
 
-    log::info!("更新已安装，正在重启应用");
-    app.restart();
+    if !found_update {
+        return Err(AppError::Other("当前已是最新版本，无需更新".into()));
+    }
+
+    Err(last_install_err
+        .map(update_error)
+        .unwrap_or_else(|| AppError::Other("更新安装失败：所有更新源均不可用".into())))
 }

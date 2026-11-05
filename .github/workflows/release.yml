@@ -154,17 +154,10 @@ jobs:
             cat dist/latest.json
           fi
 
-          # 2. 上传安装包。文件名自带版本号，内容不会变，可以长缓存。
-          for f in dist/*; do
-            name="$(basename "$f")"
-            [ "$name" = "latest.json" ] && continue
-            echo "上传 $R2_PREFIX/latest/$name"
-            aws s3 cp "$f" "s3://$BUCKET/$R2_PREFIX/latest/$name" \
-              --endpoint-url "$R2_ENDPOINT" \
-              --cache-control "public, max-age=31536000, immutable"
-          done
-
-          # 3. 删除 $R2_PREFIX/latest/ 下不属于本次发布的旧文件（先传后删，避免 404 窗口）。
+          # 2. 先删除 R2 上所有 $R2_PREFIX/latest/ 下的文件，再逐个上传。
+          #    这样可以避免「本地文件已更新但 S3 上仍残留旧内容」的问题——
+          #    之前曾出现过 R2 上文件与 GitHub Release 内容不一致、导致签名
+          #    验证失败的情况。
           existing="$(aws s3api list-objects-v2 \
             --bucket "$BUCKET" \
             --prefix "$R2_PREFIX/latest/" \
@@ -173,10 +166,18 @@ jobs:
             --endpoint-url "$R2_ENDPOINT")"
           [ "$existing" = "None" ] && existing=""
           for key in $existing; do
-            name="$(basename "$key")"
-            [ -f "dist/$name" ] && continue
             echo "删除旧文件 $key"
             aws s3 rm "s3://$BUCKET/$key" --endpoint-url "$R2_ENDPOINT"
+          done
+
+          # 3. 上传安装包。文件名自带版本号，内容不会变，可以长缓存。
+          for f in dist/*; do
+            name="$(basename "$f")"
+            [ "$name" = "latest.json" ] && continue
+            echo "上传 $R2_PREFIX/latest/$name"
+            aws s3 cp "$f" "s3://$BUCKET/$R2_PREFIX/latest/$name" \
+              --endpoint-url "$R2_ENDPOINT" \
+              --cache-control "public, max-age=31536000, immutable"
           done
 
           # 4. 最后更新指针，保证 latest.json 生效时文件一定已就位。
