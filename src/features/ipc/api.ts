@@ -112,7 +112,8 @@ export const ipc = {
   sshAuthRespond: (id: string, text: string | null) => call("ssh_auth_respond", { id, text }),
   sshAuthPending: (id: string) => call("ssh_auth_pending", { id }),
   // 会话资源监控开关：只改运行时原子量，不重连
-  sshSetSessionMonitor: (enabled: boolean) => call("ssh_set_session_monitor", { enabled }),
+  sshSetSessionMonitor: (id: string, enabled: boolean) =>
+    call("ssh_set_session_monitor", { id, enabled }),
 
   // ---------- 本地终端（可开关，本机 PTY shell） ----------
   localTerminalOpen: (cols: number, rows: number, sessionId: string | null) =>
@@ -187,6 +188,10 @@ export const ipc = {
   // ---------- 自动更新（可开关） ----------
   updateCheck: () => call("auto_update_check"),
   updateInstall: () => call("auto_update_install"),
+
+  // ---------- 激活码授权（核心，Git 同步的门控） ----------
+  licenseStatus: () => call("license_status"),
+  licenseActivate: (key: string) => call("license_activate", { key }),
 
   // ---------- Git 同步（可开关） ----------
   gitStatus: () => call("git_sync_status"),

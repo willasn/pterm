@@ -57,6 +57,10 @@ pterm/
 │       │   │   ├── repo.rs      # git2 仓库操作封装
 │       │   │   ├── auth.rs      # SSH agent / 密钥 / 凭据链
 │       │   │   └── fallback.rs  # 系统 git CLI 回退（边缘场景）
+│       │   ├── license/         # 激活码授权（Git 同步门控）
+│       │   │   ├── mod.rs       # 激活 / 离线验签 / 续签 / 状态视图
+│       │   │   ├── commands.rs  # license_status / license_activate
+│       │   │   └── zely.rs      # 内嵌 Zely 客户端 SDK（Ed25519 离线凭证）
 │       │   ├── ai_assistant/    # AI 助手（可开关）
 │       │   ├── mcp/             # MCP 服务（可开关，127.0.0.1 上的 HTTP 端点，供外部 AI 连接 SSH）
 │       │   ├── snippets/        # 命令片段（可开关）
@@ -192,6 +196,7 @@ cargo tauri build        # 或 npm run tauri build
 - SQLite：连接配置等非敏感数据
 - `secrets.json`：密码、私钥 passphrase、API Key 等敏感字段，由主密码经 Argon2id 派生密钥 + AES-256-GCM 加密，并可随 Git 同步一起分发。新装首次打开时设置主密码；此后派生密钥作为自动解锁令牌存在同目录的 `vault.token`（权限 0600），启动即静默解锁，无需重复输入
 - `onboarding.done`：首次启动引导（语言选择）的完成标记，同为配置目录下的本机文件，不随 Git 同步；删除它可在下次启动重新播放引导
+- `license.json`：激活码授权的本机状态（授权码 / 离线凭证 / 设备标识），由 Zely 授权服务签发；不随 Git 同步。Git 同步的写操作需要有效授权
 - `known_hosts.json`：主机密钥校验（TOFU）记录的已知主机指纹，本机私有、不随 Git 同步
 
 ## 设计约定
@@ -202,4 +207,5 @@ cargo tauri build        # 或 npm run tauri build
 - 危险命令（`rm -rf`、`dd`、`mkfs` 等）必须二次确认。
 - 终端输入输出通过 Tauri event 流式传输，避免轮询。
 - Git 优先走 `git2`，仅在明确不支持时回退系统 CLI，并记录回退原因。
+- Git 同步为激活码付费功能：授权状态查询与远端配置始终可用，读写仓库的 command 在未激活时由后端拒绝；授权状态为本机文件，不随 Git 同步。
 - 主密码只在新装首次打开时输入；派生密钥作为自动解锁令牌写入配置目录下的 `vault.token`，之后启动静默解锁。同一 Git 仓库的多台设备必须共用同一主密码，若同步到的保险库与本机不一致，弹窗由用户选择采用哪一边，绝不静默覆盖。

@@ -4,7 +4,7 @@ import { applyConfig } from "../app/store";
 import { refresh as refreshConnections } from "../connections/store";
 import { ipc } from "../ipc/api";
 import { choose } from "../util/util";
-import type { ConflictChoice, GitStatus, SyncOutcome } from "./types";
+import type { ConflictChoice, GitStatus, LicenseStatus, SyncOutcome } from "./types";
 
 /**
  * Git 同步面板的状态与行为（由原 src/legacy/git_sync.ts 迁移而来）。
@@ -25,6 +25,12 @@ export interface GitSyncState {
   /** 上次同步返回、仍待用户决策的冲突文件；设置类冲突后端已自动以远端为准 */
   pendingConflicts: string[] | null;
   open: boolean;
+  /** 激活码授权状态；null = 尚未读取 */
+  license: LicenseStatus | null;
+  /** 正在激活 / 校验激活码 */
+  licenseBusy: boolean;
+  /** 最近一次激活失败的原因 */
+  licenseError: string | null;
 }
 
 const initialState: GitSyncState = {
@@ -33,6 +39,9 @@ const initialState: GitSyncState = {
   status: null,
   pendingConflicts: null,
   open: false,
+  license: null,
+  licenseBusy: false,
+  licenseError: null,
 };
 
 let state: GitSyncState = initialState;
@@ -77,6 +86,7 @@ function formatSyncTime(raw?: string | null): string {
 export function badgeText(): string {
   const { status, pendingConflicts } = state;
   if (state.busy) return "同步中…";
+  if (state.license && !state.license.unlocked) return "Git 同步（未激活）";
   if (!status) return "同步 …";
   if (pendingConflicts) return "需处理冲突";
   if (!(status.remotes || []).length) return "未配置远端";
@@ -106,6 +116,46 @@ export async function refresh(): Promise<void> {
   }
 }
 
+/**
+ * 读取激活状态（纯本地验签，不联网）。
+ *
+ * 失败不弹提示：授权命令在 Tauri 宿主外或后端异常时不应打断界面，
+ * 面板与设置页会显示「尚未激活」并允许重试。
+ */
+export async function refreshLicense(): Promise<void> {
+  try {
+    const license = (await ipc.licenseStatus()) as LicenseStatus;
+    setState({ license, licenseError: null });
+  } catch {
+    setState({ license: null });
+  }
+}
+
+/** 使用激活码激活 Git 同步。返回是否激活成功。 */
+export async function activateLicense(key: string): Promise<boolean> {
+  const value = (key || "").trim();
+  if (!value) {
+    toast("请输入激活码", "warn");
+    return false;
+  }
+  if (state.licenseBusy) return false;
+  setState({ licenseBusy: true, licenseError: null });
+  try {
+    const license = (await ipc.licenseActivate(value)) as LicenseStatus;
+    setState({ license, licenseError: null });
+    toast(license.message || "激活成功", license.unlocked ? "ok" : "warn");
+    if (license.unlocked) void refresh();
+    return license.unlocked;
+  } catch (err) {
+    const text = errorText(err);
+    setState({ licenseError: text });
+    toast(text, "error");
+    return false;
+  } finally {
+    setState({ licenseBusy: false });
+  }
+}
+
 async function run(fn: () => Promise<SyncOutcome>): Promise<void> {
   if (state.busy) return;
   setState({ busy: true });
@@ -129,6 +179,11 @@ async function run(fn: () => Promise<SyncOutcome>): Promise<void> {
 /** 单按钮入口：同步范围跟随「设置 → Git 同步」中的配置，直接执行。 */
 export async function startSync(): Promise<void> {
   if (state.busy) return;
+  if (state.license && !state.license.unlocked) {
+    toast(state.license.message || "Git 同步尚未激活", "warn");
+    await refreshLicense();
+    return;
+  }
   // 不传 includeSecrets，后端按设置中的同步范围（git_sync_secrets）决定是否带上密文
   await run(() => ipc.gitSyncNow());
 }
@@ -174,6 +229,7 @@ export function openPanel(): void {
     return;
   }
   setState({ open: true });
+  void refreshLicense();
   void refresh();
 }
 
@@ -189,6 +245,7 @@ export function setEnabledFromConfig(config: unknown): void {
     return;
   }
   setState({ enabled: true });
+  void refreshLicense();
   void refresh();
 }
 

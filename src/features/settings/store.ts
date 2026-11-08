@@ -3,17 +3,16 @@ import { errorText, toast } from "../../lib/legacy";
 import { setEnabledFromConfig as setAiConfig } from "../ai/store";
 import { applyConfig } from "../app/store";
 import { refresh as refreshConnections } from "../connections/store";
-import { refresh as refreshGitSync } from "../git-sync/store";
+import { refresh as refreshGitSync, refreshLicense as refreshGitLicense } from "../git-sync/store";
 import { t } from "../i18n/store";
 import { ipc } from "../ipc/api";
 import { actions as shortcutActions, conflicts as shortcutConflictsFor } from "../shortcuts/api";
 import { ask } from "../util/util";
-import { CATEGORIES, FLAG_META, HIDDEN_FLAGS } from "./constants";
+import { CATEGORIES } from "./constants";
 import type {
   AiModelConfig,
   AppInfo,
   CrashLogInfo,
-  FlagEntry,
   ModuleStatus,
   ProtocolSpec,
   ShortcutBinding,
@@ -37,7 +36,6 @@ import type {
 // ---------------------------------------------------------------------------
 
 let draft: any = null;
-let flags: FlagEntry[] = [];
 let modules: ModuleStatus[] = [];
 let info: AppInfo | null = null;
 let activeCat = "general";
@@ -109,7 +107,6 @@ export const getOpen = () => opened;
 export const getActiveCat = () => activeCat;
 export const getFormKey = () => formKey;
 export const getDraft = () => draft;
-export const getFlags = () => flags;
 export const getModules = () => modules;
 export const getInfo = () => info;
 export const getProtocolList = () => protocolList;
@@ -171,9 +168,8 @@ export async function open(category?: string): Promise<void> {
   try {
     // 这些命令相互独立：任何一个失败都不该让整个设置面板打不开（原先用 Promise.all，
     // 一个 AI 模块未就绪就会让 open() 直接跳到 catch，表现就是「点设置没反应」）。
-    const [cfg, flagList, moduleList, appInfo, keySet, gitCreds, vState, protos, hosts] = await Promise.all([
+    const [cfg, moduleList, appInfo, keySet, gitCreds, vState, protos, hosts] = await Promise.all([
       ipc.getConfig(),
-      ipc.featureFlags(),
       ipc.moduleStatus(),
       ipc.appInfo(),
       ipc.aiConfiguredModels().catch(() => []),
@@ -183,7 +179,6 @@ export async function open(category?: string): Promise<void> {
       ipc.sshKnownHostsList().catch(() => []),
     ]);
     draft = deepClone(cfg);
-    flags = flagList || [];
     modules = moduleList || [];
     protocolList = protos || [];
     info = appInfo || null;
@@ -198,6 +193,8 @@ export async function open(category?: string): Promise<void> {
     crashTail = null;
     crashBusy = false;
     opened = true;
+    // Git 同步的授权状态是异步读取的：打开设置时顺手刷新一次，激活区才不会停在「读取中」
+    void refreshGitLicense();
     // 渲染失败由组件内部兜底（显示错误文案），弹窗本身照常打开
     rerender(true);
   } catch (err) {
@@ -326,7 +323,6 @@ export async function reset(): Promise<void> {
   if (!confirmed) return;
   try {
     draft = deepClone(await ipc.resetConfig());
-    flags = await ipc.featureFlags();
     modules = await ipc.moduleStatus();
     configuredModelIds = new Set((await ipc.aiConfiguredModels().catch(() => [])) || []);
     aiModels = deepClone((draft.ai && draft.ai.models) || []);
@@ -346,25 +342,14 @@ export async function reset(): Promise<void> {
   }
 }
 
-/** 供全局搜索使用：可检索的设置项索引（分类页 + 功能开关）。 */
+/** 供全局搜索使用：可检索的设置分类索引。 */
 export function searchIndex() {
-  const items = CATEGORIES.map((cat) => ({
+  return CATEGORIES.map((cat) => ({
     category: cat.id,
     title: t("settings.cat." + cat.id, cat.label),
     subtitle: "设置分类",
     keywords: cat.label,
   }));
-  Object.keys(FLAG_META).forEach((path) => {
-    if (HIDDEN_FLAGS.has(path)) return;
-    const meta = FLAG_META[path];
-    items.push({
-      category: "flags",
-      title: t("flags." + path, meta.label),
-      subtitle: "功能开关 · " + path,
-      keywords: path + " " + (meta.hint || ""),
-    });
-  });
-  return items;
 }
 
 // ---------------------------------------------------------------------------

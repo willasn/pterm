@@ -80,12 +80,16 @@ pub async fn ssh_exec(
         .map_err(|e| AppError::Ssh(format!("后台命令任务异常结束：{e}")))?
 }
 
-/// 运行时开关「会话资源监控」：设置保存后由前端调用，对已有会话即时生效。
+/// 运行时开关「会话资源监控」：终端右下角图标按会话切换，失焦时前端会置为 false。
 ///
-/// 关闭后会话线程不再发起任何采样（不打开 exec 通道）；打开则下一轮空闲开始采样。
+/// 关闭后该会话线程不再发起任何采样（不打开 exec 通道）；打开则下一轮空闲开始采样。
 #[tauri::command]
-pub fn ssh_set_session_monitor(state: State<'_, AppState>, enabled: bool) -> AppResult<()> {
-    state.sessions.set_monitor_all(enabled);
+pub fn ssh_set_session_monitor(
+    state: State<'_, AppState>,
+    id: String,
+    enabled: bool,
+) -> AppResult<()> {
+    state.sessions.set_monitor(&id, enabled);
     Ok(())
 }
 

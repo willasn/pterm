@@ -5,6 +5,7 @@ import { useT } from "../../hooks/useLocale";
 import { errorText, toast } from "../../lib/legacy";
 import { check as checkUpdate, install as installUpdate, progressPercent, useAutoUpdate } from "../auto-update/store";
 import { setLocale } from "../i18n/store";
+import { LicenseSection } from "../git-sync/LicenseSection";
 import {
   closePanel as closeImportExport,
   getState as getImportExportState,
@@ -16,10 +17,6 @@ import { ipc } from "../ipc/api";
 import {
   CATEGORIES,
   CURSOR_STYLES,
-  FLAG_GROUPS,
-  FLAG_META,
-  FLAG_MODULE,
-  HIDDEN_FLAGS,
   LANGUAGES,
   SCOPE_OPTIONS,
   THEME_MODES,
@@ -38,13 +35,11 @@ import {
   getCrashBusy,
   getCrashTail,
   getDraft,
-  getFlags,
   getFormKey,
   getGitCredentialNames,
   getInfo,
   getKnownHosts,
   getKnownHostsOpen,
-  getModules,
   getOpen,
   getPath,
   getSavedModelIds,
@@ -72,7 +67,7 @@ import {
   useSettingsVersion,
   viewCrashLog,
 } from "./store";
-import type { AiModelConfig, McpInfo, ModuleStatus, ShortcutIssue, ShortcutRow, VaultStatus } from "./types";
+import type { AiModelConfig, McpInfo, ShortcutIssue, ShortcutRow, VaultStatus } from "./types";
 
 // ---------------------------------------------------------------------------
 // 基础元素
@@ -80,14 +75,6 @@ import type { AiModelConfig, McpInfo, ModuleStatus, ShortcutIssue, ShortcutRow, 
 
 function Badge({ text, kind }: { text: string; kind?: string }) {
   return <span className={"badge " + (kind || "")}>{text}</span>;
-}
-
-/** 把模块状态渲染成徽标。enabled 但未 initialized 说明实现还没落地。 */
-function ModuleBadge({ status }: { status?: ModuleStatus }) {
-  if (!status) return <Badge text="未注册" kind="off" />;
-  if (!status.enabled) return <Badge text="已关闭" kind="off" />;
-  if (status.initialized) return <Badge text="已启用" kind="on" />;
-  return <Badge text="已启用 · 未初始化" kind="warn" />;
 }
 
 /** 非受控开关：直接写回草稿，不触发重绘（与原实现一致，避免打断输入）。 */
@@ -324,6 +311,18 @@ function GeneralCategory() {
         <SelectField label="明暗模式" hint="「跟随系统」会响应系统外观变化" path="theme.mode" options={THEME_MODES} />
         <TextField label="强调色" hint="CSS 颜色值，留空则用默认强调色" path="theme.accent" placeholder="#4ade80" />
       </Section>
+      <Section title="输入与日志">
+        <ToggleField
+          label="输入法自动切换"
+          hint="终端聚焦时切到英文输入源、失焦时还原（仅 macOS）；终端内可输中文需切到输入法模式"
+          path="features.connection.ime_auto_switch"
+        />
+        <ToggleField
+          label="会话日志"
+          hint="本地留存会话输出，便于回溯；保留策略在「设置 → 连接 → 会话日志」中调整"
+          path="features.connection.session_log"
+        />
+      </Section>
     </>
   );
 }
@@ -441,46 +440,6 @@ function ConnectionCategory() {
         />
       </Section>
     </>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// 分类：功能开关
-// ---------------------------------------------------------------------------
-
-function FlagsCategory() {
-  const t = useT();
-  const list = getFlags();
-  const modules = getModules();
-  return (
-    <div className="settings-section">
-      {FLAG_GROUPS.map((group) => {
-        const entries = list.filter(
-          (entry) => entry.path.indexOf(group.key + ".") === 0 && !HIDDEN_FLAGS.has(entry.path)
-        );
-        if (!entries.length) return null;
-        return (
-          <div key={group.key}>
-            <div className="flag-group-title">{t("flags.group." + group.key, group.title)}</div>
-            {entries.map((entry) => {
-              const meta: { label?: string; hint?: string } = FLAG_META[entry.path] || {};
-              const label = t("flags." + entry.path, meta.label || entry.path);
-              const moduleId = FLAG_MODULE[entry.path];
-              const status = moduleId ? modules.filter((m) => m.id === moduleId)[0] : undefined;
-              return (
-                <ToggleField
-                  key={entry.path}
-                  label={label}
-                  hint={meta.hint || ""}
-                  path={"features." + entry.path}
-                  extra={moduleId ? <ModuleBadge status={status} /> : null}
-                />
-              );
-            })}
-          </div>
-        );
-      })}
-    </div>
   );
 }
 
@@ -814,10 +773,15 @@ function AiCategory() {
   const aiFlags = (draft.features && draft.features.ai) || {};
   return (
     <>
+      <Section title="总开关">
+        <ToggleField
+          label="启用 AI 助手"
+          hint="关闭后不加载 AI 面板与相关命令"
+          path="features.ai.ai_assistant"
+        />
+      </Section>
       {!aiFlags.ai_assistant ? (
-        <Note>
-          AI 助手当前已关闭：请先在「功能开关」中打开「AI 助手」并保存，「测试连通性 / 保存」才会生效。
-        </Note>
+        <Note>AI 助手当前已关闭：打开上方开关并保存后，「测试连通性 / 保存」才会生效。</Note>
       ) : null}
       <AgentLoopSection />
       <ModelsSection />
@@ -992,6 +956,7 @@ function GitCategory() {
       {!sync.git_sync ? (
         <Note>Git 同步当前已关闭，以下配置在启用后生效（可在「功能开关」中开启）。</Note>
       ) : null}
+      <LicenseSection />
       <Section title="仓库" desc="pterm 用 Git 仓库在多台设备之间同步配置，不做任何云同步。">
         <RepoPathField />
         <Field label="同步范围">
@@ -1479,8 +1444,6 @@ function CategoryBody() {
       return <TerminalCategory />;
     case "connection":
       return <ConnectionCategory />;
-    case "flags":
-      return <FlagsCategory />;
     case "ai":
       return <AiCategory />;
     case "mcp":

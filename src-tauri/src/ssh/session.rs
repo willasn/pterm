@@ -234,10 +234,8 @@ impl SessionManager {
         let (tx, rx) = mpsc::channel();
         let cancel = Arc::new(AtomicBool::new(false));
         let recent = Arc::new(Mutex::new(VecDeque::new()));
-        // 新建会话直接继承当前开关状态；关闭时 run_shell 不会发起任何采样
-        let monitor = Arc::new(AtomicBool::new(
-            deps.config.flags().connection.session_monitor,
-        ));
+        // 资源监控默认关闭：由终端右下角图标按会话开启，关闭时不发起任何采样
+        let monitor = Arc::new(AtomicBool::new(false));
 
         let handle = Arc::new(SessionHandle {
             info: info.clone(),
@@ -383,12 +381,12 @@ impl SessionManager {
         }
     }
 
-    /// 广播资源监控开关到所有会话线程。
+    /// 设置单个会话的资源监控开关（终端右下角图标按 pane 切换）。
     ///
-    /// 只写一个原子量，不打扰既有连接；会话线程在下一轮空闲时读到新值，
-    /// 关闭后立即停止采样（不再打开任何 exec 通道）。
-    pub fn set_monitor_all(&self, enabled: bool) {
-        for handle in self.sessions.lock().values() {
+    /// 同样只写一个原子量；会话不存在时静默忽略——图标点击与标签关闭竞争时
+    /// 不应该弹出错误。
+    pub fn set_monitor(&self, id: &str, enabled: bool) {
+        if let Some(handle) = self.sessions.lock().get(id) {
             handle.monitor.store(enabled, Ordering::Relaxed);
         }
     }

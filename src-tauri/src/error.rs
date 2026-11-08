@@ -41,6 +41,10 @@ pub enum AppError {
     #[error("Git 错误：{0}")]
     Git(String),
 
+    /// 激活码授权未通过 / 未激活。
+    #[error("授权错误：{0}")]
+    License(String),
+
     #[error("AI 错误：{0}")]
     Ai(String),
 

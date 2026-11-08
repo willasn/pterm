@@ -269,7 +269,7 @@ pub async fn chat(
         let value: serde_json::Value = response.json().await?;
         let text = extract_text(protocol, &value).unwrap_or_default();
         if text.trim().is_empty() {
-            return Err(AppError::Ai("AI 服务未返回有效内容".into()));
+            return Err(AppError::Ai(empty_reply_hint(&value)));
         }
         Ok(Some(text))
     }
@@ -412,6 +412,55 @@ fn extract_text(protocol: Protocol, value: &serde_json::Value) -> Option<String>
             non_empty(out)
         }
     }
+}
+
+/// HTTP 200 但正文为空时的报错文案。
+///
+/// 只报「未返回有效内容」会把原因一起丢掉，常见成因无法区分：
+/// - 有的网关用 200 包着 `error` 字段（额度不足、内容风控等），应当原样抛出；
+/// - 推理模型把输出额度先花在思考上，`content` 为空而我们只取 `content`，
+///   此时 `finish_reason` 多为 `length`，调大最大输出即可；
+/// - 其余未知情况：带上 `finish_reason` 与响应片段，便于定位。
+fn empty_reply_hint(value: &serde_json::Value) -> String {
+    if let Some(err) = value.get("error") {
+        return format!("AI 服务返回错误：{err}");
+    }
+
+    let reason = stop_reason(value);
+    let mut text = match reason.as_deref() {
+        Some("length") => "AI 服务未返回有效内容：输出额度（max_tokens）已用尽，推理模型的思考内容也会占用该额度。请在设置 → AI 助手中调大该模型的「最大输出」后重试。".to_string(),
+        Some(r) => format!("AI 服务未返回有效内容（finish_reason={r}）。"),
+        None => "AI 服务未返回有效内容。".to_string(),
+    };
+    text.push_str(&format!("响应片段：{}", head(&value.to_string(), 300)));
+    text
+}
+
+/// 各协议的结束原因：OpenAI 在 `choices[0].finish_reason`，
+/// Anthropic 在 `stop_reason`，Responses 在 `incomplete_details.reason`。
+fn stop_reason(value: &serde_json::Value) -> Option<String> {
+    value
+        .get("choices")
+        .and_then(|c| c.get(0))
+        .and_then(|c| c.get("finish_reason"))
+        .and_then(|v| v.as_str())
+        .or_else(|| value.get("stop_reason").and_then(|v| v.as_str()))
+        .or_else(|| {
+            value
+                .get("incomplete_details")
+                .and_then(|d| d.get("reason"))
+                .and_then(|v| v.as_str())
+        })
+        .map(str::to_string)
+}
+
+/// 只保留文本开头若干字符，用于报错时附上响应片段。
+fn head(text: &str, max_chars: usize) -> String {
+    let mut out: String = text.chars().take(max_chars).collect();
+    if text.chars().count() > max_chars {
+        out.push('…');
+    }
+    out
 }
 
 /// 空串一律当作「没取到」，交给上层报「未返回有效内容」。

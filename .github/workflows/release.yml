@@ -33,15 +33,28 @@ jobs:
           node-version: 22
           cache: npm
 
-      - uses: dtolnay/rust-toolchain@stable
+      # 锁定 Rust 版本：rust-cache 的缓存 key 与 rustc 版本绑定，
+      # 用 @stable 时 Rust 一发新版本（或 runner 镜像 rustc 变动）缓存就整体失效，
+      # 退化成冷构建。升级 Rust 时同步改这里，并与本地 rustc 保持一致。
+      - uses: dtolnay/rust-toolchain@1.98.1
         with:
           targets: ${{ matrix.target }}
 
       - uses: swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+          # 每个平台单独一份缓存，避免 matrix 之间互相命中/挤占。
+          shared-key: release-${{ matrix.target }}
+
+      - name: Cache node_modules
+        id: node-modules-cache
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: ${{ runner.os }}-node22-${{ hashFiles('package-lock.json') }}
 
       - name: Install frontend dependencies
+        if: steps.node-modules-cache.outputs.cache-hit != 'true'
         run: npm ci
 
       - name: Sync version from tag

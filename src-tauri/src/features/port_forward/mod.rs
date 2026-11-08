@@ -109,16 +109,27 @@ pub struct ForwardRequest {
 }
 
 impl ForwardRequest {
-    /// 解析本地 / 远程转发必需的目标地址。
+    /// 解析本地 / 远程转发的目标地址。
+    ///
+    /// 两者的目标都可以留空：地址回落到 `127.0.0.1`，端口回落到监听端口。
+    /// 本地转发的目标是 SSH 主机本机的服务，远程转发的目标是本机的服务
+    /// （回连连接由 pterm 所在机器发起）。
     fn target(&self) -> AppResult<(String, u16)> {
-        let host = self.target_host.as_deref().unwrap_or("").trim();
-        if host.is_empty() {
-            return Err(AppError::Forward("未填写目标地址".into()));
-        }
-        if self.target_port == 0 {
+        let raw_host = self.target_host.as_deref().unwrap_or("").trim();
+        let host = if raw_host.is_empty() {
+            "127.0.0.1"
+        } else {
+            raw_host
+        };
+        let port = if self.target_port != 0 {
+            self.target_port
+        } else {
+            self.bind_port
+        };
+        if port == 0 {
             return Err(AppError::Forward("未填写目标端口".into()));
         }
-        Ok((host.to_string(), self.target_port))
+        Ok((host.to_string(), port))
     }
 
     /// 监听地址，留空或全空白时回退到回环地址。
@@ -718,15 +729,38 @@ mod tests {
     }
 
     #[test]
-    fn target_requires_host_and_port() {
-        let mut req = request(ForwardKind::Local);
-        assert!(req.target().is_err());
+    fn target_requires_port_when_no_fallback() {
+        let mut req = request(ForwardKind::Remote);
+        assert!(req.target().is_err(), "目标与监听端口都为 0 时应报错");
 
         req.target_host = Some(" 10.0.0.5 ".into());
         assert!(req.target().is_err(), "端口为 0 时应报错");
 
         req.target_port = 80;
         assert_eq!(req.target().unwrap(), ("10.0.0.5".to_string(), 80));
+    }
+
+    #[test]
+    fn local_target_falls_back_to_loopback_and_bind_port() {
+        let mut req = request(ForwardKind::Local);
+        req.bind_port = 8080;
+        assert_eq!(req.target().unwrap(), ("127.0.0.1".to_string(), 8080));
+
+        // 显式填写的目标优先于回落值
+        req.target_host = Some("10.0.0.5".into());
+        req.target_port = 3306;
+        assert_eq!(req.target().unwrap(), ("10.0.0.5".to_string(), 3306));
+    }
+
+    #[test]
+    fn remote_target_falls_back_to_loopback_and_bind_port() {
+        let mut req = request(ForwardKind::Remote);
+        req.bind_port = 8080;
+        assert_eq!(req.target().unwrap(), ("127.0.0.1".to_string(), 8080));
+
+        req.target_host = Some("localhost".into());
+        req.target_port = 3000;
+        assert_eq!(req.target().unwrap(), ("localhost".to_string(), 3000));
     }
 
     #[test]

@@ -1,6 +1,6 @@
 [package]
 name = "pterm"
-version = "0.2.6"
+version = "0.3.0"
 description = "跨平台 SSH 终端客户端"
 authors = ["pterm"]
 edition = "2021"
@@ -49,6 +49,10 @@ rand = "0.8"
 argon2 = "0.5"
 aes-gcm = "0.10"
 getrandom = "0.2"
+
+# 激活码授权：Zely 客户端 SDK（在线激活 + 离线凭证验签）
+# 按 tag 锁定版本，升级时改这里并跑一次构建，不要跟分支
+zely-license = { git = "https://github.com/willasn/zely-issuance", tag = "v0.2.2" }
 
 # 运行时
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net"] }

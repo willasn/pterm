@@ -22,6 +22,7 @@ use modules::auto_update::AutoUpdateModule;
 use modules::command_history::CommandHistoryModule;
 use modules::git_sync::{GitSync, GitSyncModule};
 use modules::global_search::GlobalSearchModule;
+use modules::license::LicenseService;
 use modules::local_terminal::LocalTerminalModule;
 use modules::mcp::McpModule;
 use modules::quick_panel::QuickPanelModule;
@@ -109,6 +110,9 @@ pub fn run() {
             let mcp = McpModule::new();
             registry.register(mcp.clone());
 
+            // 激活码授权：Git 同步为付费功能，状态落配置目录下的 license.json
+            let license = LicenseService::new(&paths.config_dir);
+
             let state = AppState::new(
                 config,
                 store,
@@ -119,12 +123,20 @@ pub fn run() {
                 sftp,
                 port_forward,
                 ai,
+                license.clone(),
             );
             let ctx = state.module_context(app.handle().clone());
             state.modules.apply(&ctx)?;
             app.manage(state);
             // 设置界面命令需要读取 MCP 的实际监听端口与最近错误，托管同一模块实例
             app.manage(mcp);
+
+            // 授权临近到期时静默续签；失败不影响启动，仅记日志
+            tauri::async_runtime::spawn(async move {
+                if let Err(e) = license.renew_if_due().await {
+                    log::warn!("授权自动续签失败：{e}");
+                }
+            });
 
             // 系统托盘仅 Windows 提供，且恒定常驻（设置里的开关已移除，不再可配置）。
             // macOS 不支持系统托盘，关闭窗口改由 Dock 图标恢复（见下方 RunEvent::Reopen）。
@@ -171,6 +183,9 @@ pub fn run() {
             config::commands::vault_reset,
             config::commands::vault_adopt_pending,
             config::commands::vault_discard_pending,
+            // 激活码授权（核心，Git 同步的门控）
+            modules::license::commands::license_status,
+            modules::license::commands::license_activate,
             // SSH 核心
             ssh::commands::ssh_connect,
             ssh::commands::ssh_write,

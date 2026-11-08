@@ -40,7 +40,7 @@
 | [x] | 复制 / 粘贴 | 选中即复制可选（`terminal.copy_on_select`）；终端内右击弹出「复制 / 粘贴」菜单（`terminal.right_click_menu`）；复制 / 粘贴可绑定快捷键（动作 `terminal.copy` / `terminal.paste`），无选中文本时复制键原样落到终端；粘贴走 xterm 原生 paste，同样经过危险命令检测。WebView 不提供 `navigator.clipboard` 时（macOS 打包后的 `tauri://` 自定义协议、部分 Linux WebKitGTK）自动回退到 Rust 命令读写系统剪贴板。vim 等开启鼠标上报（`set mouse=a`）的程序中，按住 Option（macOS）/ Shift（Windows / Linux）拖动可强制选中文本 | `src/features/terminal/`、`src/features/shortcuts/`、`src-tauri/src/utils/commands.rs` |
 | [x] | 终端内搜索 | 终端内 `Cmd/Ctrl+F` 打开查找条，在回滚缓冲中查找：输入即从当前视口向下定位，Enter 下一个 / Shift+Enter 上一个（环形），`Aa` 切换区分大小写，Esc 关闭。**全部命中项用鲜艳底色高亮**（xterm decoration 半透明色块，不遮字），当前项换橙色并加描边；同时滚动到可视区中部。快捷动作 `terminal.find` | `src/features/terminal/`（`search.ts` + `api.ts`） |
 | [x] | 本地即时回显 | 预测性回显：按键先本地上屏，远端回显到达后逐字节比对对齐，不一致则整段撤回重画；回车、Tab、方向键、粘贴不预测。可用 `terminal.local_echo` 关闭 | `src/features/terminal/` |
-| [x] | 输入法自动切换 | `ime_auto_switch` | WKWebView 下简体拼音 / 微信输入法等会把普通字母键报成 `keyCode 229`，字符只能经隐藏 textarea 的组合通道进来，快打丢字、慢打重复（系统 ABC 无此问题）。命令模式（默认）在终端获得焦点时把系统输入源切到英文、应用失焦时还原；输入法模式则交还系统输入法以输入中文。终端内 `Cmd/Ctrl+Shift+I` 或点击右下角角标切换，新会话继承上次选择。仅 macOS 生效 | `src-tauri/src/features/ime/`、`src/features/terminal/` |
+| [x] | 输入法自动切换 | `ime_auto_switch` | WKWebView 下简体拼音 / 微信输入法等会把普通字母键报成 `keyCode 229`，字符只能经隐藏 textarea 的组合通道进来，快打丢字、慢打重复（系统 ABC 无此问题）。命令模式（默认）在终端获得焦点时把系统输入源切到英文、应用失焦时还原；输入法模式则交还系统输入法以输入中文。**开关在「设置 → 通用」**；终端内 `Cmd/Ctrl+Shift+I` 或点击右下角角标也可切换，新会话继承上次选择。仅 macOS 生效 | `src-tauri/src/features/ime/`、`src/features/terminal/` |
 
 > ⚠️ 已知待优化：第三方输入法（简体拼音 / 微信等）在「输入法模式下手动切回英文」时，快打仍会漏字（同 `keyCode 229` 组合输入通道问题）。系统 ABC 输入法、以及命令模式下的英文输入不受影响。待后续探索（候选：更彻底的组合事件去重 / 在输入法模式内软锁定英文态），暂按现状发布。
 | [x] | 输入不静默丢弃 | 非就绪或写入失败时明确提示并撤回本地预测；重连前丢弃的输入量记日志 | `src/features/terminal/`、`src-tauri/src/ssh/session.rs` |
@@ -78,19 +78,18 @@ features:
   tabs:            true    # 必开项
   split_view:      true    # 必开项
   sftp:            true    # 必开项
-  port_forward:    false
-  jump_host:       true
+  port_forward:    true    # 必开项
+  jump_host:       true    # 必开项
   host_key_check:  true    # 开关在「设置 → 连接」
   local_terminal:  true    # 必开项
   key_setup:       true    # 必开项
-  session_log:     false
+  session_log:     false   # 开关在「设置 → 通用」
   auto_reconnect:  true    # 开关在「设置 → 连接」
   connection_group:true    # 必开项
   import_export:   true    # 必开项
   rdp:             true    # 必开项
   quick_connect:   true    # 必开项
   sync_input:      true    # 必开项
-  session_monitor: false   # 会话资源监控，默认关闭
 ```
 
 > 标「必开项」的开关恒为开启、界面不暴露，配置里写成 false 也会被强制拉回
@@ -101,19 +100,19 @@ features:
 | [x] | 多标签 | `tabs` | 单窗口多会话标签页，标签可拖拽排序、重命名、关闭；标签右键可「克隆会话」，用同一连接参数再开一份独立 SSH 会话（仅 SSH，RDP 不产生标签） | `src/features/tabs/` |
 | [x] | 分屏 | `split_view` | 同一标签内水平/垂直分屏，多个终端共享标签 | `src/features/split/` |
 | [x] | SFTP | `sftp` | 文件浏览、上传、下载、删除、重命名、权限修改；支持文件夹递归传输、拖拽上传、拖拽下载（拖出到系统文件管理器 / 面板内投放区）、传输进度与中断 | `src/features/sftp/`、`src-tauri/src/features/sftp/` |
-| [x] | 端口转发 | `port_forward` | 本地转发 / 远程转发 / 动态转发（SOCKS5），支持启停与状态查看 | `src/features/port-forward/`、`src-tauri/src/features/port_forward/` |
-| [x] | 跳板机 | `jump_host` | 通过 ProxyJump 链式连接（支持多级） | `src-tauri/src/ssh/jump.rs` |
+| [x] | 端口转发 | `port_forward` | 本地转发 / 远程转发 / 动态转发（SOCKS5），支持启停与状态查看；只在配置了转发规则时才建立监听，常驻零开销，故为必开项 | `src/features/port-forward/`、`src-tauri/src/features/port_forward/` |
+| [x] | 跳板机 | `jump_host` | 通过 ProxyJump 链式连接（支持多级）；只在建连时参与路由，常驻零开销，故为必开项 | `src-tauri/src/ssh/jump.rs` |
 | [x] | 一键生成密钥 | `key_setup` | 连接右键「生成并部署密钥…」：先弹窗让用户确认 / 修改名称（默认按连接名生成，该名称同时作为私钥文件名后缀与 `~/.ssh/config` 的 Host 别名）；本地纯 Rust 生成 ed25519 密钥对（无口令，私钥 0600），认证后把公钥经 SSH exec 幂等追加到远端 `~/.ssh/authorized_keys`（只追加不覆盖，写前备份并修正 700/600 权限），再另起一条仅私钥认证的会话验证登录，最后写入本机 `~/.ssh/config`（按 Host 段匹配，冲突时用户选择覆盖 / 另加别名 / 跳过，写前备份、原子替换）。跳板机复用同一隧道；RDP 连接不适用 | `src-tauri/src/ssh/key_setup.rs`、`src/features/connections/` |
 | [x] | 主机密钥校验 | `host_key_check` | 建连握手后、认证前比对服务端主机密钥：首次连接弹窗确认指纹（TOFU），密钥变更时以危险样式二次确认，确认后写入配置目录下的 `known_hosts.json`（本机私有、不随 Git 同步）；未确认一律拒绝，抵御中间人攻击。**校验覆盖终端 / SFTP / 端口转发 / 跳板机**：后三者无法弹窗，未确认或已变更时提示「先在终端中连接该主机完成首次信任」。设置「连接 → 主机密钥校验」可关闭开关，开关右侧「已知主机」按钮打开独立弹窗查看 / 移除已知主机；「测试连接」不校验也不写入 | `src-tauri/src/ssh/known_hosts.rs`、`src-tauri/src/ssh/session.rs`、`src/features/ssh/api.ts`、`src/features/settings/` |
 | [x] | 本地终端 | `local_terminal` | 在本机 PTY（Unix pty / Windows ConPTY）上打开一个 shell 标签，不经过网络；复用 SSH 的会话表、事件通道与标签 / 分屏体系，读写 / 改尺寸 / 断开走同一组命令。入口：侧栏按钮与快捷键（默认 `Cmd/Ctrl+Shift+T`）。Windows 优先 PowerShell、回退 cmd | `src-tauri/src/ssh/local.rs`、`src-tauri/src/modules/local_terminal/`、`src/features/local-terminal/` |
-| [x] | 会话日志 | `session_log` | 按会话落盘完整终端输出，支持开关、保留天数（默认 10 天）、保留条数（默认 20 条）与单文件大小上限（默认 100 KB，超出丢弃最旧内容）；天数 / 条数 / 上限任一置 0 表示该项不限制。预览按「单个文件」截取末尾 10 KB | `src/features/session-log/`、`src-tauri/src/features/session_log/` |
+| [x] | 会话日志 | `session_log` | 按会话落盘完整终端输出，支持开关（**开关在「设置 → 通用」**）、保留天数（默认 10 天）、保留条数（默认 20 条）与单文件大小上限（默认 100 KB，超出丢弃最旧内容）；天数 / 条数 / 上限任一置 0 表示该项不限制。预览按「单个文件」截取末尾 10 KB | `src/features/session-log/`、`src-tauri/src/features/session_log/` |
 | [x] | 自动重连 | `auto_reconnect` | 断线后指数退避重连，可配置最大次数与间隔 | `src-tauri/src/ssh/session.rs` |
 | [x] | 连接分组 | `connection_group` | 连接按文件夹/标签分组，支持折叠与搜索 | `src-tauri/src/config/app_config.rs` |
 | [x] | 连接备注 | — | 每个连接可填写纯文本备注（用途 / 机房位置等），显示在侧栏连接地址下方并纳入全局搜索；备注随导出文件与 Git 同步保存，不含凭据 | `src/features/connections/`、`src-tauri/src/config/store.rs` |
 | [x] | 导入导出 | `import_export` | 导入/导出连接配置（含 `~/.ssh/config` 解析），导出时排除凭据 | `src/features/import-export/`、`src-tauri/src/features/import_export/` |
 | [x] | 快捷连接 | `quick_connect` | `user@host:port` 一行直达，无需先保存配置 | `src/features/connections/` |
 | [x] | 同步输入 | `sync_input` | 只在一台终端输入，输入同步广播到**同一同步组**内的其它标签。右键标签菜单：`当前添加到组` / `全部添加到组`（加入组后用同色轮廓 + 组序号徽标标识分组）、`开启 / 关闭组内同步输入`（**每组独立开关**，开启后组内才互相广播，成员标签加同色高亮以区别于普通状态）、`移出同步组`、`移除全部组`（解散所有组）。加入组后组内标签自动聚拢、当前标签移到组的最右侧。分组为会话期临时状态、不落库 | `src/features/sync-input/`、`src/features/tabs/`、`src/features/terminal/` |
-| [x] | 会话资源监控 | `session_monitor` | 终端**底部占一行的状态条**显示远端主机 **CPU / 内存 / 负载 / 磁盘 / 网络**（占独立高度，不覆盖终端内容；开关变化后自动重新适配终端尺寸），SSH 会话每 3 秒刷新。鼠标悬停单项查看详情：CPU 显示型号 / 核心数，内存显示总容量 / 已用 / 可用（Linux 有 root 时含内存条型号与频率），磁盘显示根分区占用与物理磁盘型号容量，负载显示解释与当前核数。采集：Linux 读 `/proc` + `dmidecode` + `lsblk`，macOS 用 `ps` / `vm_stat` / `netstat` / `sysctl` / `diskutil`，硬件信息只在开启时采一次并缓存；其他系统连续失败后显示「暂不支持资源监控」。**默认关闭**：关闭时不注册指标监听、后端每轮仅做一次原子判断，不打开通道、不执行任何远端命令；设置里开/关对已有会话即时生效（无需重连） | `src-tauri/src/ssh/monitor.rs`、`src-tauri/src/ssh/channel.rs`、`src/features/terminal/`、`src/features/ssh/api.ts` |
+| [x] | 会话资源监控 | — | 终端**右下角小图标**按会话开关（绝对定位、不占布局高度）：点一下开始采样并展开**底部状态条**显示远端主机 **CPU / 内存 / 负载 / 磁盘 / 网络**，再点一下收起并停止采样；SSH 会话每 3 秒刷新。图标四态：关闭 / 采集中 / 失焦暂停 / 主机不支持。**失焦即暂停采样**：只有终端占着焦点的会话才采样（采样跑在会话的 shell 泵线程上，多标签同时采样会拖慢输入），失焦时保留上次读数。鼠标悬停单项查看详情：CPU 显示型号 / 核心数，内存显示总容量 / 已用 / 可用（Linux 有 root 时含内存条型号与频率），磁盘显示根分区占用与物理磁盘型号容量，负载显示解释与当前核数。采集：Linux 读 `/proc` + `dmidecode` + `lsblk`，macOS 用 `ps` / `vm_stat` / `netstat` / `sysctl` / `diskutil`，硬件信息只在开启时采一次并缓存；其他系统连续失败后显示「暂不支持资源监控」。**每个新会话都默认关闭**：关闭时不注册指标监听、后端每轮仅做一次原子判断，不打开通道、不执行任何远端命令；运行时由 `ssh_set_session_monitor(id, enabled)` 按会话即时切换（无需重连） | `src-tauri/src/ssh/monitor.rs`、`src-tauri/src/ssh/channel.rs`、`src/features/terminal/`、`src/features/ssh/api.ts` |
 | [x] | 远程桌面（RDP） | `rdp` | 新建连接时可选 RDP 协议打开 Windows 远程桌面（不实现 RDP 协议本身）。Windows：生成数据目录下的 `.rdp` 并拉起系统自带 `mstsc`；若保险库存有密码，先用 `cmdkey` 写入 Windows 凭据管理器实现免密登录。macOS：系统无自带客户端，生成同一份 `.rdp` 后交给微软「Windows App」（原 Microsoft Remote Desktop，按探测到的应用路径唤起，兼容新旧目录名）打开，pterm 只负责保存会话，认证与凭据由该客户端管理；未安装时弹窗引导并一键跳转 Mac App Store 安装页。连接条目与 SSH 共用一张表，靠 `protocol` 字段区分 | `src-tauri/src/features/rdp/`、`src/features/rdp/` |
 
 ---
@@ -124,6 +123,10 @@ features:
 > 同步内容为 `config.yaml` / `connections.json` / `snippets.json`，以及 **主密码加密后的 `secrets.json`**
 > ——SSH 密码 / passphrase / 跳板机密码、AI API Key、Git 远端密码都在其中，均为密文；换机后输入同一主密码即可解开。
 > Git 操作优先走 `git2`（自包含，不依赖系统 git）；仅当 libgit2 明确不支持时回退系统 CLI 并记录原因。
+>
+> **授权**：Git 同步为激活码付费功能（Zely 授权服务）。状态查询、远端与凭据配置、测试连接始终可用；
+> 真正读写仓库的操作（初始化 / 克隆 / 同步 / 拉取 / 推送 / 提交 / 冲突解决）在未激活时由后端拒绝。
+> 激活状态存配置目录下的 `license.json`，离线凭证用内置公钥验签，临近到期自动联网续签。
 
 ```yaml
 features:
@@ -138,7 +141,8 @@ features:
 | 状态 | 功能 | FLAG | 说明 | 代码位置 |
 | --- | --- | --- | --- | --- |
 | [x] | Git 同步 | `git_sync` | 总开关。界面只暴露一个「同步」按钮：同步范围跟随「设置 → Git 同步」中的配置，点击后直接执行，`clone/pull/push/commit/status` 全部由后端在进程内完成，不向使用者暴露 Git 细节 | `src-tauri/src/modules/git_sync/repo.rs`、`src/features/git-sync/` |
-| [x] | 同步范围 | `git_sync_scope` | 「设置 → Git 同步」中为两档选择：**同步全部** / **同步全部（不包含连接密码、API Key）**，两档数据域均为 `all`，区别在是否带上 `secrets.json`。不在功能开关中暴露 | `src-tauri/src/modules/git_sync/mod.rs`、`src/features/settings/` |
+| [x] | 激活码授权 | — | Git 同步的门控。内嵌 Zely 客户端 SDK：`POST /api/v1/licenses/verify` 在线激活，之后用 Ed25519 公钥本地验签离线凭证（断网可用），临近到期后台静默续签；`license.json` 存授权码 / 离线凭证 / 设备标识。激活入口在 Git 同步面板与「设置 → Git 同步 → 功能激活」。公钥优先读构建期 `ZELY_LICENSE_PUBLIC_KEY`，未注入时首次激活从 `/api/v1/licensing/public-key` 拉取并缓存 | `src-tauri/src/modules/license/`、`src/features/git-sync/LicenseSection.tsx` |
+| [x] | 同步范围 | `git_sync_scope` | 「设置 → Git 同步」中为两档选择：**同步全部** / **同步全部（不包含连接密码、API Key）**，两档数据域均为 `all`，区别在是否带上 `secrets.json`。仅在此页配置 | `src-tauri/src/modules/git_sync/mod.rs`、`src/features/settings/` |
 | [x] | 同步敏感字段密文 | `git_sync_secrets` | `secrets.json` 是否随 Git 同步，由上面的「同步范围」档位决定（不单独暴露开关）；关闭后本地与远端互不覆盖，用于主密码冲突时临时搁置 | `src-tauri/src/modules/git_sync/mod.rs` |
 | [x] | 冲突处理 | `git_conflict_prompt` | 设置与 `secrets.json` 固定「以远端为准」自动解决；`connections.json` / `snippets.json` 冲突时弹窗让用户按数据域选择「远端覆盖 / 本地覆盖 / 两者保留」（两者保留 = 同名条目保留为两条，重复 id 的本地条目另起新 id），解决后自动导入并推送 | `src-tauri/src/modules/git_sync/repo.rs`、`src-tauri/src/modules/git_sync/mod.rs` |
 | [x] | 状态徽标 | `git_status_badge` | 侧栏用大白话显示同步状态：已同步 / 待同步 N 项 / 需处理冲突 / 未配置远端；不暴露 ahead/behind 等 Git 概念（内部开关，界面不暴露） | `src/features/git-sync/` |
@@ -155,15 +159,15 @@ features:
 
 ```yaml
 features:
-  ai_assistant:        false
+  ai_assistant:        false   # 开关在「设置 → AI 助手」
   ai_streaming:        true    # 必开项，界面不暴露开关
   ai_danger_warning:   true    # 必开项，界面不暴露开关
-  ai_context_inject:   true    # 开关在 AI 助手面板标题栏（清理图标左侧），不在功能开关中
+  ai_context_inject:   true    # 开关在 AI 助手面板标题栏（清理图标左侧）
 ```
 
 | 状态 | 功能 | FLAG | 说明 | 代码位置 |
 | --- | --- | --- | --- | --- |
-| [x] | 总开关 | `ai_assistant` | 关闭时不注册任何 AI command、不加载 AI UI | `src-tauri/src/modules/ai_assistant/mod.rs` |
+| [x] | 总开关 | `ai_assistant` | 关闭时不注册任何 AI command、不加载 AI UI；开关在「设置 → AI 助手」 | `src-tauri/src/modules/ai_assistant/mod.rs` |
 | [x] | Ask 模式 | — | 面板右侧停靠，输入即提问：回答问题、解释报错并给出建议与指导，命令以代码块列出、不自动执行。每个 shell 代码块带「运行」按钮，用户手动点击后在**独立后台通道**执行（不写入当前终端，危险命令仍二次确认），输出展示在新命令气泡里。输入框回车即发送、Shift + 回车换行；输入法组词中（中文候选面板打开）回车只上屏、不发送 | `src-tauri/src/modules/ai_assistant/commands.rs`、`src/features/ai/` |
 | [x] | 消息流 | — | 内容区是一条**按 SSH 会话隔离**的对话流：每个终端会话各有一份对话，切标签各自独立、切回仍能看到；提问发出后立即进流并清空输入框，模型的思考 / 流式回答 / Agent 每步命令与结论都作为消息依次落进消息框。对话只存内存、不落库，会话关闭即随会话丢弃；面板右上角按钮可二次确认后清空当前对话 | `src/features/ai/store.ts` |
 | [x] | 回答渲染 | — | 回答结束后按 Markdown 渲染一次（流式期间仍是纯文本，避免半截语法闪烁）：代码块（语言标签 + 复制按钮 + 注释 / 字符串 / 数字 / 关键字基础配色；shell 家族或无标注语言的代码块额外带「运行」按钮，后台通道执行）、行内 code、加粗 / 斜体 / 删除线、有序与无序列表、标题、引用、分隔线、http(s) 链接（点击复制链接，应用未装 opener 插件、不唤起浏览器）。白名单子集，DOM 全部由 textContent 构建、不用 innerHTML，模型输出里的标签只会显示为纯文本 | `src/features/ai/markdown.tsx`、`src/styles/settings.css` |
@@ -175,7 +179,7 @@ features:
 | [x] | 连通性测试 | — | 模型必须先点「测试连通性」验证通过才能保存：用该条目的地址 / Key / 模型名发一次最小请求，一次验到地址可达、Key 有效、模型名存在 | `src-tauri/src/modules/ai_assistant/client.rs`（`test_model`）、`src/features/settings/` |
 | [x] | 单模型保存 | — | 每个模型卡片自带「保存到模型列表」，新增或覆盖单条，不必等设置里其它分类一起提交；Key 仍只进加密保险库 | `src-tauri/src/modules/ai_assistant/commands.rs`（`ai_save_model`） |
 | [x] | 危险提示 | `ai_danger_warning` | Agent 请求执行的命令命中危险模式时高亮警告并二次确认。**必开项**，界面不暴露开关 | `src-tauri/src/modules/ai_assistant/danger.rs` |
-| [x] | 上下文注入 | `ai_context_inject` | 注入当前主机、目录、最近终端输出作为上下文。开关在主界面右侧 **AI 助手面板标题栏**（清理图标左侧的 📎 图标），设置「功能开关」中不再展示；切换后由 `ai_set_context_inject` 单独落盘 | `src-tauri/src/modules/ai_assistant/context.rs`、`src/features/ai/AiPanel.tsx` |
+| [x] | 上下文注入 | `ai_context_inject` | 注入当前主机、目录、最近终端输出作为上下文。开关在主界面右侧 **AI 助手面板标题栏**（清理图标左侧的 📎 图标），设置中不再展示；切换后由 `ai_set_context_inject` 单独落盘 | `src-tauri/src/modules/ai_assistant/context.rs`、`src/features/ai/AiPanel.tsx` |
 
 ---
 
@@ -224,7 +228,7 @@ features:
 | [x] | 命令片段 | `snippets` | 保存常用命令片段，支持变量占位符（`{{name}}`）与快捷插入 | `src-tauri/src/modules/snippets/` |
 | [x] | 全局搜索 | `global_search` | 跨连接 / 片段 / 历史 / 设置的统一模糊搜索 | `src/features/search/`、`src-tauri/src/modules/global_search/` |
 | [x] | 命令历史 | `command_history` | 记录并检索历史执行的命令，支持去重与频率排序 | `src/features/history/`、`src-tauri/src/modules/command_history/` |
-| [x] | 快捷面板 | `quick_panel` | 全局快捷键唤起的命令面板（类 Spotlight）；必开项，设置「功能开关」中不再展示 | `src/features/quick-panel/`、`src-tauri/src/modules/quick_panel/` |
+| [x] | 快捷面板 | `quick_panel` | 全局快捷键唤起的命令面板（类 Spotlight）；必开项，设置中不再展示 | `src/features/quick-panel/`、`src-tauri/src/modules/quick_panel/` |
 | [x] | 自动更新 | `auto_update` | 开关控制启动后自动检查新版本（结果按天缓存）并在发现新版时右下角提示；并行检查 R2（`dl.panpan.space/pterm/latest.json`）与 GitHub Releases 两个更新源（单源超时 4 秒），取有效版本号最大的那份，并从该源下载；开关在「设置 → 关于 → 软件更新」栏，页内「检查更新」按钮始终可用，关闭开关也能主动手动检查。确认后下载、校验签名并安装，装完重启应用（Tauri updater） | `src-tauri/src/modules/auto_update/`、`src/features/auto-update/` |
 | [x] | 主题 | `theme` | 内置亮/暗主题 + 自定义配色，终端配色独立配置 | `src/styles/theme.css`、`src-tauri/src/modules/theme/` |
 | [x] | 快捷键 | `shortcuts` | 全部操作可绑定快捷键；设置页每个动作固定一行，左侧只读描述，可逐条启用 / 禁用、改键或清空解绑，附冲突检测 | `src/features/shortcuts/`、`src/features/settings/`、`src-tauri/src/modules/shortcuts/` |

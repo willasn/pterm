@@ -8,8 +8,8 @@ import { collectMatches, firstIndexFrom, SearchMatch } from "./search";
 let ssh: {
   disconnect(id: string): Promise<void>;
   reconnect(id: string): Promise<any>;
-  /** 资源监控的指标监听开关（可选：未接线时静默跳过）。 */
-  setMonitorEnabled?(enabled: boolean): void;
+  /** 资源监控的指标监听开关（按会话，可选：未接线时静默跳过）。 */
+  setSessionMonitor?(id: string, enabled: boolean): void;
 };
 let syncInput: { targetsFor(id: string): string[] };
 let ai: { forget(id: string): void };
@@ -26,8 +26,6 @@ export function wireDependencies(deps: {
   connections: typeof connections;
 }): void {
   ({ ssh, syncInput, ai, connections } = deps);
-  // 配置可能先于依赖注入应用：接线后补一次监控开关，避免漏挂指标监听
-  if (monitorOn && typeof ssh.setMonitorEnabled === "function") ssh.setMonitorEnabled(true);
 }
 
 /**
@@ -190,31 +188,8 @@ function readClipboard(): Promise<string> {
 /** 应用配置变化：字体、主题、滚动缓冲等。 */
 export function setConfig(next: any): void {
   config = next;
-  syncMonitorFlag();
   controllers.forEach((ctrl) => ctrl.applyConfig());
   tabs.render();
-}
-
-/** 会话资源监控是否开启（features.connection.session_monitor，默认关闭）。 */
-let monitorOn = false;
-
-function monitorEnabled(): boolean {
-  const c = (config && config.features && config.features.connection) || {};
-  return !!c.session_monitor;
-}
-
-/**
- * 把资源监控开关同步到事件订阅层与后端。
- *
- * 只在开关真正变化时广播：关闭后后端会话线程只做一次原子判断即返回，
- * 前端的指标监听也全部摘除，不保留任何持续采样或监听开销。
- */
-function syncMonitorFlag(): void {
-  const on = monitorEnabled();
-  if (on === monitorOn) return;
-  monitorOn = on;
-  if (ssh && typeof ssh.setMonitorEnabled === "function") ssh.setMonitorEnabled(on);
-  ipc.sshSetSessionMonitor(on).catch(() => {});
 }
 
 /** 字节数格式化：1.2M / 340K。 */
@@ -670,17 +645,86 @@ export function open(info: SessionInfo, options?: any): TerminalController {
   }
 
   // -------------------------------------------------------------------------
-  // 资源监控面板：仅在开关打开且会话就绪时创建，关闭即移除 DOM 与监听引用
+  // 资源监控：右下角小图标按会话开关，面板仅在开启且会话就绪时创建
   // -------------------------------------------------------------------------
   let monitorEl: HTMLElement | null = null;
   let monitorShown = false;
+  /** 用户对本会话的监控选择（点图标切换）；默认关闭，失焦只暂停采样，不改变它 */
+  let monitorWant = false;
+  /** 真正下发给后端的采样开关：want && 有焦点 && 就绪 */
+  let monitorLive = false;
+  /** 该主机探测连续失败，后端已停止采样 */
+  let monitorUnsupported = false;
+  const localTerm = !!(opts.params && opts.params.kind === "local");
   /** 最近一轮采样：面板比指标晚创建时（状态事件与事件顺序不固定）用它补渲染 */
   let lastMetrics: any = null;
   const monitorVals: Record<string, HTMLElement> = {};
   const monitorItems: Record<string, HTMLElement> = {};
+  const monitorToggle = localTerm ? null : buildMonitorToggle();
+  renderMonitorToggle();
+
+  /**
+   * 右下角监控图标。
+   *
+   * 绝对定位、不参与 flex 布局，所以开关不会改变终端高度；
+   * 点一下开启采样并展开明细条，再点一下收起并停止采样。
+   */
+  function buildMonitorToggle(): HTMLButtonElement {
+    const btn = el("button", {
+      class: "pane-monitor-toggle",
+      type: "button",
+      html:
+        '<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">' +
+        '<path d="M1 9h3l2-5 3 9 2-4h4" fill="none" stroke="currentColor" ' +
+        'stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    }) as HTMLButtonElement;
+    // 按下时阻止默认行为，点击图标不会让终端失焦（否则会先触发一次失焦暂停）
+    btn.addEventListener("mousedown", (event) => event.preventDefault());
+    btn.addEventListener("click", (event) => {
+      event.stopPropagation();
+      monitorWant = !monitorWant;
+      monitorUnsupported = false;
+      if (!monitorWant) lastMetrics = null;
+      syncMonitorState();
+      // 开启时把焦点交还终端，避免点完图标仍停在暂停态
+      if (monitorWant) term.focus();
+      // 明细条增减会挤占终端区域，重新适配一次尺寸
+      fit(ctrl);
+    });
+    pane.appendChild(btn);
+    return btn;
+  }
+
+  /** 刷新图标状态：关闭 / 采集中 / 暂停 / 不支持。 */
+  function renderMonitorToggle(): void {
+    if (!monitorToggle) return;
+    let state = "off";
+    let label = "资源监控：已关闭，点击开启";
+    if (monitorUnsupported) {
+      state = "unsupported";
+      label = "资源监控：该主机暂不支持";
+    } else if (monitorWant && monitorLive) {
+      state = "live";
+      label = "资源监控：采集中，点击关闭";
+    } else if (monitorWant) {
+      state = "paused";
+      label = "资源监控：已暂停采样（终端失焦或未就绪），点击关闭";
+    }
+    monitorToggle.dataset.state = state;
+    monitorToggle.title = label;
+    monitorToggle.setAttribute("aria-pressed", monitorWant ? "true" : "false");
+  }
+
+  // 失焦即暂停采样、聚焦恢复：切标签 / 点到别处都会经过这里
+  const onPaneFocus = () => syncMonitorState();
+  const onPaneBlur = () => syncMonitorState();
+  pane.addEventListener("focusin", onPaneFocus);
+  pane.addEventListener("focusout", onPaneBlur);
+  detachHandlers.push(() => pane.removeEventListener("focusin", onPaneFocus));
+  detachHandlers.push(() => pane.removeEventListener("focusout", onPaneBlur));
 
   function ensureMonitor(): void {
-    if (monitorEl || !monitorOn) return;
+    if (monitorEl || !monitorWant) return;
     const items = [
       { key: "cpu", label: "CPU" },
       { key: "mem", label: "内存" },
@@ -701,6 +745,8 @@ export function open(info: SessionInfo, options?: any): TerminalController {
       nodes.push(node);
     });
     monitorEl = el("div", { class: "pane-monitor" }, nodes);
+    // 点状态条不要让终端失焦（否则会触发一次「失焦暂停」）
+    monitorEl.addEventListener("mousedown", (event) => event.preventDefault());
     pane.appendChild(monitorEl);
     if (lastMetrics) renderMetrics(lastMetrics);
   }
@@ -713,22 +759,39 @@ export function open(info: SessionInfo, options?: any): TerminalController {
     Object.keys(monitorItems).forEach((key) => delete monitorItems[key]);
   }
 
-  /** 根据开关与会话状态显隐监控条；返回是否改变了布局（调用方按需 refit）。 */
-  function syncMonitor(): boolean {
-    const localTerm = !!(opts.params && opts.params.kind === "local");
+  /**
+   * 同步采样开关与监控条。
+   *
+   * 采样只在「用户开启 + 会话就绪 + 终端占着焦点」时进行：采样跑在会话的
+   * shell 泵线程上（最坏阻塞 2s），多标签同时采样会拖慢输入，因此失焦即暂停。
+   * 监控条只跟随用户选择，暂停时保留上次读数，切回来立刻能看到。
+   * 返回是否改变了布局（调用方按需 refit）。
+   */
+  function syncMonitorState(): boolean {
     const kind = info.state && info.state.state;
-    const show = monitorOn && !localTerm && kind === "ready";
-    if (!show) {
-      const changed = monitorShown;
+    const focused = pane.contains(document.activeElement);
+    const live = monitorWant && !localTerm && kind === "ready" && focused;
+    if (live !== monitorLive) {
+      monitorLive = live;
+      if (ssh && typeof ssh.setSessionMonitor === "function") ssh.setSessionMonitor(info.id, live);
+      ipc.sshSetSessionMonitor(info.id, live).catch(() => {});
+    }
+
+    const show = monitorWant && !localTerm && kind === "ready";
+    const changed = show !== monitorShown;
+    if (show) {
+      ensureMonitor();
+      monitorShown = true;
+    } else {
       removeMonitor();
       monitorShown = false;
       // 断线 / 关闭监控后读数作废，重连后重新累计
       lastMetrics = null;
-      return changed;
+      monitorUnsupported = false;
     }
-    ensureMonitor();
-    const changed = !monitorShown;
-    monitorShown = true;
+    // 未就绪时不显示图标：此时既不能采样，也会和断线提示条叠在一起
+    if (monitorToggle) monitorToggle.hidden = !(kind === "ready" && !localTerm);
+    renderMonitorToggle();
     return changed;
   }
 
@@ -742,8 +805,10 @@ export function open(info: SessionInfo, options?: any): TerminalController {
   function renderMetrics(payload: any): void {
     if (!monitorEl || !payload) return;
     if (payload.unsupported) {
+      monitorUnsupported = true;
       monitorEl.classList.add("pm-unsupported");
       monitorEl.textContent = "该主机暂不支持资源监控";
+      renderMonitorToggle();
       return;
     }
 
@@ -852,7 +917,7 @@ export function open(info: SessionInfo, options?: any): TerminalController {
       echo.setEnabled(localEchoEnabled());
       applyImeMode();
       // 开关切换会增减底部监控条，占用的高度变了要重新适配终端尺寸
-      if (syncMonitor()) this.fit();
+      if (syncMonitorState()) this.fit();
     },
 
     /** 写入远端输出（先剥掉本地已经画过的回显）。 */
@@ -868,7 +933,7 @@ export function open(info: SessionInfo, options?: any): TerminalController {
       if (kind !== "ready") echo.reset();
       pane.dataset.state = kind;
       // 面板只在就绪时出现：断线 / 重连期间隐藏，避免展示过期读数
-      syncMonitor();
+      syncMonitorState();
       renderBanner(this, state);
       // 会话就绪时重新对齐尺寸：自动重连会按连接参数重建 pty（首开标签时是 80x24），
       // 若不再推一次真实尺寸，apt / dpkg 等会按错误尺寸排版并覆盖已输出的行。
@@ -890,7 +955,7 @@ export function open(info: SessionInfo, options?: any): TerminalController {
 
     /** 资源监控采样结果：缓存一份供面板补渲染，未开启监控时直接丢弃。 */
     setMetrics(payload: any) {
-      if (!monitorOn) return;
+      if (!monitorWant) return;
       lastMetrics = payload;
       if (monitorEl) renderMetrics(payload);
     },
@@ -920,6 +985,12 @@ export function open(info: SessionInfo, options?: any): TerminalController {
     },
 
     dispose() {
+      // 关掉本会话的采样：后端只是清一个原子量，前端摘掉指标监听
+      if (monitorLive) {
+        monitorLive = false;
+        ipc.sshSetSessionMonitor(info.id, false).catch(() => {});
+      }
+      if (ssh && typeof ssh.setSessionMonitor === "function") ssh.setSessionMonitor(info.id, false);
       detachHandlers.splice(0).forEach((fn) => {
         try {
           fn();
@@ -1249,8 +1320,6 @@ export function open(info: SessionInfo, options?: any): TerminalController {
   tabs.attach(ctrl, opts);
   updateEmptyState();
   ctrl.setState(info.state || { state: "connecting" });
-  // 面板按当前开关与状态决定是否创建（关闭时不产生任何节点）
-  syncMonitor();
 
   return ctrl;
 }

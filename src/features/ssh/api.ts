@@ -15,10 +15,12 @@ import { ask, b64ToBytes, errorText, promptPassword, toast } from "../util/util"
 const subscriptions = new Map<string, (() => void)[]>();
 
 /**
- * 资源监控开关。关闭时不注册任何指标监听，后端也不再采样，
- * 做到「关掉即零开销」；打开时再给已有会话补上监听。
+ * 已打开资源监控的会话 id。
+ *
+ * 监控按会话独立开关（终端右下角图标）：不在这里登记时不注册任何指标监听，
+ * 后端也不再采样，做到「关掉即零开销」；打开时给该会话补上监听。
  */
-let monitorEnabled = false;
+const monitorEnabled = new Set<string>();
 /** id -> 指标事件取消订阅函数 */
 const metricsListeners = new Map<string, () => void>();
 
@@ -152,7 +154,7 @@ function unsubscribe(id: string): void {
 
 /** 按开关状态为单个会话挂上指标监听（已挂过则跳过）。 */
 function attachMetrics(id: string): void {
-  if (!monitorEnabled || metricsListeners.has(id) || !subscriptions.has(id)) return;
+  if (!monitorEnabled.has(id) || metricsListeners.has(id) || !subscriptions.has(id)) return;
   ipc
     .listen(`ssh:metrics:${id}`, (payload: any) => {
       if (!payload) return;
@@ -160,25 +162,30 @@ function attachMetrics(id: string): void {
     })
     .then((off) => {
       // 注册完成前可能已关掉开关或关掉了标签，此时立即摘除，避免监听泄漏
-      if (monitorEnabled && subscriptions.has(id)) metricsListeners.set(id, off);
+      if (monitorEnabled.has(id) && subscriptions.has(id)) metricsListeners.set(id, off);
       else stop(off);
     })
     .catch(() => {});
 }
 
 /**
- * 设置资源监控开关。关闭时摘掉全部指标监听；打开时给已有会话补挂。
- * 后端采样由 terminal 的配置同步另行广播（见 terminal/api.ts 的 setConfig）。
+ * 设置单个会话的资源监控开关（终端右下角图标点击 / 失焦暂停时调用）。
+ * 关闭时摘掉该会话的指标监听；打开时若会话已订阅则立即补挂。
+ * 后端采样由 terminal/api.ts 调 `ssh_set_session_monitor` 同步。
  */
-export function setMonitorEnabled(enabled: boolean): void {
-  if (enabled === monitorEnabled) return;
-  monitorEnabled = enabled;
-  if (!enabled) {
-    metricsListeners.forEach((off) => stop(off));
-    metricsListeners.clear();
+export function setSessionMonitor(id: string, enabled: boolean): void {
+  if (enabled) {
+    if (monitorEnabled.has(id)) return;
+    monitorEnabled.add(id);
+    attachMetrics(id);
     return;
   }
-  Array.from(subscriptions.keys()).forEach(attachMetrics);
+  if (!monitorEnabled.delete(id)) return;
+  const off = metricsListeners.get(id);
+  if (off) {
+    metricsListeners.delete(id);
+    stop(off);
+  }
 }
 
 /**

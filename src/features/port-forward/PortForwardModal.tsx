@@ -14,6 +14,9 @@ import {
 } from "./store";
 import type { RunningForward } from "./types";
 
+/** 三种转发方向的一句话总览，固定展示在表单顶部。 */
+const INTRO = "-L 是把远端的服务搬到本地来用，-R 是把本地的服务搬到远端去用，-D 是在本地开一个由 SSH 承载流量的代理。";
+
 /** 新建规则表单。 */
 function FormSection({ state }: { state: PortForwardState }) {
   const { draft, connections } = state;
@@ -27,14 +30,19 @@ function FormSection({ state }: { state: PortForwardState }) {
   }
 
   const dynamic = draft.kind === "dynamic";
+  const remote = draft.kind === "remote";
+  const listenPort = draft.bind_port.trim();
+  // 目标默认值提示：本地转发指向 SSH 主机本机，远程转发指向本机
+  const targetHint = remote ? "留空默认 127.0.0.1（你本机）" : "留空默认 127.0.0.1";
   const hint = dynamic
-    ? "本机监听端口可直接作为 SOCKS5 代理使用。"
-    : draft.kind === "remote"
-      ? "远端转发在 SSH 服务器上监听；该服务器需允许端口转发，不支持经跳板机建立。"
-      : "本地转发在本机监听，连接经 SSH 送到目标。";
+    ? "在本机提供 SOCKS5 代理，访问的目标地址由客户端在握手时指定，一条规则即可覆盖任意内网地址。"
+    : remote
+      ? "在 SSH 服务器上监听，连接经 SSH 回到本机目标；目标地址留空默认 127.0.0.1（你本机），目标端口留空同监听端口。该服务器需允许端口转发，不支持经跳板机。"
+      : "在本机监听，连接经 SSH 送到远端目标；目标地址留空时默认 127.0.0.1（服务在 SSH 主机本机），目标端口留空时同监听端口。";
 
   return (
-    <Section title="新建规则" desc={hint}>
+    <Section title="新建规则" desc={INTRO}>
+      <p className="desc">{hint}</p>
       <Field label="连接">
         <select
           className="pf-picker"
@@ -85,22 +93,22 @@ function FormSection({ state }: { state: PortForwardState }) {
         <Note>动态转发在本机提供 SOCKS5 代理，目标地址由客户端在握手时指定。</Note>
       ) : (
         <>
-          <Field label="目标地址">
+          <Field label="目标地址" hint={targetHint}>
             <input
               type="text"
               spellCheck={false}
               className="pf-input"
-              placeholder="10.0.0.5"
+              placeholder="留空默认 127.0.0.1"
               value={draft.target_host}
               onChange={(event) => setDraftField("target_host", event.target.value)}
             />
           </Field>
-          <Field label="目标端口">
+          <Field label="目标端口" hint="留空默认同监听端口">
             <input
               type="text"
               spellCheck={false}
               className="pf-input"
-              placeholder="80"
+              placeholder={listenPort || "留空默认同监听端口"}
               value={draft.target_port}
               onChange={(event) => setDraftField("target_port", event.target.value)}
             />

@@ -1,11 +1,5 @@
 /** 设置面板涉及的少量结构类型。config draft 形状较宽，按 any 处理。 */
 
-/** feature_flags 扁平化后的一项。 */
-export interface FlagEntry {
-  path: string;
-  value: boolean;
-}
-
 /** 模块运行状态（module_status 返回）。 */
 export interface ModuleStatus {
   id: string;

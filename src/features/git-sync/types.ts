@@ -31,3 +31,19 @@ export interface SyncOutcome {
 
 /** 冲突处理方式。 */
 export type ConflictChoice = "remote" | "local" | "both";
+
+/** 激活码授权状态（license_status 返回）。 */
+export interface LicenseStatus {
+  /** free | active | expiring | grace | locked | needs_activation | clock_rollback */
+  state: string;
+  /** 是否已解锁 Git 同步。 */
+  unlocked: boolean;
+  plan?: string | null;
+  expires_at?: string | null;
+  grace_ends_at?: string | null;
+  days_left?: number | null;
+  /** 已激活授权码（脱敏）。 */
+  key_hint?: string | null;
+  device_id?: string | null;
+  message: string;
+}

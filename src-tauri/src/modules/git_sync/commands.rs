@@ -42,6 +42,7 @@ pub async fn git_sync_status(
 #[tauri::command]
 pub async fn git_sync_init(app: AppHandle, state: State<'_, AppState>) -> AppResult<GitStatusView> {
     state.require_module(module_id::GIT_SYNC)?;
+    state.require_git_sync_license()?;
     let sync = state.sync_context(app);
     blocking(move || sync.init_repo()).await
 }
@@ -54,6 +55,7 @@ pub async fn git_sync_clone(
     url: String,
 ) -> AppResult<GitStatusView> {
     state.require_module(module_id::GIT_SYNC)?;
+    state.require_git_sync_license()?;
     let sync = state.sync_context(app);
     blocking(move || sync.clone_repo(&url)).await
 }
@@ -69,6 +71,7 @@ pub async fn git_sync_now(
     include_secrets: Option<bool>,
 ) -> AppResult<SyncOutcomeView> {
     state.require_module(module_id::GIT_SYNC)?;
+    state.require_git_sync_license()?;
     let sync = state.sync_context(app);
     let req = SyncRequest::full(include_secrets.unwrap_or(true));
     blocking(move || sync.execute(req)).await
@@ -78,6 +81,7 @@ pub async fn git_sync_now(
 #[tauri::command]
 pub async fn git_sync_pull(app: AppHandle, state: State<'_, AppState>) -> AppResult<SyncOutcomeView> {
     state.require_module(module_id::GIT_SYNC)?;
+    state.require_git_sync_license()?;
     let sync = state.sync_context(app);
     let req = SyncRequest::from_flags(Op::Pull, &state.flags());
     blocking(move || sync.execute(req)).await
@@ -87,6 +91,7 @@ pub async fn git_sync_pull(app: AppHandle, state: State<'_, AppState>) -> AppRes
 #[tauri::command]
 pub async fn git_sync_push(app: AppHandle, state: State<'_, AppState>) -> AppResult<SyncOutcomeView> {
     state.require_module(module_id::GIT_SYNC)?;
+    state.require_git_sync_license()?;
     let sync = state.sync_context(app);
     let req = SyncRequest::from_flags(Op::Push, &state.flags());
     blocking(move || sync.execute(req)).await
@@ -99,6 +104,7 @@ pub async fn git_sync_commit(
     state: State<'_, AppState>,
 ) -> AppResult<SyncOutcomeView> {
     state.require_module(module_id::GIT_SYNC)?;
+    state.require_git_sync_license()?;
     let sync = state.sync_context(app);
     let req = SyncRequest::from_flags(Op::Commit, &state.flags());
     blocking(move || sync.execute(req)).await
@@ -124,6 +130,7 @@ pub async fn git_sync_resolve(
     snippets: Option<String>,
 ) -> AppResult<SyncOutcomeView> {
     state.require_module(module_id::GIT_SYNC)?;
+    state.require_git_sync_license()?;
     let to_choice = |value: Option<String>, field: &str| -> AppResult<super::ConflictChoice> {
         match value.as_deref().map(str::trim) {
             None | Some("") | Some("remote") => Ok(super::ConflictChoice::Remote),

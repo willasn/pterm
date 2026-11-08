@@ -149,12 +149,10 @@ export async function start(): Promise<void> {
   const dynamic = draft.kind === "dynamic";
   const targetHost = String(draft.target_host || "").trim();
   const targetPort = portOf(draft.target_port, 0);
-  if (!dynamic && !targetHost) {
-    toast("请填写目标地址", "error");
-    return;
-  }
-  if (!dynamic && targetPort === 0) {
-    toast("目标端口需为 1~65535", "error");
+  // 本地 / 远程转发的目标可以留空：地址回落到 127.0.0.1，端口回落到监听端口
+  const fallbackPort = portOf(draft.bind_port, 0);
+  if (!dynamic && targetPort === 0 && fallbackPort === 0) {
+    toast("请填写目标端口（留空时默认同监听端口）", "error");
     return;
   }
   const request = {
@@ -162,7 +160,7 @@ export async function start(): Promise<void> {
     kind: draft.kind,
     bind_host: String(draft.bind_host || "").trim() || null,
     bind_port: portOf(draft.bind_port, 0),
-    target_host: dynamic ? null : targetHost,
+    target_host: dynamic || !targetHost ? null : targetHost,
     target_port: dynamic ? 0 : targetPort,
     label: String(draft.label || "").trim() || null,
   };

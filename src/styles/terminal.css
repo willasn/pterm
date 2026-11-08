@@ -497,17 +497,71 @@ body.tab-dragging * {
   border-color: var(--ok);
 }
 
+/* 资源监控图标：固定在 pane 右下角，不占布局高度；默认半透明，hover 显形。
+   四态：off（中性）/ live（采集中）/ paused（失焦暂停）/ unsupported（主机不支持）。 */
+.pane-monitor-toggle {
+  position: absolute;
+  right: 4px;
+  bottom: 2px;
+  z-index: 4;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-full);
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  opacity: 0.35;
+  transition: opacity 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+
+.pane-monitor-toggle:hover {
+  opacity: 1;
+  border-color: var(--border);
+  background: var(--bg-elev);
+}
+
+.pane-monitor-toggle[data-state="live"] {
+  color: var(--ok);
+  opacity: 0.9;
+}
+
+.pane-monitor-toggle[data-state="paused"] {
+  color: var(--warn);
+  opacity: 0.65;
+}
+
+.pane-monitor-toggle[data-state="unsupported"] {
+  color: var(--danger);
+  opacity: 0.65;
+}
+
+.pane-monitor-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* display: inline-flex 会盖掉 UA 的 [hidden]，这里显式还原 */
+.pane-monitor-toggle[hidden] {
+  display: none;
+}
+
 /* 会话资源监控条：默认关闭；开启后在终端底部占一行显示远端主机
    CPU / 内存 / 负载 / 磁盘 / 网络，hover 单项查看型号等详情。
    每个块的命中区左右各外扩 4px、上下撑满整条高度，鼠标不用精确贴住文字；
-   块与分隔符之间不留 flex gap，靠内边距维持原有的 8px 视觉间距。 */
+   块与分隔符之间不留 flex gap，靠内边距维持原有的 8px 视觉间距。
+   右侧留出 24px 给角落的开关图标，避免最后一项被压住。 */
 .pane-monitor {
   flex: none;
   display: flex;
   align-items: stretch;
   gap: 0;
   height: 22px;
-  padding: 0 var(--sp-4);
+  padding: 0 24px 0 var(--sp-4);
   border-top: 1px solid var(--border);
   background: var(--bg-elev);
   font-size: var(--fs-xs);

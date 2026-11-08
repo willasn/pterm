@@ -106,9 +106,6 @@ pub struct ConnectionFlags {
     /// 终端获得焦点时自动把系统输入源切到英文、失焦时还原（仅 macOS）。
     /// 关闭后需用户自行保证终端里使用英文输入法，否则输入法异常时快打会漏字。
     pub ime_auto_switch: bool,
-    /// 会话资源监控：终端右下角小面板显示远端主机 CPU / 内存 / 负载 / 磁盘 / 网络。
-    /// 默认关闭；关闭时不发起任何采样（不占用 SSH 通道与 IO）。
-    pub session_monitor: bool,
     /// 会话日志保留天数（按文件最后修改时间计算，超过即清理）
     pub session_log_retention_days: u32,
     /// 会话日志保留条数（最多保留最近修改的 N 个日志文件）
@@ -138,7 +135,6 @@ impl Default for ConnectionFlags {
             key_setup: true,
             sync_input: true,
             ime_auto_switch: true,
-            session_monitor: false,
             session_log_retention_days: 10,
             session_log_retention_count: 20,
             session_log_max_file_kb: 100,
@@ -383,8 +379,9 @@ impl FeatureFlags {
     /// 「必开项」：这些开关不在设置界面展示（前端 `HIDDEN_FLAGS`），且恒为开启——
     /// 配置文件里写成 false 也会在加载 / 重置时被强制回写为 true。
     ///
-    /// 目前包含：多标签、分屏、SFTP 文件传输、连接分组、配置导入导出、快捷连接、同步输入、
-    /// 远程桌面、本地终端、生成并部署 SSH 密钥（`connection.*`），Git 同步（`sync.git_sync`），
+    /// 目前包含：多标签、分屏、SFTP 文件传输、端口转发、跳板机、连接分组、配置导入导出、
+    /// 快捷连接、同步输入、远程桌面、本地终端、生成并部署 SSH 密钥（`connection.*`），
+    /// Git 同步（`sync.git_sync`），
     /// 流式响应、危险命令提示
     /// （`ai.ai_streaming` / `ai.ai_danger_warning`），
     /// 命令片段 / 全局搜索 / 命令历史 / 快捷面板 / 主题 / 崩溃日志（`auxiliary.*`）。
@@ -395,6 +392,10 @@ impl FeatureFlags {
             &mut self.connection.tabs,
             &mut self.connection.split_view,
             &mut self.connection.sftp,
+            // 端口转发 / 跳板机只在用户显式使用（配了规则、选了跳板机）时才产生连接与监听，
+            // 常驻零开销，因此恒为开启，不再暴露给用户关闭。
+            &mut self.connection.port_forward,
+            &mut self.connection.jump_host,
             &mut self.connection.connection_group,
             &mut self.connection.import_export,
             &mut self.connection.quick_connect,
@@ -451,7 +452,6 @@ impl FeatureFlags {
             "key_setup" => self.connection.key_setup,
             "sync_input" => self.connection.sync_input,
             "ime_auto_switch" => self.connection.ime_auto_switch,
-            "session_monitor" => self.connection.session_monitor,
         ]));
         out.extend(entries!("sync", [
             "git_sync" => self.sync.git_sync,
@@ -594,13 +594,6 @@ mod tests {
 
         flags.ai.ai_assistant = true;
         assert!(flags.module_enabled(module_id::AI_ASSISTANT));
-    }
-
-    /// 资源监控涉及额外 SSH 通道，默认必须关闭；开关需真实反映
-    #[test]
-    fn session_monitor_is_off_by_default() {
-        let flags = FeatureFlags::default();
-        assert!(!flags.connection.session_monitor, "会话资源监控不应默认开启");
     }
 
     /// MCP 端点等价于一条执行通道，默认必须关闭；开关需真实生效

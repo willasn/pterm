@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { Btn, Field, Note, Section } from "../../components/form";
 import { Portal } from "../../components/Portal";
 import { useT } from "../../hooks/useLocale";
+import { LicenseSection } from "./LicenseSection";
 import {
   closePanel,
   resolveConflicts,
@@ -75,6 +76,13 @@ export function GitSyncModal() {
           <div className="modal-body" id="git-body">
             {!state.enabled ? (
               <Note>Git 同步已关闭。请在「设置 → 功能开关」中打开「Git 同步」。</Note>
+            ) : !(state.license && state.license.unlocked) ? (
+              <>
+                <LicenseSection />
+                <Note>
+                  激活后即可同步。远程仓库、提交身份与访问凭据可先在「设置 → Git 同步」中填写。
+                </Note>
+              </>
             ) : !state.status ? (
               <Note>正在读取同步状态…</Note>
             ) : state.pendingConflicts ? (

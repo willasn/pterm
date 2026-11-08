@@ -374,7 +374,7 @@ export function persistWidth(): void {
 
 export function open(): void {
   if (!enabled) {
-    toast("AI 助手已关闭，请在「设置 → 功能开关」中启用", "info");
+    toast("AI 助手已关闭，请在「设置 → AI 助手」中启用", "info");
     return;
   }
   if (panelOpen) return;
@@ -1106,7 +1106,7 @@ export function view(): AiView {
 
   let empty: EmptyState | null = null;
   if (!enabled) {
-    empty = { icon: "✦", title: "AI 助手已关闭", desc: "请在「设置 → 功能开关」中打开「AI 助手」。" };
+    empty = { icon: "✦", title: "AI 助手已关闭", desc: "请在「设置 → AI 助手」中打开「AI 助手」。" };
   } else if (!list.length) {
     empty = {
       icon: "⚙",
