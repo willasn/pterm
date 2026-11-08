@@ -57,6 +57,15 @@ jobs:
         if: steps.node-modules-cache.outputs.cache-hit != 'true'
         run: npm ci
 
+      # zely-license 依赖私有仓库，cargo 拉取时需要凭据。
+      # token 只存在于仓库 Secrets，这里用 url 重写注入，不落任何明文。
+      - name: Configure git auth for private crate
+        shell: bash
+        env:
+          ZELY_REPO_TOKEN: ${{ secrets.ZELY_REPO_TOKEN }}
+        run: |
+          git config --global url."https://x-access-token:${ZELY_REPO_TOKEN}@github.com/".insteadOf "https://github.com/"
+
       - name: Sync version from tag
         shell: bash
         run: |
@@ -78,6 +87,8 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # 让 cargo 走 git CLI 拉取，上面的 url 重写才会生效。
+          CARGO_NET_GIT_FETCH_WITH_CLI: "true"
           # 自动更新签名：私钥（+ 可选密码）存在仓库 Secrets 里，
           # 公钥已写入 src-tauri/tauri.conf.json 的 plugins.updater.pubkey。
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
