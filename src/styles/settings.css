@@ -239,48 +239,22 @@
   filter: none;
 }
 
-/* AI 面板：Ask / Agent 模式切换（分段控件，选中项高亮） */
-.ai-mode-switch {
-  display: flex;
-  gap: var(--sp-4);
+/* AI 面板：Ask / Agent 合并成一个模式选择器，菜单向上展开 */
+.ai-mode-select {
   flex: none;
 }
 
-.ai-mode-switch .btn {
-  padding: 0 var(--sp-8);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-full);
-  background: transparent;
-  color: var(--text-dim);
-  font-size: var(--fs-xs);
-  line-height: 1.8;
-  cursor: pointer;
-  transition: background 0.12s, color 0.12s, border-color 0.12s;
+/* 菜单向左对齐，描述允许换行，避免长文案被省略号吃掉 */
+.ai-mode-menu {
+  left: 0;
+  right: auto;
+  min-width: 210px;
+  max-width: 240px;
 }
 
-/* 未选中项悬停也要有反馈，否则像是一块静态文本 */
-.ai-mode-switch .btn:not(.primary):hover {
-  background: var(--bg-hover);
-  color: var(--text);
-}
-
-/* 选中项：强调色浅底 + 描边，与侧栏选中项、设置导航同一套语言 */
-.ai-mode-switch .btn.primary {
-  background: var(--accent-soft);
-  border-color: var(--accent);
-  color: var(--accent);
-  font-weight: 500;
-}
-
-.ai-mode-switch .btn:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-}
-
-/* Agent 开关关闭时置灰，仍可见以便知道有这一项 */
-.ai-mode-switch .btn:disabled {
-  opacity: 0.45;
-  cursor: default;
+.ai-mode-menu .ai-model-option-sub {
+  white-space: normal;
+  line-height: 1.35;
 }
 
 /* ---------------------------------------------------------------------------
@@ -406,6 +380,94 @@
 /* 历史视图下输入框不可用，用颜色提示 */
 .ai-composer textarea:disabled {
   color: var(--text-dim);
+}
+
+/* 待发送附件：输入框上方一行缩略图 / 文件名，可逐个移除 */
+.ai-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-4);
+}
+
+.ai-attachment {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  max-width: 100%;
+  padding: 2px var(--sp-4) 2px 2px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-alt);
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+}
+
+.ai-attachment img {
+  width: 30px;
+  height: 30px;
+  object-fit: cover;
+  border-radius: var(--radius-sm);
+  flex: none;
+}
+
+.ai-attachment-icon {
+  flex: none;
+  width: 22px;
+  text-align: center;
+}
+
+.ai-attachment-name {
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-attachment-remove {
+  flex: none;
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  padding: 0 3px;
+  font-size: var(--fs-sm);
+  line-height: 1;
+}
+
+.ai-attachment-remove:hover {
+  color: var(--danger);
+}
+
+.ai-attach-btn {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+
+.ai-attach-btn:hover:not(:disabled) {
+  background: var(--bg-hover);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.ai-attach-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.ai-attach-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 
 .ai-composer-bar {
@@ -758,6 +820,28 @@
   line-height: 1.5;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* 用户气泡里回显上传过的附件：图片直接展示缩略图，文本文件显示文件名 */
+.ai-msg.user .ai-msg-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-4);
+  margin-bottom: var(--sp-4);
+}
+
+.ai-msg.user .ai-msg-attach-img {
+  display: block;
+  max-width: 180px;
+  max-height: 140px;
+  border-radius: var(--radius-sm);
+  object-fit: cover;
+}
+
+.ai-msg.user .ai-msg-attach-file {
+  font-size: var(--fs-xs);
+  opacity: 0.9;
+  word-break: break-all;
 }
 
 /* 助手消息：浅面板 + 描边，与用户气泡形成左右对照 */

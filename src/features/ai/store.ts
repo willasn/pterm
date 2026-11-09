@@ -8,6 +8,7 @@ import { active, list as terminalList, refitAll } from "../terminal/api";
 import { ask, confirmDialog } from "../util/util";
 import type {
   AgentState,
+  AiAttachment,
   AiMessage,
   AiModel,
   ComposeState,
@@ -60,6 +61,10 @@ const PANEL_MAX_RATIO = 0.7;
 const PANEL_WIDTH_KEY = "pterm.aiPanelWidth";
 /** 已派发但请求 id 还没拿回来时的占位值，让「正在回答」立即可见。 */
 const PENDING_ASK = "__pending__";
+/** 一次提问最多携带的附件数：再多会把请求体撑得过大。 */
+const MAX_ATTACHMENTS = 10;
+/** 只传附件不写字时使用的默认问题。 */
+const ATTACHMENT_ONLY_PROMPT = "请分析我上传的图片与附件，并给出结论与建议。";
 
 // ---------------------------------------------------------------------------
 // 可变状态（非响应式）
@@ -72,7 +77,7 @@ let aiConfig: any = {};
 /** 面板里选中的模型条目 id；跨面板开关保留，避免每次都要重选 */
 let selectedModelId = "";
 /** 交互模式：ask 只给建议（命令由用户点击运行），agent 自动执行只读命令、关键操作待授权 */
-let mode: "ask" | "agent" = "ask";
+let mode: "ask" | "agent" = "agent";
 
 const sessionViews = new Map<string, SessionView>();
 /** 在途 Ask 请求：requestId -> { key, msg }，事件据此定位要更新的消息。 */
@@ -84,6 +89,10 @@ let messageSeq = 0;
 let panelOpen = false;
 let panelWidth = 420;
 let menuOpen = false;
+
+/** 按会话保存的待发送附件：切标签各自保留，发送后清空。 */
+const drafts = new Map<string, AiAttachment[]>();
+let attachmentSeq = 0;
 
 // ---------------------------------------------------------------------------
 // 响应式外壳（版本号驱动重绘）
@@ -153,6 +162,59 @@ function currentKey(): string {
 
 function currentView(): SessionView {
   return sessionState(currentKey());
+}
+
+// ---------------------------------------------------------------------------
+// 附件（图片 / 文本文件）
+// ---------------------------------------------------------------------------
+
+/** 当前会话待发送的附件列表。 */
+export function draftAttachments(): AiAttachment[] {
+  return drafts.get(currentKey()) || [];
+}
+
+/** 生成附件 id；只用于列表 key 与移除，不参与请求。 */
+export function newAttachmentId(): string {
+  attachmentSeq += 1;
+  return "a" + attachmentSeq;
+}
+
+/** 登记一个已读取完成的附件；超过上限时提示并拒绝。 */
+export function addAttachment(att: AiAttachment): boolean {
+  const key = currentKey();
+  const list = drafts.get(key) || [];
+  if (list.length >= MAX_ATTACHMENTS) {
+    toast("一次最多上传 " + MAX_ATTACHMENTS + " 个附件", "warn");
+    return false;
+  }
+  list.push(att);
+  drafts.set(key, list);
+  bump();
+  return true;
+}
+
+export function removeAttachment(id: string): void {
+  const key = currentKey();
+  const list = drafts.get(key);
+  if (!list) return;
+  const next = list.filter((att) => att.id !== id);
+  if (next.length === list.length) return;
+  drafts.set(key, next);
+  bump();
+}
+
+/** 转成后端 `ChatAttachment`：图片发 base64，文本附件发正文。 */
+function apiAttachments(list: AiAttachment[]): any[] {
+  return list.map((att) => ({
+    kind: att.kind,
+    name: att.name,
+    mime: att.mime,
+    data: att.kind === "image" ? (att.preview || "").split(",")[1] || "" : att.text || "",
+  }));
+}
+
+function clearDraftAttachments(key: string): void {
+  drafts.delete(key);
 }
 
 /** 面板开合会改变终端可用宽度，必须让 xterm 重新计算列数。 */
@@ -289,7 +351,12 @@ function newMessageId(): string {
   return "m" + messageSeq;
 }
 
-function pushUserMessage(view: SessionView, text: string, kind: MessageKind): AiMessage {
+function pushUserMessage(
+  view: SessionView,
+  text: string,
+  kind: MessageKind,
+  attachments: AiAttachment[] = []
+): AiMessage {
   const msg: AiMessage = {
     id: newMessageId(),
     role: "user",
@@ -304,6 +371,7 @@ function pushUserMessage(view: SessionView, text: string, kind: MessageKind): Ai
     state: "",
     running: false,
     canContinue: false,
+    attachments,
   };
   view.messages.push(msg);
   return msg;
@@ -522,20 +590,24 @@ export async function submit(inputText: string): Promise<boolean> {
     return false;
   }
   const input = (inputText || "").trim();
-  if (!input) {
+  const attachments = draftAttachments();
+  if (!input && !attachments.length) {
     toast("请输入你想问的内容", "warn");
     return false;
   }
+  const question = input || ATTACHMENT_ONLY_PROMPT;
 
   const payload = {
-    input,
+    input: question,
     model: selectedModel(),
     host: hostOf() || null,
     cwd: null,
     session_id: sessionIdOf(),
+    attachments: apiAttachments(attachments),
   };
 
-  pushUserMessage(view, input, "ask");
+  pushUserMessage(view, question, "ask", attachments);
+  clearDraftAttachments(key);
   const msg = pushAssistantMessage(view, { kind: "ask", running: true });
   // 请求 id 要等 ai_ask 返回才知道，先用占位值把「正在回答」标出来
   view.askId = PENDING_ASK;
@@ -683,13 +755,16 @@ async function agentStep(key: string): Promise<void> {
 
   let result: any;
   try {
+    const steps = agentStepsOf(view);
     result = await ipc.aiAgentStep({
       goal: ag.goal,
-      steps: agentStepsOf(view),
+      steps,
       terminal_tail: await readTerminal(ag.sessionId),
       // 快用完时让模型收尾，而不是在半路被硬性截断
       remaining_steps: Math.max(0, maxAgentSteps() - ag.steps),
       model: selectedModel(),
+      // 附件只在第一步发：后续步骤重复带上只会白白推高费用
+      attachments: steps.length === 0 ? apiAttachments(ag.attachments) : [],
     });
   } catch (err) {
     ag.busy = false;
@@ -867,7 +942,8 @@ export function agentRun(inputText: string): boolean {
   const key = currentKey();
   const view = sessionState(key);
   const goal = (inputText || "").trim();
-  if (!goal) {
+  const attachments = draftAttachments();
+  if (!goal && !attachments.length) {
     toast("请先填写目标", "warn");
     return false;
   }
@@ -884,9 +960,10 @@ export function agentRun(inputText: string): boolean {
   view.messages.forEach((msg) => {
     msg.canContinue = false;
   });
-  pushUserMessage(view, goal, "agent");
+  const text = goal || ATTACHMENT_ONLY_PROMPT;
+  pushUserMessage(view, text, "agent", attachments);
   const agent: AgentState = {
-    goal,
+    goal: text,
     // 会话在开始时捕获：循环期间切换标签也不会把命令写进别的会话
     sessionId: sessionIdOf() as string,
     host: hostOf() || null,
@@ -898,8 +975,10 @@ export function agentRun(inputText: string): boolean {
     lastCommand: "",
     repeat: 0,
     failStreak: 0,
+    attachments,
   };
   view.agent = agent;
+  clearDraftAttachments(key);
   bump();
   void agentStep(key);
   return true;
@@ -1068,6 +1147,8 @@ export interface AiView {
   menuOpen: boolean;
   session: { host: string; connected: boolean; label: string };
   messages: AiMessage[];
+  /** 当前会话待发送的附件（输入区上方的缩略图 / 文件清单）。 */
+  attachments: AiAttachment[];
   /** 是否有 Agent 循环在跑（决定发送按钮是否变成停止）。 */
   agentRunning: boolean;
   /** 当前待确认的命令是否属于本会话（决定是否显示执行 / 跳过）。 */
@@ -1141,6 +1222,7 @@ export function view(): AiView {
     menuOpen,
     session: { host, connected, label: (host || "未连接会话") + " · " + (mode === "agent" ? "Agent" : "Ask") },
     messages: viewState.messages,
+    attachments: drafts.get(key) || [],
     agentRunning: !!(viewState.agent && viewState.agent.running),
     compose,
     empty,

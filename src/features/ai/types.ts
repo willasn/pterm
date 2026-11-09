@@ -12,6 +12,20 @@ export type MessageRole = "user" | "assistant";
 export type MessageKind = "ask" | "agent";
 export type MessageState = "" | "pending" | "done" | "skipped" | "stopped";
 
+/** 用户随提问上传的附件：图片或文本文件。 */
+export interface AiAttachment {
+  id: string;
+  kind: "image" | "text";
+  name: string;
+  mime: string;
+  /** 原始文件字节数，仅用于展示。 */
+  size: number;
+  /** 图片预览 data URL；发送时取其 base64 部分。 */
+  preview?: string;
+  /** 文本附件正文。 */
+  text?: string;
+}
+
 /** 消息流里的一条消息（用户提问 / 助手回答 / Agent 命令与结论）。 */
 export interface AiMessage {
   id: string;
@@ -33,6 +47,8 @@ export interface AiMessage {
   running: boolean;
   /** 因步数上限停下的提示气泡：显示「继续执行」按钮 */
   canContinue: boolean;
+  /** 用户提问时随消息上传的附件；助手消息为空。 */
+  attachments?: AiAttachment[];
 }
 
 /** Agent 循环状态；每个会话独立。 */
@@ -53,6 +69,8 @@ export interface AgentState {
   repeat: number;
   /** 连续失败的命令数。 */
   failStreak: number;
+  /** 本轮开始时随目标上传的附件；只在第一步发给模型。 */
+  attachments: AiAttachment[];
 }
 
 /** 每个终端会话一份面板状态（key = 终端会话 id）。 */

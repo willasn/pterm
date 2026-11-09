@@ -1,12 +1,16 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ChangeEvent } from "react";
+import { toast } from "../../lib/legacy";
 import { Markdown } from "./markdown";
 import {
+  addAttachment,
   agentContinue,
   approveCurrent,
   clearCurrent,
   close,
+  newAttachmentId,
   persistWidth,
   primaryAction,
+  removeAttachment,
   runSuggested,
   setMenuOpen,
   setMode,
@@ -18,9 +22,146 @@ import {
   view,
   type AiView,
 } from "./store";
-import type { AiMessage } from "./types";
+import type { AiAttachment, AiMessage } from "./types";
 
-/** 上下文占比环形图标：紧邻 Agent，鼠标移上弹出明细。 */
+/** 可上传的图片类型：与主流多模态接口支持的一致。 */
+const IMAGE_TYPES = ["image/png", "image/jpeg", "image/webp", "image/gif"];
+/** 文本附件扩展名：不少系统给出的 MIME 为空或不准确，用扩展名兜底。 */
+const TEXT_FILE_RE =
+  /\.(txt|md|markdown|log|json|ya?ml|toml|ini|conf|csv|xml|rs|ts|tsx|js|jsx|py|sh|zsh|bash|go|java|sql|html?|css|scss)$/i;
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+const MAX_TEXT_BYTES = 512 * 1024;
+
+/** 图片读成 data URL：既用于缩略图预览，发送时取逗号后的 base64 部分。 */
+function readImage(file: File): Promise<string | null> {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : null);
+    reader.onerror = () => resolve(null);
+    reader.readAsDataURL(file);
+  });
+}
+
+/** 前端先做类型 / 体积校验并读入内存；不支持的二进制文件在这里直接拦掉。 */
+async function readAttachment(file: File): Promise<AiAttachment | null> {
+  const id = newAttachmentId();
+  // 截图 / 部分来源拿到的文件名可能为空，给个可读的兜底名称
+  const name = file.name || (file.type.startsWith("image/") ? "粘贴的图片" : "未命名附件");
+  if (IMAGE_TYPES.includes(file.type)) {
+    if (file.size > MAX_IMAGE_BYTES) {
+      toast(file.name + " 超过 10MB，已跳过", "warn");
+      return null;
+    }
+    const preview = await readImage(file);
+    if (!preview) {
+      toast("读取图片 " + file.name + " 失败", "error");
+      return null;
+    }
+    return { id, kind: "image", name, mime: file.type, size: file.size, preview };
+  }
+  if (file.type.startsWith("text/") || TEXT_FILE_RE.test(file.name) || file.type === "application/json") {
+    if (file.size > MAX_TEXT_BYTES) {
+      toast(file.name + " 超过 512KB，已跳过", "warn");
+      return null;
+    }
+    try {
+      const text = await file.text();
+      return { id, kind: "text", name, mime: file.type || "text/plain", size: file.size, text };
+    } catch {
+      toast("读取文件 " + file.name + " 失败", "error");
+      return null;
+    }
+  }
+  toast("暂不支持该文件类型：" + name + "（仅支持图片与文本文件）", "warn");
+  return null;
+}
+
+/** Ask / Agent 合并成一个模式选择器：默认 Agent，点击向上弹出切换。 */
+function ModeSelect({ mode }: { mode: "ask" | "agent" }) {
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (event: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(event.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [open]);
+
+  const options = [
+    { value: "agent", name: "Agent", sub: "自动执行命令，关键操作先授权" },
+    { value: "ask", name: "Ask", sub: "只给建议与命令，手动运行" },
+  ] as const;
+
+  return (
+    <div className={"ai-mode-select ai-model-select" + (open ? " open" : "")} ref={wrapRef}>
+      <button
+        className="ai-model-trigger"
+        type="button"
+        title="选择交互模式"
+        aria-haspopup="listbox"
+        aria-expanded={open ? "true" : "false"}
+        onClick={() => setOpen(!open)}
+        onKeyDown={(event) => {
+          if (event.key === "Escape") setOpen(false);
+        }}
+      >
+        <span className="ai-model-trigger-name">{mode === "agent" ? "Agent" : "Ask"}</span>
+        <span className="ai-model-chevron">
+          <svg viewBox="0 0 14 14" width="10" height="10" aria-hidden="true">
+            <path
+              d="M3.5 5.25 7 8.75l3.5-3.5"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.6"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+        </span>
+      </button>
+      <div className="ai-model-menu ai-mode-menu" role="listbox" aria-label="选择交互模式" hidden={!open}>
+        {options.map((opt) => {
+          const on = mode === opt.value;
+          return (
+            <button
+              key={opt.value}
+              className={"ai-model-option" + (on ? " selected" : "")}
+              type="button"
+              role="option"
+              aria-selected={on ? "true" : "false"}
+              onClick={() => {
+                setMode(opt.value);
+                setOpen(false);
+              }}
+            >
+              <span className="ai-model-option-text">
+                <span className="ai-model-option-name">{opt.name}</span>
+                <span className="ai-model-option-sub">{opt.sub}</span>
+              </span>
+              <span className="ai-model-option-check">
+                <svg viewBox="0 0 14 14" width="12" height="12" aria-hidden="true">
+                  <path
+                    d="M3 7.5 6 10.5 11 4.5"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.8"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/** 上下文占比环形图标：紧邻模式选择器，鼠标移上弹出明细。 */
 function ContextMeter({ data }: { data: AiView["meter"] }) {
   if (!data) return null;
   const radius = 5.5;
@@ -237,7 +378,20 @@ function MessageView({ msg }: { msg: AiMessage }) {
       <div className="ai-msg-role">{isUser ? "我" : msg.kind === "agent" ? "AI · Agent" : "AI"}</div>
       {isUser ? (
         <div className="ai-msg-body">
-          <p className="ai-msg-text">{msg.text}</p>
+          {msg.attachments && msg.attachments.length ? (
+            <div className="ai-msg-attachments">
+              {msg.attachments.map((att) =>
+                att.kind === "image" && att.preview ? (
+                  <img key={att.id} className="ai-msg-attach-img" src={att.preview} alt={att.name} title={att.name} />
+                ) : (
+                  <span key={att.id} className="ai-msg-attach-file" title={att.name}>
+                    📄 {att.name}
+                  </span>
+                )
+              )}
+            </div>
+          ) : null}
+          {msg.text ? <p className="ai-msg-text">{msg.text}</p> : null}
         </div>
       ) : (
         <AssistantBody msg={msg} />
@@ -252,6 +406,7 @@ export function AiPanel() {
   void version;
   const state = view();
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
+  const fileRef = useRef<HTMLInputElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const composing = useRef(false);
   const [dragging, setDragging] = useState(false);
@@ -286,6 +441,41 @@ export function AiPanel() {
     if (sent) {
       if (inputRef.current) inputRef.current.value = "";
       grow();
+    }
+  };
+
+  /** 选择文件后逐个读取；清空 value 让同一个文件可以再次选择。 */
+  const pickFiles = async (event: ChangeEvent<HTMLInputElement>) => {
+    const picked = event.target.files;
+    if (!picked || !picked.length) return;
+    const files = Array.from(picked);
+    event.target.value = "";
+    for (const file of files) {
+      const att = await readAttachment(file);
+      if (att && !addAttachment(att)) break;
+    }
+  };
+
+  /** 粘贴：剪贴板里是文件（截图、复制的文件）就转成附件；普通文本保持默认粘贴。 */
+  const pasteFiles = async (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const data = event.clipboardData;
+    if (!data) return;
+    const files: File[] = [];
+    if (data.files && data.files.length) {
+      files.push(...Array.from(data.files));
+    } else {
+      const items = data.items;
+      for (let i = 0; i < items.length; i++) {
+        if (items[i].kind !== "file") continue;
+        const file = items[i].getAsFile();
+        if (file) files.push(file);
+      }
+    }
+    if (!files.length) return;
+    event.preventDefault();
+    for (const file of files) {
+      const att = await readAttachment(file);
+      if (att && !addAttachment(att)) break;
     }
   };
 
@@ -366,6 +556,43 @@ export function AiPanel() {
       </div>
       <div className="ai-panel-compose">
         <div className="ai-composer">
+          <input
+            ref={fileRef}
+            className="ai-file-input"
+            type="file"
+            multiple
+            hidden
+            accept={
+              "image/png,image/jpeg,image/webp,image/gif," +
+              ".txt,.md,.markdown,.log,.json,.yaml,.yml,.toml,.ini,.conf,.csv,.xml," +
+              ".rs,.ts,.tsx,.js,.jsx,.py,.sh,.zsh,.bash,.go,.java,.sql,.html,.css,.scss"
+            }
+            onChange={(event) => void pickFiles(event)}
+          />
+          {state.attachments.length ? (
+            <div className="ai-attachments">
+              {state.attachments.map((att) => (
+                <span className="ai-attachment" key={att.id}>
+                  {att.kind === "image" && att.preview ? (
+                    <img src={att.preview} alt={att.name} title={att.name} />
+                  ) : (
+                    <span className="ai-attachment-icon">📄</span>
+                  )}
+                  <span className="ai-attachment-name" title={att.name}>
+                    {att.name}
+                  </span>
+                  <button
+                    className="ai-attachment-remove"
+                    type="button"
+                    title="移除附件"
+                    onClick={() => removeAttachment(att.id)}
+                  >
+                    ×
+                  </button>
+                </span>
+              ))}
+            </div>
+          ) : null}
           <textarea
             id="ai-input"
             rows={2}
@@ -373,6 +600,7 @@ export function AiPanel() {
             placeholder={state.compose.placeholder}
             ref={inputRef}
             onInput={grow}
+            onPaste={(event) => void pasteFiles(event)}
             onCompositionStart={() => {
               composing.current = true;
             }}
@@ -388,28 +616,25 @@ export function AiPanel() {
             }}
           />
           <div className="ai-composer-bar">
-            <div className="ai-mode-switch" id="ai-mode-switch" role="group" aria-label="AI 交互模式">
-              <button
-                className={"btn " + (state.mode === "ask" ? "primary" : "ghost")}
-                type="button"
-                data-mode="ask"
-                aria-pressed={state.mode === "ask" ? "true" : "false"}
-                title="给出建议与命令，命令可手动点击「运行」在后台通道执行，不会自动执行"
-                onClick={() => setMode("ask")}
-              >
-                Ask
-              </button>
-              <button
-                className={"btn " + (state.mode === "agent" ? "primary" : "ghost")}
-                type="button"
-                data-mode="agent"
-                aria-pressed={state.mode === "agent" ? "true" : "false"}
-                title="读取终端输出并自动执行命令，涉及删除、修改等关键操作时会请你授权"
-                onClick={() => setMode("agent")}
-              >
-                Agent
-              </button>
-            </div>
+            <ModeSelect mode={state.mode} />
+            <button
+              className="ai-attach-btn"
+              type="button"
+              title="上传图片或附件（图片 ≤ 10MB，文本文件 ≤ 512KB）"
+              aria-label="上传图片或附件"
+              disabled={!state.session.connected}
+              onClick={() => fileRef.current?.click()}
+            >
+              <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+                <path
+                  d="M8 3.5v9M3.5 8h9"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.6"
+                  strokeLinecap="round"
+                />
+              </svg>
+            </button>
             <ContextMeter data={state.meter} />
             <span className="ai-model-host" id="ai-model-host">
               <ModelSelect state={state} />

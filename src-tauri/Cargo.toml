@@ -1,6 +1,6 @@
 [package]
 name = "pterm"
-version = "0.3.0"
+version = "0.4.0"
 description = "跨平台 SSH 终端客户端"
 authors = ["pterm"]
 edition = "2021"

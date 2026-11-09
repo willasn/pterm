@@ -18,7 +18,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::StreamExt;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::Emitter;
 
 use crate::config::app_config::{AiConfig, AiModelConfig};
@@ -28,12 +28,34 @@ use crate::error::{AppError, AppResult};
 use super::protocol::{Protocol, ANTHROPIC_VERSION};
 use super::{AiContext, EVENT_AI_CHUNK};
 
+/// 用户随提问上传的附件。
+///
+/// - `kind = "image"`：`data` 是 base64（不含 data URL 前缀），按协议转成各自的多模态
+///   图片块；
+/// - `kind = "text"`：`data` 是文件正文，按顺序拼进同一条消息的文本里。
+///
+/// 二进制且非图片的文件（pdf / zip 等）没有通用的多模态承载方式，前端会直接拒绝。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatAttachment {
+    pub kind: String,
+    pub name: String,
+    #[serde(default)]
+    pub mime: String,
+    /// image: base64；text: 正文
+    pub data: String,
+}
+
 /// 一条对话消息。OpenAI / Responses 用 `system | user | assistant`，
 /// Anthropic 只用其中的 `user | assistant`（system 提到顶层字段）。
+///
+/// `attachments` 只出现在 user 消息上；没有附件时请求体保持纯字符串 content，
+/// 兼容所有供应商。
 #[derive(Debug, Clone, Serialize)]
 pub struct ChatMessage {
     pub role: String,
     pub content: String,
+    #[serde(skip)]
+    pub attachments: Vec<ChatAttachment>,
 }
 
 /// 一次补全请求的参数。`id` 用于把流式事件与前端某次提问关联。
@@ -135,6 +157,78 @@ fn split_system(messages: &[ChatMessage]) -> (Option<String>, Vec<ChatMessage>) 
     (system, chat)
 }
 
+/// 把文本附件按顺序并入消息正文，用清晰的分隔标记区分用户输入与文件内容。
+fn compose_text(content: &str, attachments: &[ChatAttachment]) -> String {
+    let mut text = content.to_string();
+    for att in attachments.iter().filter(|a| a.kind != "image") {
+        let name = att.name.trim();
+        let name = if name.is_empty() { "未命名附件" } else { name };
+        text.push_str(&format!(
+            "\n\n===== 附件：{name} =====\n{}\n===== 附件结束 =====",
+            att.data
+        ));
+    }
+    text
+}
+
+/// 图片附件的 base64 部分：容错去掉前端可能带上的 `data:image/...;base64,` 前缀。
+fn image_base64(att: &ChatAttachment) -> &str {
+    let data = att.data.trim();
+    match data.split_once(',') {
+        Some((head, rest)) if head.starts_with("data:") => rest,
+        _ => data,
+    }
+}
+
+/// 按协议把一条消息转成请求体里的 JSON。
+///
+/// 没有图片附件时保持纯字符串 content，兼容性最好；有图片时按协议展开成多模态
+/// 内容块（文本附件始终并入文本块）。
+fn message_value(protocol: Protocol, msg: &ChatMessage) -> serde_json::Value {
+    let text = compose_text(&msg.content, &msg.attachments);
+    let images: Vec<&ChatAttachment> = msg
+        .attachments
+        .iter()
+        .filter(|a| a.kind == "image" && !a.data.trim().is_empty())
+        .collect();
+
+    if images.is_empty() {
+        return serde_json::json!({ "role": msg.role, "content": text });
+    }
+
+    let text_type = if protocol == Protocol::OpenAiResponses {
+        "input_text"
+    } else {
+        "text"
+    };
+    let mut parts = vec![serde_json::json!({ "type": text_type, "text": text })];
+
+    for att in images {
+        let mime = att.mime.trim();
+        let mime = if mime.is_empty() { "image/png" } else { mime };
+        let data = image_base64(att);
+        parts.push(match protocol {
+            // Anthropic：base64 source 块
+            Protocol::Anthropic => serde_json::json!({
+                "type": "image",
+                "source": { "type": "base64", "media_type": mime, "data": data },
+            }),
+            // Responses：input_image 直接收 image_url 字符串
+            Protocol::OpenAiResponses => serde_json::json!({
+                "type": "input_image",
+                "image_url": format!("data:{mime};base64,{data}"),
+            }),
+            // Chat Completions：image_url 对象
+            Protocol::OpenAi => serde_json::json!({
+                "type": "image_url",
+                "image_url": { "url": format!("data:{mime};base64,{data}") },
+            }),
+        });
+    }
+
+    serde_json::json!({ "role": msg.role, "content": parts })
+}
+
 /// 按协议组装一次请求：地址、鉴权头与请求体都在这里落地。
 ///
 /// `key_override` 允许设置界面用「刚输入、尚未保存」的 Key 先测通再保存。
@@ -159,7 +253,7 @@ fn build_request(
     let body = match protocol {
         Protocol::OpenAi => serde_json::json!({
             "model": model.model.trim(),
-            "messages": messages,
+            "messages": messages.iter().map(|m| message_value(Protocol::OpenAi, m)).collect::<Vec<_>>(),
             "temperature": model.temperature(),
             "max_tokens": max_tokens,
             "stream": stream,
@@ -167,7 +261,7 @@ fn build_request(
         // Responses 用 input 承载对话、max_output_tokens 承载输出上限
         Protocol::OpenAiResponses => serde_json::json!({
             "model": model.model.trim(),
-            "input": messages,
+            "input": messages.iter().map(|m| message_value(Protocol::OpenAiResponses, m)).collect::<Vec<_>>(),
             "temperature": model.temperature(),
             "max_output_tokens": max_tokens,
             "stream": stream,
@@ -176,7 +270,7 @@ fn build_request(
             let (system, chat) = split_system(messages);
             let mut body = serde_json::json!({
                 "model": model.model.trim(),
-                "messages": chat,
+                "messages": chat.iter().map(|m| message_value(Protocol::Anthropic, m)).collect::<Vec<_>>(),
                 "max_tokens": max_tokens,
                 "temperature": model.temperature(),
                 "stream": stream,
@@ -219,6 +313,7 @@ pub async fn test_model(
     let messages = vec![ChatMessage {
         role: "user".into(),
         content: "ping".into(),
+        attachments: Vec::new(),
     }];
     // 只发一个最小请求：够验证鉴权与模型名，又几乎不消耗额度
     let request = build_request(ctx, model, &messages, false, 1, key_override)?
@@ -486,5 +581,82 @@ fn extract_delta(value: &serde_json::Value) -> Option<String> {
 fn emit_chunk(app: &tauri::AppHandle, id: &str, text: &str) {
     if let Err(e) = app.emit(EVENT_AI_CHUNK, serde_json::json!({ "id": id, "text": text })) {
         log::warn!("广播 AI 流式事件失败：{e}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn msg(attachments: Vec<ChatAttachment>) -> ChatMessage {
+        ChatMessage {
+            role: "user".into(),
+            content: "看看这个".into(),
+            attachments,
+        }
+    }
+
+    fn image() -> ChatAttachment {
+        ChatAttachment {
+            kind: "image".into(),
+            name: "shot.png".into(),
+            mime: "image/png".into(),
+            // 带 data URL 前缀也要能容错剥离
+            data: "data:image/png;base64,AAAA".into(),
+        }
+    }
+
+    fn text_file() -> ChatAttachment {
+        ChatAttachment {
+            kind: "text".into(),
+            name: "app.log".into(),
+            mime: "text/plain".into(),
+            data: "boom".into(),
+        }
+    }
+
+    #[test]
+    fn plain_message_stays_string_content() {
+        let value = message_value(Protocol::OpenAi, &msg(Vec::new()));
+        assert_eq!(value["content"], "看看这个");
+    }
+
+    #[test]
+    fn text_attachment_folds_into_content() {
+        let value = message_value(Protocol::OpenAi, &msg(vec![text_file()]));
+        let content = value["content"].as_str().unwrap();
+        assert!(content.starts_with("看看这个"));
+        assert!(content.contains("附件：app.log"));
+        assert!(content.contains("boom"));
+    }
+
+    #[test]
+    fn openai_uses_image_url_object() {
+        let value = message_value(Protocol::OpenAi, &msg(vec![image()]));
+        assert_eq!(value["content"][1]["type"], "image_url");
+        assert_eq!(
+            value["content"][1]["image_url"]["url"],
+            "data:image/png;base64,AAAA"
+        );
+    }
+
+    #[test]
+    fn responses_uses_input_image_string() {
+        let value = message_value(Protocol::OpenAiResponses, &msg(vec![image()]));
+        assert_eq!(value["content"][0]["type"], "input_text");
+        assert_eq!(value["content"][1]["type"], "input_image");
+        assert_eq!(
+            value["content"][1]["image_url"],
+            "data:image/png;base64,AAAA"
+        );
+    }
+
+    #[test]
+    fn anthropic_uses_base64_source_block() {
+        let value = message_value(Protocol::Anthropic, &msg(vec![image()]));
+        assert_eq!(value["content"][1]["type"], "image");
+        assert_eq!(value["content"][1]["source"]["type"], "base64");
+        assert_eq!(value["content"][1]["source"]["media_type"], "image/png");
+        assert_eq!(value["content"][1]["source"]["data"], "AAAA");
     }
 }

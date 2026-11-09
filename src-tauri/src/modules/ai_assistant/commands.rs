@@ -20,7 +20,7 @@ use crate::config::store::secrets;
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;
 
-use super::client::{self, ChatMessage, ChatOptions};
+use super::client::{self, ChatAttachment, ChatMessage, ChatOptions};
 use super::{agent, danger, protocol, EVENT_AI_CANCELLED, EVENT_AI_DONE, EVENT_AI_ERROR};
 
 /// 一次 AI 提问的入参。Ask 模式没有场景之分，输入即问题。
@@ -39,6 +39,9 @@ pub struct AiAskInput {
     /// 用于把历史按会话归组
     #[serde(default)]
     pub session_id: Option<String>,
+    /// 随提问上传的图片 / 文本附件
+    #[serde(default)]
+    pub attachments: Vec<ChatAttachment>,
 }
 
 /// `ai_ask` 的同步返回值：前端据此关联后续的流式 / 完成 / 错误事件。
@@ -54,9 +57,15 @@ pub struct AiAskResult {
 /// 通道执行——模型自己不会执行任何命令。
 fn build_user_message(input: &AiAskInput) -> AppResult<String> {
     let q = input.input.trim();
-    if q.is_empty() {
+    if q.is_empty() && input.attachments.is_empty() {
         return Err(AppError::Ai("请输入你想问的内容".into()));
     }
+    // 只传附件不写字时给一句默认问题，这样图片本身也能直接发起分析
+    let q = if q.is_empty() {
+        "请分析我上传的图片与附件，并给出结论与建议。"
+    } else {
+        q
+    };
     Ok(format!(
         "你是终端助手。请回答下面的问题，给出可操作的建议与指导。需要给出 shell 命令时，\
 请把每条命令放进 ```sh 代码块单独列出，并简要说明用途与风险——用户会在面板里点击\
@@ -100,11 +109,13 @@ pub fn ai_ask(
         messages.push(ChatMessage {
             role: "system".into(),
             content: sys,
+            attachments: Vec::new(),
         });
     }
     messages.push(ChatMessage {
         role: "user".into(),
         content: user_content,
+        attachments: input.attachments.clone(),
     });
 
     let id = uuid::Uuid::new_v4().to_string();
@@ -357,6 +368,9 @@ pub struct AiAgentStepInput {
     pub remaining_steps: Option<u32>,
     #[serde(default)]
     pub model: Option<String>,
+    /// 随目标上传的图片 / 文本附件（仅在第一步发送，后续步骤不重复带上）
+    #[serde(default)]
+    pub attachments: Vec<ChatAttachment>,
 }
 
 /// 一步的结果：要么给出一条命令（可能需授权），要么宣告结束。
@@ -400,6 +414,7 @@ pub async fn ai_agent_step(
         ChatMessage {
             role: "system".into(),
             content: agent::system_prompt(),
+            attachments: Vec::new(),
         },
         ChatMessage {
             role: "user".into(),
@@ -409,6 +424,7 @@ pub async fn ai_agent_step(
                 &input.terminal_tail,
                 input.remaining_steps,
             ),
+            attachments: input.attachments.clone(),
         },
     ];
 
